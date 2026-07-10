@@ -1,0 +1,21 @@
+# Workspace contributor guide
+
+Workspace is a local-first Electron shell around ordinary folders and the native Pi agent runtime.
+
+## Product boundaries
+
+- Use **Workspace** as the user-facing product name.
+- Keep package, protocol, IPC, updater, user-data, and environment identifiers independent and product-neutral.
+- Keep provider credentials and application state outside user content folders.
+- Treat project `.pi` resources as executable configuration: load them only after the user trusts the folder.
+- Prefer Pi's built-in tools, resource loader, auth storage, model registry, package manager, skills, and extensions over app-specific replacements.
+- Do not bundle proprietary tools, instructions, source libraries, or account integrations.
+
+## Development
+
+- Use Node 22.19.0 or newer.
+- Run `npm run check` after TypeScript changes.
+- Run `npm test` before handing off behavior changes.
+- Run `npm run desktop:prepare` after Electron, packaging, or runtime-resource changes.
+- Run `npm run desktop:package` when installer-facing assets or packaged behavior changes.
+- Never commit provider keys, signing material, tokens, or generated user data.

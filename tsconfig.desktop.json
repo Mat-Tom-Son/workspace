@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist/desktop",
+    "rootDir": ".",
+    "sourceMap": true
+  },
+  "include": [
+    "desktop/src/**/*.cts",
+    "desktop/src/**/*.ts",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "tests/**/*.ts",
+    "work/**/*.ts"
+  ]
+}

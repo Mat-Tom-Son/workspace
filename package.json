@@ -1,0 +1,78 @@
+{
+  "name": "workspace-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local-first desktop workspace powered by Pi.",
+  "license": "UNLICENSED",
+  "main": "dist/desktop/desktop/src/main.js",
+  "productName": "Workspace",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "npm run desktop:prepare",
+    "check": "npm run local:check && npm run desktop:check",
+    "test": "node scripts/run-tests.mjs",
+    "local:api": "tsx src/local/server-dev.ts",
+    "workspace:drive": "tsx scripts/workspace-drive.ts",
+    "local:dev": "concurrently -k -n api,ui -c cyan,green \"npm run local:api\" \"vite --config vite.local.config.ts\"",
+    "local:check": "tsc --noEmit -p tsconfig.web.json",
+    "local:build": "vite build --config vite.local.config.ts",
+    "desktop:icons": "node scripts/generate-desktop-icons.mjs",
+    "desktop:check": "tsc --noEmit -p tsconfig.desktop.json",
+    "desktop:compile": "node scripts/clean-desktop-dist.mjs && tsc -p tsconfig.desktop.json",
+    "desktop:prepare": "npm run desktop:icons && npm run local:build && npm run desktop:compile && npm run desktop:preflight",
+    "desktop:package": "npm run desktop:prepare && electron-forge package && npm run desktop:verify:packaged-assets",
+    "desktop:make": "npm run desktop:package && electron-builder --config electron-builder.desktop.cjs --win nsis --prepackaged \"out/Workspace-win32-x64\" --publish never",
+    "desktop:make:zip": "npm run desktop:prepare && node scripts/make-desktop.mjs && npm run desktop:verify:packaged-assets",
+    "desktop:smoke": "npm run desktop:prepare && electron dist/desktop/desktop/src/main.js",
+    "desktop:preflight": "node scripts/desktop-preflight.mjs",
+    "desktop:verify:packaged-assets": "node scripts/verify-packaged-app-assets.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.0.2",
+    "@electron/fuses": "^1.8.0",
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-fuses": "^7.11.2",
+    "@types/node": "^24.9.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.3",
+    "electron": "^42.6.1",
+    "electron-builder": "^26.15.3",
+    "lucide-react": "^1.8.0",
+    "png-to-ico": "^3.0.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "sharp": "^0.34.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4"
+  },
+  "overrides": {
+    "fast-uri": "3.1.2",
+    "tar": "7.5.19",
+    "tmp": "0.2.7",
+    "form-data": "4.0.6",
+    "shell-quote": "1.9.0",
+    "esbuild": "0.28.1",
+    "@electron/get": {
+      "undici": "7.28.0"
+    },
+    "node-gyp": {
+      "undici": "6.27.0"
+    }
+  },
+  "config": {
+    "forge": "./desktop/forge.config.cjs"
+  }
+}
