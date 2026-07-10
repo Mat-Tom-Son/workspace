@@ -1,11 +1,11 @@
 {
   "name": "workspace-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "A local-first desktop workspace powered by Pi.",
   "author": "Mat-Tom-Son",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "homepage": "https://github.com/Mat-Tom-Son/workspace#readme",
   "repository": {
     "type": "git",
@@ -33,6 +33,7 @@
     "desktop:compile": "node scripts/clean-desktop-dist.mjs && tsc -p tsconfig.desktop.json",
     "desktop:prepare": "npm run desktop:icons && npm run local:build && npm run desktop:compile && npm run desktop:preflight",
     "desktop:package": "npm run desktop:prepare && electron-forge package && node scripts/verify-packaged-app-assets.mjs --package-dir out/Workspace-win32-x64",
+    "desktop:package:smoke": "npm run desktop:prepare && electron-builder --config electron-builder.desktop.cjs --win --x64 --dir --publish never && npm run desktop:verify:packaged-assets -- --package-dir out/builder/win-unpacked",
     "desktop:make": "npm run desktop:prepare && electron-builder --config electron-builder.desktop.cjs --win nsis --publish never && npm run desktop:verify:release",
     "desktop:make:zip": "npm run desktop:prepare && node scripts/make-desktop.mjs && npm run desktop:verify:packaged-assets",
     "desktop:smoke": "npm run desktop:prepare && electron dist/desktop/desktop/src/main.js",

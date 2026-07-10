@@ -32,7 +32,7 @@ module.exports = {
     output: "out/builder",
     buildResources: "desktop/assets",
   },
-  files: ["package.json", "dist/desktop/**/*"],
+  files: ["package.json", "LICENSE", "dist/desktop/**/*"],
   extraResources: [
     {
       from: "dist/web-local",

@@ -17,4 +17,4 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      - run: npm run desktop:prepare
+      - run: npm run desktop:package:smoke

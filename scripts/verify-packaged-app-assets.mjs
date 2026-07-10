@@ -61,6 +61,7 @@ if (existsSync(asarPath)) {
   const entries = new Set(listPackage(asarPath).map(normalizeAsarPath));
   for (const required of [
     "/package.json",
+    "/LICENSE",
     "/dist/desktop/desktop/src/main.js",
     "/dist/desktop/desktop/src/preload.cjs",
     "/node_modules/@earendil-works/pi-coding-agent/package.json",
