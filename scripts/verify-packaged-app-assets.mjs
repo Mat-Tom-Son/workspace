@@ -13,11 +13,13 @@ const WasmTrapHandlersFuse = 8;
 const fuseDisabled = "0".charCodeAt(0);
 const fuseEnabled = "1".charCodeAt(0);
 
-const packageDir = findPackageDir();
+const packageDirArgument = readArgument("--package-dir");
+const packageDir = packageDirArgument ? resolve(rootDir, packageDirArgument) : findPackageDir();
 if (!packageDir) {
   console.error("Workspace package verification failed: no unpacked Workspace app was found under out/.");
   process.exit(1);
 }
+if (!existsSync(packageDir)) failures.push(`Packaged app directory does not exist: ${packageDir}.`);
 
 const resourcesDir = join(packageDir, "resources");
 const asarPath = join(resourcesDir, "app.asar");
@@ -62,6 +64,7 @@ if (existsSync(asarPath)) {
     "/dist/desktop/desktop/src/main.js",
     "/dist/desktop/desktop/src/preload.cjs",
     "/node_modules/@earendil-works/pi-coding-agent/package.json",
+    "/node_modules/electron-updater/package.json",
     "/node_modules/jszip/package.json",
   ]) {
     if (!entries.has(required)) failures.push(`app.asar is missing ${required}.`);
@@ -86,10 +89,16 @@ console.log(`Verified packaged Workspace app at ${packageDir}.`);
 
 function findPackageDir() {
   if (!existsSync(outDir)) return null;
-  const candidates = readdirSync(outDir, { withFileTypes: true })
+  const candidates = [join(outDir, "builder", "win-unpacked"), ...readdirSync(outDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^Workspace-(?:win32|darwin|linux)-/.test(entry.name))
-    .map((entry) => join(outDir, entry.name));
+    .map((entry) => join(outDir, entry.name))]
+    .filter((candidate) => existsSync(candidate));
   return candidates[0] ?? null;
+}
+
+function readArgument(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
 function assertPath(path, label) {

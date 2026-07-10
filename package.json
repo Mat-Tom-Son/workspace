@@ -4,7 +4,16 @@
   "private": true,
   "type": "module",
   "description": "A local-first desktop workspace powered by Pi.",
+  "author": "Mat-Tom-Son",
   "license": "UNLICENSED",
+  "homepage": "https://github.com/Mat-Tom-Son/workspace#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mat-Tom-Son/workspace.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Mat-Tom-Son/workspace/issues"
+  },
   "main": "dist/desktop/desktop/src/main.js",
   "productName": "Workspace",
   "engines": {
@@ -23,23 +32,25 @@
     "desktop:check": "tsc --noEmit -p tsconfig.desktop.json",
     "desktop:compile": "node scripts/clean-desktop-dist.mjs && tsc -p tsconfig.desktop.json",
     "desktop:prepare": "npm run desktop:icons && npm run local:build && npm run desktop:compile && npm run desktop:preflight",
-    "desktop:package": "npm run desktop:prepare && electron-forge package && npm run desktop:verify:packaged-assets",
-    "desktop:make": "npm run desktop:package && electron-builder --config electron-builder.desktop.cjs --win nsis --prepackaged \"out/Workspace-win32-x64\" --publish never",
+    "desktop:package": "npm run desktop:prepare && electron-forge package && node scripts/verify-packaged-app-assets.mjs --package-dir out/Workspace-win32-x64",
+    "desktop:make": "npm run desktop:prepare && electron-builder --config electron-builder.desktop.cjs --win nsis --publish never && npm run desktop:verify:release",
     "desktop:make:zip": "npm run desktop:prepare && node scripts/make-desktop.mjs && npm run desktop:verify:packaged-assets",
     "desktop:smoke": "npm run desktop:prepare && electron dist/desktop/desktop/src/main.js",
     "desktop:preflight": "node scripts/desktop-preflight.mjs",
-    "desktop:verify:packaged-assets": "node scripts/verify-packaged-app-assets.mjs"
+    "desktop:verify:packaged-assets": "node scripts/verify-packaged-app-assets.mjs",
+    "desktop:verify:release": "node scripts/verify-windows-release.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",
+    "electron-updater": "6.8.9",
     "jszip": "^3.10.1"
   },
   "devDependencies": {
-    "@electron/asar": "^4.0.2",
-    "@electron/fuses": "^1.8.0",
     "@electron-forge/cli": "^7.11.2",
     "@electron-forge/maker-zip": "^7.11.2",
     "@electron-forge/plugin-fuses": "^7.11.2",
+    "@electron/asar": "^4.0.2",
+    "@electron/fuses": "^1.8.0",
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

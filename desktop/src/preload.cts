@@ -38,4 +38,7 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke("workspace:shell:open-external", url),
   },
+  updates: {
+    check: () => ipcRenderer.invoke("workspace:updates:check"),
+  },
 });

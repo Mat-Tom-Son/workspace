@@ -24,6 +24,7 @@ import { defaultAgentSdkDir } from "../../src/local/agent/agent-data-dir.js";
 import { startLocalApi } from "../../src/local/server.js";
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
 import { SecureSettingsStore } from "./settings.js";
+import { WorkspaceUpdater, type WorkspaceUpdateCheckResult } from "./updater.js";
 
 const productName = "Workspace";
 const appProtocol = "workspace-desktop";
@@ -39,6 +40,8 @@ let piRuntime: PackagedPiRuntimeProvider | null = null;
 let apiSessionToken = "";
 let quitting = false;
 let powerBlockerId: number | null = null;
+let workspaceUpdater: WorkspaceUpdater | null = null;
+let shutdownPromise: Promise<void> | null = null;
 
 protocol.registerSchemesAsPrivileged([{
   scheme: appProtocol,
@@ -63,8 +66,9 @@ if (ownsInstance) {
     configureStableUserDataPath();
     registerRendererProtocol();
     registerIpc();
-    configureMenu();
     await createMainWindow();
+    configureUpdater();
+    configureMenu();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
       else showWindow();
@@ -82,8 +86,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", (event) => {
   if (quitting) return;
   event.preventDefault();
-  quitting = true;
-  void shutdown().finally(() => app.quit());
+  void prepareToQuit().finally(() => app.quit());
 });
 
 async function createMainWindow(): Promise<void> {
@@ -201,6 +204,10 @@ function registerIpc(): void {
     if (typeof value !== "string") throw new Error("A URL is required.");
     await openExternal(value);
   });
+  ipcMain.handle("workspace:updates:check", async (event): Promise<WorkspaceUpdateCheckResult> => {
+    assertTrustedRenderer(event);
+    return checkForUpdates();
+  });
 }
 
 function configureMenu(): void {
@@ -226,8 +233,29 @@ function configureMenu(): void {
     { label: "Edit", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
     { label: "View", submenu: viewMenu },
     { label: "Window", submenu: [{ role: "minimize" }, { role: "close" }] },
+    {
+      label: "Help",
+      submenu: [
+        { label: "Check for Updates…", click: () => { void checkForUpdates(); } },
+        { type: "separator" },
+        { label: `Workspace ${app.getVersion()}`, enabled: false },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function configureUpdater(): void {
+  if (workspaceUpdater) return;
+  workspaceUpdater = new WorkspaceUpdater({
+    getWindow: () => mainWindow,
+    prepareToInstall: prepareToQuit,
+  });
+  workspaceUpdater.start();
+}
+
+function checkForUpdates(): Promise<WorkspaceUpdateCheckResult> {
+  return workspaceUpdater?.check(true) ?? Promise.resolve({ status: "unsupported" });
 }
 
 function configureStableUserDataPath(): void {
@@ -263,6 +291,7 @@ async function openExternal(value: string): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
+  workspaceUpdater?.dispose();
   updateAgentPowerState(0);
   const close = closeLocalApi;
   closeLocalApi = null;
@@ -270,6 +299,12 @@ async function shutdown(): Promise<void> {
     close?.() ?? Promise.resolve(),
     piRuntime?.flush() ?? Promise.resolve(),
   ]);
+}
+
+function prepareToQuit(): Promise<void> {
+  quitting = true;
+  shutdownPromise ??= shutdown();
+  return shutdownPromise;
 }
 
 function showWindow(): void {

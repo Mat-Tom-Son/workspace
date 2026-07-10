@@ -11,6 +11,7 @@ The desktop app keeps your content in ordinary folders. Provider credentials, co
 - Pi's normal built-in tools, provider/model selection, authentication, prompt templates, context files, and packages.
 - Global and trusted-project Pi extensions.
 - Agent Skills from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
+- Assisted Windows installation and GitHub-hosted application updates.
 
 Workspace does not bundle organization-specific tools, instructions, document libraries, or cloud accounts.
 
@@ -32,9 +33,18 @@ npm run check
 npm test
 npm run desktop:prepare
 npm run desktop:package
+npm run desktop:make
 ```
 
-`desktop:package` produces an unpacked local app for verification. `desktop:make` produces an unsigned NSIS installer for personal testing. A public updater and signing lane are intentionally not configured; establish a new release repository and signing identity before distributing installers.
+`desktop:package` produces a Forge package for local verification. `desktop:make` builds and verifies the release-ready NSIS installer, blockmap, embedded GitHub feed configuration, and `latest.yml` under `out/builder`.
+
+## Windows releases
+
+Pushing a version tag such as `v0.1.0` runs the Windows release workflow and publishes the installer plus updater metadata to [GitHub Releases](https://github.com/Mat-Tom-Son/workspace/releases). The installed app checks that public feed shortly after startup, every four hours, and when you choose **Help > Check for Updates…**.
+
+The release workflow supports an optional PFX certificate through GitHub secrets. The included personal certificate helper creates a self-signed identity outside the repository; this signs artifacts consistently but does not establish public Windows trust. Until a certificate-authority-backed identity is configured, users may still see Unknown Publisher or SmartScreen warnings.
+
+See [Windows builds](docs/windows-build.md) and [Windows releases and signing](docs/windows-release.md).
 
 ## Pi resources
 

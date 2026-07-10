@@ -1,5 +1,11 @@
 export {};
 
+type WorkspaceUpdateCheckResult =
+  | { status: "unsupported" }
+  | { status: "busy"; phase: "checking" | "downloading" | "downloaded" }
+  | { status: "started"; updateAvailable: boolean; version?: string }
+  | { status: "error" };
+
 declare global {
   interface Window {
     workspaceDesktop?: {
@@ -23,8 +29,8 @@ declare global {
       shell: {
         openExternal: (url: string) => Promise<void>;
       };
-      updates?: {
-        check: () => Promise<unknown>;
+      updates: {
+        check: () => Promise<WorkspaceUpdateCheckResult>;
       };
     };
   }

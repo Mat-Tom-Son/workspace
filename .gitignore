@@ -6,6 +6,9 @@ node_modules/
 dist/
 out/
 *.log
+*.p12
+*.pfx
+*.cer
 
 .DS_Store
 Thumbs.db
