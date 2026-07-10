@@ -198,20 +198,20 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
 
   if (method === "POST" && url.pathname === "/api/workspaces") {
     const body = await readJsonBody<{ name?: string }>(state, req);
-    const workspace = await createManagedWorkspace(body.name ?? "Personal Workspace", state.workspaceBase);
+    const workspace = await createManagedWorkspace(body.name ?? "Personal Space", state.workspaceBase);
     sendJson(res, { workspace }, 201);
     return;
   }
 
   if (method === "POST" && url.pathname === "/api/workspaces/local-folder") {
     const body = await readJsonBody<{ rootPath?: string; folderGrantId?: string; providerHint?: "google-drive" }>(state, req);
-    if (!body.rootPath?.trim()) throw badRequest("Choose a local folder.");
+    if (!body.rootPath?.trim()) throw badRequest("Choose a local folder to turn into a Space.");
     if (state.localFolderGrantProvider) {
       if (!body.folderGrantId || !await state.localFolderGrantProvider.consumeLocalFolderGrant({ rootPath: body.rootPath, grantId: body.folderGrantId })) {
-        throw forbidden("The folder selection grant expired. Choose the folder again.");
+        throw forbidden("The folder selection expired. Choose the folder again to create the Space.");
       }
     } else if (state.appMode === "desktop") {
-      throw forbidden("Folder selection must come from the desktop folder picker.");
+      throw forbidden("A folder must be selected in the desktop app before it can become a Space.");
     }
     const workspace = await registerLinkedWorkspace(body.rootPath, body.providerHint);
     sendJson(res, { workspace }, 201);
@@ -270,9 +270,9 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   }
   if (method === "POST" && url.pathname === "/api/resources/copy-to-workspace") {
     const body = await readJsonBody<{ workspaceId?: string; paths?: string[]; targetFolder?: string }>(state, req);
-    if (!body.workspaceId || !Array.isArray(body.paths)) throw badRequest("Workspace and resource paths are required.");
+    if (!body.workspaceId || !Array.isArray(body.paths)) throw badRequest("A Space and Library items are required.");
     const workspace = await getWorkspace(body.workspaceId);
-    const copied = await copyResourcesToWorkspace(workspace.rootPath, body.paths, body.targetFolder ?? "Resources");
+    const copied = await copyResourcesToWorkspace(workspace.rootPath, body.paths, body.targetFolder ?? "From Library");
     sendJson(res, { copied });
     return;
   }
@@ -298,7 +298,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
 
   if (method === "GET" && url.pathname === "/api/agent/models") {
     const workspaceId = url.searchParams.get("workspaceId");
-    if (!workspaceId) throw badRequest("Workspace id is required.");
+    if (!workspaceId) throw badRequest("Space id is required.");
     const workspace = await getWorkspace(workspaceId);
     const models = await listPiModels(workspace.rootPath, state.runtimeProvider);
     sendJson(res, {
@@ -311,7 +311,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   }
   if (method === "GET" && url.pathname === "/api/agent/status") {
     const workspaceId = url.searchParams.get("workspaceId");
-    if (!workspaceId) throw badRequest("Workspace id is required.");
+    if (!workspaceId) throw badRequest("Space id is required.");
     const workspace = await getWorkspace(workspaceId);
     sendJson(res, { status: await safeAgentStatus(workspace.rootPath, state.runtimeProvider) });
     return;
@@ -321,7 +321,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const workspace = await configuredWorkspace(body.workspaceId, body.provider, body.model);
     const selected = (await listPiModels(workspace.rootPath, state.runtimeProvider))
       .find((model) => model.provider === body.provider && model.id === body.model);
-    if (!selected) throw badRequest("The selected Pi model is not available in this workspace.");
+    if (!selected) throw badRequest("The selected Pi model is not available in this Space.");
     if (!body.apiKey?.trim() && !selected.authConfigured) {
       throw badRequest(`Enter an API key for ${selected.providerName}.`);
     }
@@ -345,7 +345,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   }
   if (method === "POST" && url.pathname === "/api/agent/packages/install") {
     const body = await readJsonBody<{ workspaceId?: string; source?: string; scope?: "global" | "project" }>(state, req);
-    if (!body.workspaceId || !body.source?.trim()) throw badRequest("Workspace and package source are required.");
+    if (!body.workspaceId || !body.source?.trim()) throw badRequest("A Space and package source are required.");
     const workspace = await getWorkspace(body.workspaceId);
     await installPiPackage(workspace.rootPath, body.source, {
       scope: body.scope === "project" ? "project" : "user",
@@ -358,7 +358,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   if (method === "POST" && url.pathname === "/api/agent/skills/import") {
     const multipart = await readMultipartBody(state, req);
     const workspaceId = multipart.fields.get("workspaceId");
-    if (!workspaceId || !multipart.files.length) throw badRequest("Workspace and skill files are required.");
+    if (!workspaceId || !multipart.files.length) throw badRequest("A Space and Skill files are required.");
     const workspace = await getWorkspace(workspaceId);
     const scope = multipart.fields.get("scope") === "project" ? "project" : "user";
     const imported = [];
@@ -667,7 +667,7 @@ async function safeAgentStatus(workspaceRoot: string, provider: PiRuntimeProvide
 }
 
 async function configuredWorkspace(workspaceId?: string, provider?: string, model?: string) {
-  if (!workspaceId || !provider?.trim() || !model?.trim()) throw badRequest("Workspace, provider, and model are required.");
+  if (!workspaceId || !provider?.trim() || !model?.trim()) throw badRequest("A Space, provider, and model are required.");
   return getWorkspace(workspaceId);
 }
 

@@ -1,4 +1,4 @@
-export type WorkspacePane = "files" | "chats" | "skills" | "extensions" | "resources" | "history";
+export type WorkspacePane = "space" | "chats" | "library" | "history" | "setup" | "skills" | "extensions";
 
 export interface WorkspaceLocation {
   kind: "local";

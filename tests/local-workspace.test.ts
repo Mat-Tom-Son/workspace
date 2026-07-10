@@ -7,7 +7,7 @@ import { after, before, test } from "node:test";
 
 import { createWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from "../src/local/history.js";
 import { copyResourcesToWorkspace, listResourceTree, uploadResourceFiles } from "../src/local/resources.js";
-import { configureWorkspaceStateRoot } from "../src/local/state-paths.js";
+import { configureWorkspaceStateRoot, resourceLibraryRoot } from "../src/local/state-paths.js";
 import {
   createManagedWorkspace,
   listWorkspaces,
@@ -34,8 +34,8 @@ after(async () => {
   await rm(sandbox, { recursive: true, force: true });
 });
 
-test("managed workspaces keep app metadata outside user folders", async () => {
-  const workspace = await createManagedWorkspace("Personal Workspace", contentRoot);
+test("managed Spaces keep app metadata outside user folders", async () => {
+  const workspace = await createManagedWorkspace("Personal Space", contentRoot);
   const uploaded = await writeUploadedFiles(workspace.rootPath, "", [{
     fileName: "notes.txt",
     relativePath: "Notes/notes.txt",
@@ -53,10 +53,15 @@ test("managed workspaces keep app metadata outside user folders", async () => {
 test("linked Google Drive folders are detected without adding metadata", async () => {
   const linkedRoot = join(sandbox, "Google Drive", "My Drive", "Project");
   await mkdir(linkedRoot, { recursive: true });
+  const existingFile = join(linkedRoot, "existing.txt");
+  await writeFile(existingFile, "original", "utf8");
   const workspace = await registerLinkedWorkspace(linkedRoot);
+  assert.equal(workspace.rootPath, linkedRoot);
   assert.equal(workspace.location.storage, "linked");
   assert.equal(workspace.location.providerHint, "google-drive");
-  assert.deepEqual(await scanWorkspaceTree(linkedRoot), []);
+  assert.equal(await readFile(existingFile, "utf8"), "original");
+  assert.equal(existsSync(join(linkedRoot, ".workspace")), false);
+  assert.equal((await scanWorkspaceTree(linkedRoot))[0]?.path, "existing.txt");
 });
 
 test("linked folders cannot overlap Workspace application state", async () => {
@@ -66,13 +71,14 @@ test("linked folders cannot overlap Workspace application state", async () => {
   await assert.rejects(createWorkspaceCheckpoint(sandbox), /does not contain Workspace application data/);
 });
 
-test("resources copy into a visible workspace folder", async () => {
-  const workspace = await createManagedWorkspace("Resource Target", contentRoot);
+test("Library items copy into a visible From Library folder", async () => {
+  assert.equal(resourceLibraryRoot(), join(stateRoot, "resources"));
+  const workspace = await createManagedWorkspace("Library Target", contentRoot);
   await uploadResourceFiles("", [{ fileName: "template.md", data: Buffer.from("# Template\n") }]);
   assert.equal((await listResourceTree())[0]?.path, "template.md");
-  const copied = await copyResourcesToWorkspace(workspace.rootPath, ["template.md"], "Resources");
-  assert.deepEqual(copied, ["Resources/template.md"]);
-  assert.equal(await readFile(join(workspace.rootPath, "Resources", "template.md"), "utf8"), "# Template\n");
+  const copied = await copyResourcesToWorkspace(workspace.rootPath, ["template.md"], "From Library");
+  assert.deepEqual(copied, ["From Library/template.md"]);
+  assert.equal(await readFile(join(workspace.rootPath, "From Library", "template.md"), "utf8"), "# Template\n");
 });
 
 test("restore points live externally and can restore workspace files", async () => {

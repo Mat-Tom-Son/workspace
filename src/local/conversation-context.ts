@@ -82,7 +82,7 @@ async function loadAttachment(rootPath: string, sourcePath: string, remaining: n
       provenance: [],
       warnings: [],
       userLabel: "Path only",
-      detail: `The workspace-relative path is attached. Pi can inspect the file with tools. Reason: ${reason}`,
+      detail: `The Space-relative path is attached. Pi can inspect the file with tools. Reason: ${reason}`,
       text: null,
     };
   }

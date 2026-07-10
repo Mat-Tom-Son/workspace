@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
   },
   workspace: {
     chooseFolder: () => ipcRenderer.invoke("workspace:workspace:choose-folder"),
+    revealFolder: (workspaceId: string) => ipcRenderer.invoke("workspace:workspace:reveal-folder", workspaceId),
     onOpenFolder: (callback: () => void) => {
       const listener = () => callback();
       ipcRenderer.on("workspace:menu:open-folder", listener);

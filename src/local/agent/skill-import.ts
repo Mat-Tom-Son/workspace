@@ -44,7 +44,7 @@ export async function importPiSkillBundle(
   const runtime = await resolvePiRuntime(workspaceRoot, runtimeProvider, { requestProjectTrust: false });
   const scope = input.scope ?? "user";
   if (scope === "project" && !projectImportTrusted(runtime)) {
-    throw new Error("Trust this workspace before importing project-scoped skills.");
+    throw new Error("Trust this Space before importing Space-scoped Skills.");
   }
 
   let archive: JSZip;
@@ -139,7 +139,7 @@ async function importStandaloneSkill(
   const runtime = await resolvePiRuntime(workspaceRoot, runtimeProvider, { requestProjectTrust: false });
   const scope = input.scope ?? "user";
   if (scope === "project" && !projectImportTrusted(runtime)) {
-    throw new Error("Trust this workspace before importing project-scoped skills.");
+    throw new Error("Trust this Space before importing Space-scoped Skills.");
   }
   const destinationRoot = scope === "project"
     ? join(workspaceRoot, ".pi", "skills")

@@ -22,6 +22,7 @@ import {
 import { RoutedPiExtensionUiBridge, type PiExtensionUiEvent } from "../../src/local/agent/extension-ui.js";
 import { defaultAgentSdkDir } from "../../src/local/agent/agent-data-dir.js";
 import { startLocalApi } from "../../src/local/server.js";
+import { getWorkspace } from "../../src/local/workspace.js";
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateCheckResult } from "./updater.js";
@@ -193,11 +194,18 @@ function registerIpc(): void {
   ipcMain.handle("workspace:workspace:choose-folder", async (event) => {
     assertTrustedRenderer(event);
     const result = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, { title: "Open a folder", properties: ["openDirectory", "createDirectory"] })
-      : await dialog.showOpenDialog({ title: "Open a folder", properties: ["openDirectory", "createDirectory"] });
+      ? await dialog.showOpenDialog(mainWindow, { title: "Choose a folder to turn into a Space", properties: ["openDirectory", "createDirectory"] })
+      : await dialog.showOpenDialog({ title: "Choose a folder to turn into a Space", properties: ["openDirectory", "createDirectory"] });
     const rootPath = result.filePaths[0];
     if (result.canceled || !rootPath) return null;
     return { path: rootPath, folderGrantId: createFolderGrant(rootPath) };
+  });
+  ipcMain.handle("workspace:workspace:reveal-folder", async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    if (typeof value !== "string") throw new Error("A Space id is required.");
+    const workspace = await getWorkspace(value);
+    const error = await shell.openPath(workspace.rootPath);
+    if (error) throw new Error(`Workspace could not show this Space's folder. ${error}`);
   });
   ipcMain.handle("workspace:shell:open-external", async (event, value: unknown) => {
     assertTrustedRenderer(event);
@@ -225,7 +233,7 @@ function configureMenu(): void {
     {
       label: "File",
       submenu: [
-        { label: "Open folder…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("workspace:menu:open-folder") },
+        { label: "Turn Folder into a Space…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("workspace:menu:open-folder") },
         { type: "separator" },
         process.platform === "darwin" ? { role: "close" } : { role: "quit" },
       ],

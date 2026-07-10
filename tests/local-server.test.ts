@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { startLocalApi } from "../src/local/server.js";
 
-test("local API covers workspace files, resources, and external restore points", async () => {
+test("local API covers Space files, the Library, and external restore points", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-api-test-"));
   const api = await startLocalApi({
     port: 0,
@@ -23,7 +23,7 @@ test("local API covers workspace files, resources, and external restore points",
     const created = await json(`${api.origin}/api/workspaces`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "API Workspace" }),
+      body: JSON.stringify({ name: "API Space" }),
     }) as { workspace: { id: string } };
 
     const files = new FormData();
@@ -38,12 +38,18 @@ test("local API covers workspace files, resources, and external restore points",
     resources.set("targetFolderPath", "");
     resources.set("relativePaths", JSON.stringify(["reference.txt"]));
     resources.append("files", new Blob(["reference"]), "reference.txt");
-    await ok(`${api.origin}/api/resources/upload`, { method: "POST", body: resources });
-    await ok(`${api.origin}/api/resources/copy-to-workspace`, {
+    const uploadedLibraryItem = await json(`${api.origin}/api/resources/upload`, { method: "POST", body: resources }) as { uploaded: Array<{ path: string }> };
+    assert.equal(uploadedLibraryItem.uploaded[0]?.path, "reference.txt");
+    const libraryTree = await json(`${api.origin}/api/resources/tree`) as { tree: Array<{ path: string }> };
+    assert.equal(libraryTree.tree[0]?.path, "reference.txt");
+    const copiedLibraryItem = await json(`${api.origin}/api/resources/copy-to-workspace`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workspaceId: created.workspace.id, paths: ["reference.txt"], targetFolder: "Resources" }),
-    });
+      body: JSON.stringify({ workspaceId: created.workspace.id, paths: ["reference.txt"] }),
+    }) as { copied: string[] };
+    assert.deepEqual(copiedLibraryItem.copied, ["From Library/reference.txt"]);
+    const libraryPreview = await json(`${api.origin}/api/workspaces/${created.workspace.id}/file?path=From%20Library%2Freference.txt`) as { text: string };
+    assert.equal(libraryPreview.text, "reference");
 
     const checkpoint = await json(`${api.origin}/api/workspaces/${created.workspace.id}/history/checkpoints`, {
       method: "POST",

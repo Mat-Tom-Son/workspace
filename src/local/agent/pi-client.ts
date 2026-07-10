@@ -93,7 +93,7 @@ export class PiConversationClient extends EventEmitter {
 
   /** Sends the user's exact text to Pi; /skill and extension commands stay raw. */
   async prompt(message: string, context: PiTurnContext = {}): Promise<string> {
-    if (this.promptInFlight) throw new Error("An agent turn is already running for this chat.");
+    if (this.promptInFlight) throw new Error("The Assistant is already working in this Chat.");
     this.promptInFlight = true;
     try {
       const session = await this.ensureSession();
@@ -118,7 +118,7 @@ export class PiConversationClient extends EventEmitter {
         }
       }
 
-      this.emitEvent({ type: "status", message: "Agent is working in the selected workspace." });
+      this.emitEvent({ type: "status", message: "The Assistant is working in this Space." });
       const messagesBefore = session.messages.length;
       await this.promptWithTimeout(session, message);
       if (this.turnError) throw this.turnError;
@@ -145,14 +145,14 @@ export class PiConversationClient extends EventEmitter {
   }
 
   async compact(customInstructions?: string): Promise<void> {
-    if (this.promptInFlight) throw new Error("Wait for the current agent turn to finish before compacting.");
+    if (this.promptInFlight) throw new Error("Wait for the Assistant to finish before compacting this Chat.");
     const session = await this.ensureSession();
     this.emitEvent({ type: "status", message: "Compacting conversation context." });
     await session.compact(customInstructions);
   }
 
   async reloadResources(): Promise<PiResourceCatalog> {
-    if (this.promptInFlight) throw new Error("Wait for the current agent turn to finish before reloading resources.");
+    if (this.promptInFlight) throw new Error("Wait for the Assistant to finish before reloading Pi resources.");
     const session = await this.ensureSession();
     await session.reload();
     const catalog = await this.getCatalog();
@@ -331,7 +331,7 @@ export class PiConversationClient extends EventEmitter {
     const timeoutMs = piTurnTimeoutMs();
     const heartbeat = heartbeatMs > 0 ? setInterval(() => {
       const minutes = Math.max(1, Math.floor((Date.now() - startedAt) / 60_000));
-      this.emitEvent({ type: "status", message: `Agent is still working (${minutes} min).` });
+      this.emitEvent({ type: "status", message: `The Assistant is still working (${minutes} min).` });
     }, heartbeatMs) : undefined;
     let timeout: NodeJS.Timeout | undefined;
 
@@ -582,7 +582,7 @@ export class PiConversationClient extends EventEmitter {
     const normalized = args.trim().toLowerCase();
     if (!normalized) {
       const trust = this.resolvedRuntime!.projectTrust;
-      return `Project resources are ${trust.trusted ? "trusted" : "not trusted"}${trust.required ? "" : " (no trust-gated resources found)"}.`;
+      return `This Space is ${trust.trusted ? "trusted" : "not trusted"}${trust.required ? "" : " (no trust-gated capabilities found)"}.`;
     }
     const decision = ["yes", "trust", "trusted"].includes(normalized)
       ? true
@@ -593,8 +593,8 @@ export class PiConversationClient extends EventEmitter {
     new ProjectTrustStore(this.resolvedRuntime!.agentDir).set(this.workspaceRoot, decision);
     await this.stop();
     return decision === null
-      ? "Cleared the saved project-trust decision. Workspace will ask again when supported by the host."
-      : `Saved this workspace as ${decision ? "trusted" : "untrusted"}. The next turn will reload Pi resources.`;
+      ? "Cleared the saved Space-trust decision. Workspace will ask again when supported by the host."
+      : `Saved this Space as ${decision ? "trusted" : "untrusted"}. The next turn will reload its Pi capabilities.`;
   }
 
   private uiBridge(): PiExtensionUiBridge {
@@ -637,7 +637,7 @@ function buildTurnContextMessage(context: PiTurnContext): string {
   const lines: string[] = [];
   if (context.selectedPath) {
     lines.push(
-      "The user currently has this workspace path selected (path metadata only):",
+      "The user currently has this Space path selected (path metadata only):",
       JSON.stringify({ selectedPath: context.selectedPath }),
       "Inspect it with tools before making claims about its contents.",
     );

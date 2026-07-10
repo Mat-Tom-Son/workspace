@@ -83,7 +83,7 @@ export async function registerLinkedWorkspace(rootPath: string, providerHint?: "
   const safeRoot = ensureSafeWorkspaceRoot(rootPath);
   assertLinkedWorkspaceStateSeparation(safeRoot);
   const info = await stat(safeRoot).catch(() => null);
-  if (!info?.isDirectory()) throw new Error("The selected workspace folder does not exist.");
+  if (!info?.isDirectory()) throw new Error("The folder selected for this Space does not exist.");
   return registerWorkspace({
     name: basename(safeRoot),
     rootPath: safeRoot,
@@ -98,7 +98,7 @@ export async function registerLinkedWorkspace(rootPath: string, providerHint?: "
 export async function getWorkspace(workspaceId: string): Promise<WorkspaceSummary> {
   assertId(workspaceId);
   const workspace = (await listWorkspaces()).find((item) => item.id === workspaceId);
-  if (!workspace) throw notFound("Workspace not found.");
+  if (!workspace) throw notFound("Space not found.");
   if (workspace.location.storage === "linked") assertLinkedWorkspaceStateSeparation(workspace.rootPath);
   return workspace;
 }
@@ -155,18 +155,18 @@ export function resolveWorkspacePath(rootPath: string, relativePath: string): st
   const root = ensureSafeWorkspaceRoot(rootPath);
   const normalized = normalizeRelative(relativePath || ".");
   if (isAbsolute(relativePath) || normalized.split("/").includes("..")) {
-    throw new Error("Path escapes the selected workspace.");
+    throw new Error("Path escapes the selected Space.");
   }
   const path = resolve(root, normalized || ".");
-  if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error("Path escapes the selected workspace.");
+  if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error("Path escapes the selected Space.");
   assertNoLinkSegments(root, path);
   return path;
 }
 
 export function ensureSafeWorkspaceRoot(rootPath: string): string {
   const resolved = resolve(rootPath);
-  if (!isAbsolute(resolved) || resolved === parse(resolved).root) throw new Error("A filesystem root cannot be used as a workspace.");
-  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) throw new Error("A workspace cannot be a symbolic link or junction.");
+  if (!isAbsolute(resolved) || resolved === parse(resolved).root) throw new Error("A filesystem root cannot be used as a Space.");
+  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) throw new Error("A Space cannot be a symbolic link or junction.");
   return resolved;
 }
 
@@ -174,7 +174,7 @@ export function assertWorkspaceDoesNotContainState(rootPath: string): void {
   const root = ensureSafeWorkspaceRoot(rootPath);
   const stateRoot = resolve(workspaceStateRoot());
   if (pathContains(root, stateRoot)) {
-    throw new Error("Choose a narrower workspace folder that does not contain Workspace application data.");
+    throw new Error("Choose a narrower folder that does not contain Workspace application data.");
   }
 }
 
@@ -277,8 +277,8 @@ async function scanDirectory(root: string, directory: string, depth: number, max
 
 async function copyVisiblePath(source: string, destination: string): Promise<void> {
   const info = await stat(source).catch(() => null);
-  if (!info) throw notFound("Resource not found.");
-  if (lstatSync(source).isSymbolicLink()) throw new Error("Symbolic links cannot be copied into a workspace.");
+  if (!info) throw notFound("Library item not found.");
+  if (lstatSync(source).isSymbolicLink()) throw new Error("Symbolic links cannot be copied into a Space.");
   if (info.isFile()) {
     await copyFile(source, destination, 1);
     return;
@@ -320,7 +320,7 @@ function assertNoLinkSegments(root: string, path: string): void {
   for (const segment of rel.split(sep).filter(Boolean)) {
     cursor = join(cursor, segment);
     if (!existsSync(cursor)) return;
-    if (lstatSync(cursor).isSymbolicLink()) throw new Error("Workspace paths cannot traverse symbolic links or junctions.");
+    if (lstatSync(cursor).isSymbolicLink()) throw new Error("Space paths cannot traverse symbolic links or junctions.");
   }
 }
 
@@ -342,7 +342,7 @@ function safeFileName(value: string): string {
 
 function normalizeWorkspaceName(value: string): string {
   const name = value.replace(/\s+/g, " ").trim().slice(0, 80);
-  if (!name) throw new Error("Workspace name is required.");
+  if (!name) throw new Error("Space name is required.");
   return name;
 }
 
@@ -406,7 +406,7 @@ function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
 }
 
 function assertId(value: string): void {
-  if (!/^ws-[a-f0-9]{16}$/.test(value)) throw new Error("Invalid workspace id.");
+  if (!/^ws-[a-f0-9]{16}$/.test(value)) throw new Error("Invalid Space id.");
 }
 
 function notFound(message: string): Error {

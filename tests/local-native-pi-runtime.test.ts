@@ -122,7 +122,7 @@ test("project skill imports require an explicit trust decision", async (t) => {
 
   await assert.rejects(
     importPiSkillBundle(workspaceRoot, { fileName: "SKILL.md", bytes, scope: "project" }, provider),
-    /Trust this workspace/,
+    /Trust this Space/,
   );
   new ProjectTrustStore(agentDir).set(workspaceRoot, true);
   const result = await importPiSkillBundle(workspaceRoot, { fileName: "SKILL.md", bytes, scope: "project" }, provider);

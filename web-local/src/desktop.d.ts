@@ -21,6 +21,7 @@ declare global {
       };
       workspace: {
         chooseFolder: () => Promise<{ path: string; folderGrantId: string } | null>;
+        revealFolder?: (workspaceId: string) => Promise<void>;
         onOpenFolder?: (callback: () => void) => () => void;
       };
       agent: {

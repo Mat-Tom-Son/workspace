@@ -49,7 +49,7 @@ export async function listConversations(workspaceRoot: string): Promise<Conversa
   return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export async function createConversation(workspaceRoot: string, title = "Workspace chat"): Promise<ConversationSummary> {
+export async function createConversation(workspaceRoot: string, title = "New Chat"): Promise<ConversationSummary> {
   const now = new Date().toISOString();
   const id = `chat-${randomUUID()}`;
   await appendMessage(workspaceRoot, id, { id: randomUUID(), role: "system", content: title, createdAt: now });
@@ -149,7 +149,7 @@ function conversationSummary(conversationId: string, messages: ChatMessage[]): C
   const last = messages[messages.length - 1];
   return {
     id: conversationId,
-    title: manualConversationTitle(messages) || generatedConversationTitle(messages) || firstUser?.content.slice(0, 70) || "Workspace chat",
+    title: manualConversationTitle(messages) || generatedConversationTitle(messages) || firstUser?.content.slice(0, 70) || "New Chat",
     createdAt: messages[0]?.createdAt ?? new Date().toISOString(),
     updatedAt: last?.createdAt ?? new Date().toISOString(),
   };

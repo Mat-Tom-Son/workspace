@@ -1,13 +1,37 @@
 # Workspace
 
-Workspace is a local-first Electron app for working with folders, files, and a native [Pi](https://pi.dev) agent in one place.
+Workspace is a local-first Electron app that gives every kind of computer work a place, with a native [Pi](https://pi.dev) assistant built in.
 
-The desktop app keeps your content in ordinary folders. Provider credentials, conversations, and app preferences live in application or Pi storage outside those folders unless you intentionally add portable `.pi` project configuration.
+In the product, that place is called a **Space**: an understandable working context backed by an ordinary folder. A person can create a new Space and let Workspace create its folder, or turn an existing folder on their computer into a Space without moving or converting its files. Provider credentials, conversations, and app preferences live in application or Pi storage outside Space folders unless the person intentionally adds portable `.pi` project configuration.
+
+## Product model
+
+| Concept | What it means |
+|---|---|
+| **Workspace** | The product: an environment for general computer work. |
+| **Space** | Everything associated with one activity, backed by an ordinary folder. |
+| **Library** | Reusable personal materials that can be brought into any Space. |
+| **Skill** | A reusable way of working that guides the Assistant. |
+| **Extension** | A capability or connection the Assistant can use. |
+
+The primary navigation follows the same model:
+
+- **Space**
+- **Chats**
+- **Library**
+- **History**
+- **Assistant**
+  - **Setup**
+  - **Skills**
+  - **Extensions**
+
+The folder is an implementation detail, but never a proprietary boundary. Space files remain ordinary files that can be opened in other apps, synchronized by desktop storage tools, backed up, or revealed in the operating system.
 
 ## What it supports
 
-- Local folders as workspaces, including folders synchronized by tools such as Google Drive for desktop.
-- File browsing, uploads, previews, chat attachments, and ordinary-folder access.
+- Creating a new Space or turning an existing local folder into a Space, including folders synchronized by tools such as Google Drive for desktop.
+- Space file browsing, uploads, previews, chat attachments, and ordinary-folder access.
+- A personal Library for organizing reusable files and copying them into Spaces when needed.
 - Pi's normal built-in tools, provider/model selection, authentication, prompt templates, context files, and packages.
 - Global and trusted-project Pi extensions.
 - Agent Skills from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
@@ -46,14 +70,14 @@ The release workflow supports an optional PFX certificate through GitHub secrets
 
 See [Windows builds](docs/windows-build.md) and [Windows releases and signing](docs/windows-release.md).
 
-## Pi resources
+## Pi integration resources
 
-Workspace follows Pi's native resource locations rather than maintaining a separate tool system:
+The user-facing **Library** contains personal materials. Separately, Workspace follows Pi's native resource locations for Assistant configuration rather than maintaining a parallel tool system:
 
 - User resources: the configured Pi agent directory (normally `~/.pi/agent`).
-- Portable project resources: `.pi/` inside a workspace that the user has explicitly trusted.
+- Portable project resources: `.pi/` inside a Space folder that the user has explicitly trusted.
 - Packages: npm, git, HTTPS, and local package sources supported by Pi.
 
-Npm and git package sources use the corresponding command-line tools on `PATH`; local package paths and Skill imports do not require them. The packaged app uses Pi's normal global agent directory (typically `~/.pi/agent`) for packages and resources, while provider credentials are encrypted by the operating system for Workspace.
+Npm and git package sources use the corresponding command-line tools on `PATH`; local package paths and Skill imports do not require them. The packaged app uses Pi's normal global agent directory (typically `~/.pi/agent`) for packages and resources, while provider credentials are encrypted by the operating system for Workspace. Internal APIs and code may retain terms such as `workspace`, `project`, and `resource` where they identify existing Pi or storage concepts; those names do not change the user-facing Space, Library, Skill, and Extension model.
 
 See [Pi resources and compatibility](docs/pi-resources.md) for the trust and skill-pack model.
