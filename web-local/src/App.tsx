@@ -1,679 +1,780 @@
-import {
-  Bot, Check, ChevronDown, ChevronRight, CirclePlus, Clock3, Cloud, Code2, Copy,
-  File, FileText, Folder, FolderOpen, History, LibraryBig, Loader2, MessageSquare, Package,
-  Paperclip, Plug, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, Trash2, Upload, X,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { AlertTriangle, CirclePlus, Download, FilePlus2, FolderOpen, FolderPlus, History, Loader2, Palette, RefreshCw, Search, Settings2, Upload, X } from "lucide-react";
 
-import { api, apiForm, createEventSource, errorText } from "./lib/api";
-import { assistantNavigation, primaryNavigation, welcomeActions } from "./ui-contract";
-import type {
-  AgentCatalog, AgentModel, AgentStatus, BootstrapResponse, ChatMessage, ChatStreamEvent,
-  ConversationSummary, ExtensionUiRequest, TreeEntry, WorkspaceCheckpoint, WorkspacePane,
-  WorkspaceSummary,
-} from "./types";
+import { defaultTypographyPreference, productName, textSizeValues, themePreferenceKey, typographyFontValues, typographyPreferenceKey, workspaceCustomizationStorageKey, workspacePathDragType } from "./constants";
+import { ChatPanel } from "./components/chat/ChatPanel";
+import { ChatRenamePopover } from "./components/chat/ChatRenamePopover";
+import { WorkspaceSurfaceTabBar } from "./components/chat/WorkspaceSurfaceTabBar";
+import { Banner, CenteredState, EmptyInline, WorkspaceIconGlyph } from "./components/chrome/common";
+import { DesktopTitleBar } from "./components/chrome/DesktopTitleBar";
+import { CommandPaletteHost, type CommandPaletteCommand } from "./components/modals/CommandPaletteHost";
+import { CreateSpaceModal } from "./components/modals/CreateSpaceModal";
+import { DesktopSettingsModal } from "./components/modals/DesktopSettingsModal";
+import { FileVersionHistoryModal } from "./components/modals/FileVersionHistoryModal";
+import { KeyboardShortcutsModal } from "./components/modals/KeyboardShortcutsModal";
+import { OnboardingFlow } from "./components/onboarding/OnboardingFlow";
+import { FileDetailsPane } from "./components/panes/FileDetailsPane";
+import { WorkspaceAppearancePanel, WorkspaceModeRail, WorkspacePaneHeader } from "./components/panes/workspaceChrome";
+import { AssistantCapabilityPane, AssistantSetupPane, ChatsPane, HistoryPane, LibraryPane, SpacesPane } from "./components/panes/workspacePanes";
+import { FileContextMenu } from "./components/tree/FileContextMenu";
+import { FileTree, FileTreeLoadingState } from "./components/tree/FileTree";
+import type { WorkspaceUiFixture } from "./fixtures/workspace-fixture";
+import { usePaneResize } from "./hooks/usePaneResize";
+import { useSurfaceTabs } from "./hooks/useSurfaceTabs";
+import { useWorkspaceTree } from "./hooks/useWorkspaceTree";
+import { api, apiForm, apiUrl, errorText } from "./lib/api";
+import { hasNativeFiles, hasWorkspacePathDrag } from "./lib/file-actions";
+import { formatItemCount } from "./lib/format";
+import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
+import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry, removeTreeEntries } from "./lib/tree";
+import { workspaceIdentityFor, workspaceIdentityStyle } from "./lib/workspace-identity";
+import { removeWorkspaceConfirmText, surfacePanelDomId, surfaceTabDomId, workspaceHeaderSourceBadgeLabel } from "./lib/workspace-ui";
+import type { AppTheme, AppThemePreference, AppTypographyFont, AppTypographyPreference, BootstrapResponse, ChatContextPathRequest, ChatRenameState, ConversationSummary, DesktopUpdateStatus, FileContextMenuState, TreeEntry, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspacePane, WorkspaceRailMode, WorkspaceSummary } from "./types";
+import { ConfirmDialogHost, requestConfirm, showToast, ToastHost } from "./ui/feedback";
 
-const primaryPaneItems: Array<{ id: WorkspacePane; label: string; icon: ReactNode }> = [
-  { ...primaryNavigation[0], icon: <FolderOpen size={18} /> },
-  { ...primaryNavigation[1], icon: <MessageSquare size={19} /> },
-  { ...primaryNavigation[2], icon: <LibraryBig size={19} /> },
-  { ...primaryNavigation[3], icon: <History size={19} /> },
-];
+const fixtureRequested = new URLSearchParams(window.location.search).get("fixture") === "workspace";
 
-const assistantPaneItems: Array<{ id: "skills" | "extensions"; label: string; icon: ReactNode }> = [
-  { ...assistantNavigation[1], icon: <Sparkles size={18} /> },
-  { ...assistantNavigation[2], icon: <Plug size={18} /> },
-];
+interface DroppedUploadFile { file: File; relativePath: string }
+interface PendingDelete {
+  workspaceId: string;
+  path: string;
+  name: string;
+  selectedPath: string | null;
+  deletedTabPaths: Set<string>;
+}
 
 export function App() {
+  const [theme, themePreference, setThemePreference] = useThemePreference();
+  const [typography, setTypography] = useTypographyPreference();
+  const [fixture, setFixture] = useState<WorkspaceUiFixture | null>(null);
   const [boot, setBoot] = useState<BootstrapResponse | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => localStorage.getItem("workspace.active") ?? "");
-  const [pane, setPane] = useState<WorkspacePane>("space");
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const keyboardShortcutsReturnFocusRef = useRef<HTMLElement | null>(null);
+  const [desktopAction, setDesktopAction] = useState<{ id: number; command: "new-chat" | "open-setup" | "open-skills" | "open-extensions" | "open-command-palette" } | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus | null>(null);
+  const showDesktopTitleBar = window.workspaceDesktop?.app.platform === "win32";
 
-  const activeWorkspace = useMemo(() => {
-    if (!boot?.workspaces.length) return null;
-    return boot.workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? boot.workspaces[0] ?? null;
-  }, [activeWorkspaceId, boot]);
-
-  useEffect(() => {
-    void refreshBootstrap();
+  const openKeyboardShortcuts = useCallback(() => {
+    keyboardShortcutsReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setShortcutsOpen(true);
+  }, []);
+  const closeKeyboardShortcuts = useCallback(() => {
+    setShortcutsOpen(false);
+    const returnFocus = keyboardShortcutsReturnFocusRef.current;
+    window.requestAnimationFrame(() => { if (returnFocus?.isConnected) returnFocus.focus(); });
   }, []);
 
-  useEffect(() => window.workspaceDesktop?.workspace.onOpenFolder?.(() => {
-    void openFolder();
-  }), []);
+  useScrollbarActivity();
+  useDesktopAccentColor();
 
-  useEffect(() => window.workspaceDesktop?.agent.onOpenSettings?.(() => {
-    setPane("setup");
-  }), []);
-
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    localStorage.setItem("workspace.active", activeWorkspace.id);
-    setActiveWorkspaceId(activeWorkspace.id);
-  }, [activeWorkspace?.id]);
-
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    let cancelled = false;
-    void api<{ status: AgentStatus }>(`/api/agent/status?workspaceId=${encodeURIComponent(activeWorkspace.id)}`)
-      .then((result) => {
-        if (!cancelled) setBoot((current) => current ? { ...current, agent: result.status } : current);
-      })
-      .catch((statusError) => { if (!cancelled) setError(errorText(statusError)); });
-    return () => { cancelled = true; };
-  }, [activeWorkspace?.id]);
-
-  async function refreshBootstrap() {
+  const refreshBootstrap = useCallback(async () => {
+    if (fixtureRequested) return;
     try {
       const result = await api<BootstrapResponse>("/api/bootstrap");
       setBoot(result);
-      setActiveWorkspaceId((current) => result.workspaces.some((workspace) => workspace.id === current)
-        ? current
-        : result.workspaces[0]?.id ?? "");
-    } catch (loadError) {
-      setError(errorText(loadError));
-    }
-  }
+      setActiveWorkspaceId((current) => result.workspaces.some((item) => item.id === current) ? current : result.workspaces[0]?.id ?? "");
+    } catch (caught) { setError(errorText(caught)); }
+  }, []);
 
-  async function createWorkspace(name: string): Promise<boolean> {
-    setCreating(true);
-    setError(null);
-    try {
-      const result = await api<{ workspace: WorkspaceSummary }>("/api/workspaces", {
-        method: "POST",
-        body: { name },
-      });
-      await refreshBootstrap();
-      setActiveWorkspaceId(result.workspace.id);
-      return true;
-    } catch (createError) {
-      setError(errorText(createError));
-      return false;
-    } finally {
-      setCreating(false);
+  useEffect(() => {
+    if (fixtureRequested) {
+      void import("./fixtures/workspace-fixture").then(({ buildWorkspaceFixture }) => {
+        const next = buildWorkspaceFixture(); setFixture(next); setBoot({ workspaces: next.workspaces, agent: next.agent }); setActiveWorkspaceId(next.activeWorkspaceId);
+      }).catch((caught) => setError(errorText(caught)));
+      return;
     }
+    void refreshBootstrap();
+  }, [refreshBootstrap]);
+
+  const activeWorkspace = useMemo(() => boot?.workspaces.find((item) => item.id === activeWorkspaceId) ?? boot?.workspaces[0] ?? null, [activeWorkspaceId, boot]);
+  useEffect(() => { if (activeWorkspace) { if (!fixtureRequested) localStorage.setItem("workspace.active", activeWorkspace.id); setActiveWorkspaceId(activeWorkspace.id); } }, [activeWorkspace?.id]);
+  useEffect(() => {
+    const updates = window.workspaceDesktop?.updates;
+    if (!updates) return;
+    let cancelled = false;
+    void updates.getStatus().then((status) => { if (!cancelled) setUpdateStatus(status); }).catch((caught) => { if (!cancelled) setError(errorText(caught)); });
+    const unsubscribe = updates.onStatusChanged((status) => { if (!cancelled) setUpdateStatus(status); });
+    return () => { cancelled = true; unsubscribe(); };
+  }, []);
+  useEffect(() => {
+    const menu = window.workspaceDesktop?.menu;
+    if (!menu) return;
+    menu.setState({ spaceOpen: Boolean(activeWorkspace) });
+    return menu.onCommand((command) => {
+      if (command === "new-space") setCreateSpaceOpen(true);
+      else if (command === "open-local-folder") void openFolder();
+      else if (command === "reload-workspace-state") void refreshBootstrap();
+      else if (command === "check-for-updates") void checkForUpdates();
+      else if (command === "open-settings") setSettingsOpen(true);
+      else if (command === "open-keyboard-shortcuts") openKeyboardShortcuts();
+      else if (command === "new-chat" || command === "open-skills" || command === "open-extensions" || command === "open-command-palette") {
+        setDesktopAction({ id: Date.now(), command });
+      }
+    });
+  }, [activeWorkspace?.id, openKeyboardShortcuts, refreshBootstrap]);
+  useEffect(() => {
+    function keydown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "/" || event.code === "Slash")) {
+        if (document.querySelector('[role="dialog"]')) return;
+        event.preventDefault();
+        openKeyboardShortcuts();
+      }
+    }
+    window.addEventListener("keydown", keydown); return () => window.removeEventListener("keydown", keydown);
+  }, [openKeyboardShortcuts]);
+  useEffect(() => {
+    const unsubscribe = window.workspaceDesktop?.runtime.onRendererRecovered?.(() => {
+      showToast({ text: "Workspace recovered from a problem and reloaded.", tone: "info" });
+    });
+    return unsubscribe;
+  }, []);
+  useEffect(() => window.workspaceDesktop?.agent.onOpenSettings(() => setDesktopAction({ id: Date.now(), command: "open-setup" })), []);
+
+  async function createSpace(name: string) {
+    if (fixtureRequested) { setCreateSpaceOpen(false); showToast({ text: "Space creation is disabled in the preview", tone: "info" }); return; }
+    const result = await api<{ workspace: WorkspaceSummary }>("/api/workspaces", { method: "POST", body: { name } });
+    await refreshBootstrap(); setActiveWorkspaceId(result.workspace.id); setCreateSpaceOpen(false);
   }
 
   async function openFolder() {
     const picker = window.workspaceDesktop?.workspace;
-    if (!picker) {
-      setError("Turning a folder into a Space is available in the desktop app.");
-      return;
-    }
-    setError(null);
+    if (!picker) return setError("Folder selection is available in the desktop app.");
     try {
-      const selected = await picker.chooseFolder();
-      if (!selected) return;
-      const result = await api<{ workspace: WorkspaceSummary }>("/api/workspaces/local-folder", {
-        method: "POST",
-        body: { rootPath: selected.path, folderGrantId: selected.folderGrantId },
-      });
-      await refreshBootstrap();
-      setActiveWorkspaceId(result.workspace.id);
-    } catch (openError) {
-      setError(errorText(openError));
-    }
+      const selected = await picker.chooseFolder(); if (!selected) return;
+      const result = await api<{ workspace: WorkspaceSummary }>("/api/workspaces/local-folder", { method: "POST", body: { rootPath: selected.path, folderGrantId: selected.folderGrantId } });
+      await refreshBootstrap(); setActiveWorkspaceId(result.workspace.id);
+    } catch (caught) { setError(errorText(caught)); }
   }
 
-  if (!boot) {
-    return <Centered icon={<Loader2 className="spin" />} title="Opening Workspace" detail={error ?? "Loading your Spaces and Assistant."} />;
+  async function checkForUpdates() {
+    try { const status = await window.workspaceDesktop?.updates.check(); if (status) setUpdateStatus(status); } catch (caught) { setError(errorText(caught)); }
   }
 
-  if (!activeWorkspace) {
-    return <Welcome creating={creating} error={error} onCreate={createWorkspace} onOpenFolder={openFolder} />;
+  async function runUpdateAction() {
+    const updates = window.workspaceDesktop?.updates;
+    if (!updates) return;
+    try {
+      const status = updateStatus?.phase === "ready"
+        ? await updates.install()
+        : updateStatus?.phase === "available" || updateStatus?.phase === "error"
+          ? await updates.updateNow()
+          : await updates.check();
+      setUpdateStatus(status);
+    } catch (caught) { setError(errorText(caught)); }
   }
 
-  return (
-    <div className="workspace-app">
-      <nav className="mode-rail" aria-label="Workspace sections">
-        <div className="brand-lockup" aria-label="Workspace"><span>W</span><strong>Workspace</strong></div>
-        <div className="rail-items">
-          {primaryPaneItems.map((item) => (
-            <button className={pane === item.id ? "rail-button active" : "rail-button"} type="button" key={item.id} onClick={() => setPane(item.id)} title={item.label} aria-label={item.label} aria-current={pane === item.id ? "page" : undefined}>
-              {item.icon}<span>{item.label}</span>
-            </button>
-          ))}
-          <div className={pane === "setup" || pane === "skills" || pane === "extensions" ? "rail-group active" : "rail-group"} role="group" aria-label="Assistant">
-            <div className="rail-group-label"><Bot size={18} /><span>Assistant</span><i className={boot.agent.configured ? "status-dot ready" : "status-dot"} /></div>
-            <button className={pane === "setup" ? "rail-subbutton active" : "rail-subbutton"} type="button" onClick={() => setPane("setup")} title="Assistant setup" aria-label="Assistant Setup" aria-current={pane === "setup" ? "page" : undefined}>
-              <Settings2 size={17} /><span>{assistantNavigation[0].label}</span>
-            </button>
-            {assistantPaneItems.map((item) => (
-              <button className={pane === item.id ? "rail-subbutton active" : "rail-subbutton"} type="button" key={item.id} onClick={() => setPane(item.id)} title={item.label} aria-label={`Assistant ${item.label}`} aria-current={pane === item.id ? "page" : undefined}>
-                {item.icon}<span>{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </nav>
+  if (!boot || (fixtureRequested && !fixture)) return <div className={`app-shell${showDesktopTitleBar ? " desktop-chrome-shell" : ""}`} data-theme={theme}>{showDesktopTitleBar ? <DesktopTitleBar /> : null}<CenteredState icon={<Loader2 className="spin" size={28} />} title={`Opening ${productName}`} text={error ?? "Loading your Spaces and Assistant."} /></div>;
 
-      <WorkspaceSurface
-        key={activeWorkspace.id}
-        pane={pane}
-        workspace={activeWorkspace}
-        workspaces={boot.workspaces}
-        agent={boot.agent}
-        onAgentChanged={(agent) => setBoot((current) => current ? { ...current, agent } : current)}
-        onSwitchWorkspace={setActiveWorkspaceId}
-        onOpenFolder={openFolder}
-        onCreateSpace={() => setCreateSpaceOpen(true)}
-        onOpenSetup={() => setPane("setup")}
-        onError={setError}
-      />
-
-      {error ? <div className="global-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><X size={15} /></button></div> : null}
-      {createSpaceOpen ? <CreateSpaceDialog creating={creating} onClose={() => setCreateSpaceOpen(false)} onCreate={createWorkspace} /> : null}
-    </div>
-  );
+  return <div className={`app-shell${showDesktopTitleBar ? " desktop-chrome-shell" : ""}`} data-theme={theme}>
+    {showDesktopTitleBar ? <DesktopTitleBar /> : null}
+    {activeWorkspace ? <WorkspaceView workspace={activeWorkspace} workspaces={boot.workspaces} agent={boot.agent} fixture={fixture} desktopAction={desktopAction} updateStatus={updateStatus} themePreference={themePreference} onThemePreferenceChange={setThemePreference} onUpdateAction={() => void runUpdateAction()} onAgentChanged={(agent) => setBoot((current) => current ? { ...current, agent } : current)} onSwitchWorkspace={(workspace) => setActiveWorkspaceId(workspace.id)} onRefreshBootstrap={refreshBootstrap} onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} onOpenSettings={() => setSettingsOpen(true)} onOpenShortcuts={openKeyboardShortcuts} onError={setError} /> : <OnboardingFlow onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} />}
+    {error ? <div className="global-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss"><X size={15} /></button></div> : null}
+    {createSpaceOpen ? <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} onCreate={createSpace} /> : null}
+    {settingsOpen ? <DesktopSettingsModal theme={theme} themePreference={themePreference} onThemePreferenceChange={setThemePreference} typography={typography} onTypographyChange={setTypography} updateStatus={updateStatus} onUpdateAction={() => void runUpdateAction()} onClose={() => setSettingsOpen(false)} /> : null}
+    {shortcutsOpen ? <KeyboardShortcutsModal onClose={closeKeyboardShortcuts} /> : null}
+    <ConfirmDialogHost /><ToastHost />
+  </div>;
 }
 
-function Welcome({ creating, error, onCreate, onOpenFolder }: {
-  creating: boolean;
-  error: string | null;
-  onCreate: (name: string) => Promise<boolean>;
-  onOpenFolder: () => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  return (
-    <main className="welcome-page">
-      <div className="welcome-card">
-        <div className="welcome-mark">W</div>
-        <p className="eyebrow">WORKSPACE</p>
-        <h1>Give your work a Space</h1>
-        <p className="welcome-copy">A Space keeps everything for one kind of work together—files, Chats, History, and your Assistant.</p>
-        {error ? <div className="inline-error">{error}</div> : null}
-        <form onSubmit={(event) => { event.preventDefault(); if (name.trim()) void onCreate(name.trim()); }}>
-          <label>What are you working on?<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Plan a trip, organize photos, manage a move…" maxLength={80} autoFocus /></label>
-          <button className="primary-button" type="submit" disabled={creating || !name.trim()}>
-            {creating ? <Loader2 className="spin" size={17} /> : <CirclePlus size={17} />} {welcomeActions.create}
-          </button>
-        </form>
-        <div className="welcome-divider"><span>or</span></div>
-        <button className="secondary-button wide" type="button" onClick={() => void onOpenFolder()}>
-          <FolderOpen size={17} /> {welcomeActions.linkFolder}
-        </button>
-        <div className="drive-note"><Cloud size={16} /><span>The folder stays where it is. Google Drive for desktop folders work too.</span></div>
-      </div>
-    </main>
-  );
-}
-
-function CreateSpaceDialog({ creating, onClose, onCreate }: {
-  creating: boolean;
-  onClose: () => void;
-  onCreate: (name: string) => Promise<boolean>;
-}) {
-  const [name, setName] = useState("");
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (name.trim() && await onCreate(name.trim())) onClose();
-  }
-  return <Modal title="Create a Space" subtitle="Give this work a place of its own." onClose={onClose}>
-    <form className="setup-grid" onSubmit={(event) => void submit(event)}>
-      <label>What are you working on?<input value={name} onChange={(event) => setName(event.target.value)} placeholder="2026 taxes, family photos, job search…" maxLength={80} autoFocus /></label>
-      <p className="security-note"><Folder size={14} /> Workspace creates an ordinary folder for this Space on your computer.</p>
-      <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={creating || !name.trim()}>{creating ? <Loader2 className="spin" size={16} /> : <CirclePlus size={16} />} Create Space</button></div>
-    </form>
-  </Modal>;
-}
-
-function WorkspaceSurface(props: {
-  pane: WorkspacePane;
+function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, updateStatus, themePreference, onThemePreferenceChange, onUpdateAction, onAgentChanged, onSwitchWorkspace, onRefreshBootstrap, onCreateSpace, onOpenFolder, onOpenSettings, onOpenShortcuts, onError }: {
   workspace: WorkspaceSummary;
   workspaces: WorkspaceSummary[];
-  agent: AgentStatus;
-  onAgentChanged: (status: AgentStatus) => void;
-  onSwitchWorkspace: (id: string) => void;
-  onOpenFolder: () => Promise<void>;
+  agent: BootstrapResponse["agent"];
+  fixture: WorkspaceUiFixture | null;
+  desktopAction: { id: number; command: "new-chat" | "open-setup" | "open-skills" | "open-extensions" | "open-command-palette" } | null;
+  updateStatus: DesktopUpdateStatus | null;
+  themePreference: AppThemePreference;
+  onThemePreferenceChange: (theme: AppThemePreference) => void;
+  onUpdateAction: () => void;
+  onAgentChanged: (status: BootstrapResponse["agent"]) => void;
+  onSwitchWorkspace: (workspace: WorkspaceSummary) => void;
+  onRefreshBootstrap: () => Promise<void>;
   onCreateSpace: () => void;
-  onOpenSetup: () => void;
+  onOpenFolder: () => void;
+  onOpenSettings: () => void;
+  onOpenShortcuts: () => void;
   onError: (message: string | null) => void;
 }) {
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [chatContextPaths, setChatContextPaths] = useState<string[]>([]);
-  useEffect(() => {
-    setSelectedPath(null);
-    setChatContextPaths([]);
-  }, [props.workspace.id]);
-  return (
-    <main className="main-shell">
-      <header className="workspace-header">
-        <div className="workspace-switcher">
-          <span className="workspace-avatar">{props.workspace.name.slice(0, 1).toUpperCase()}</span>
-          <select value={props.workspace.id} onChange={(event) => props.onSwitchWorkspace(event.target.value)} aria-label="Current Space">
-            {props.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}
-          </select>
-          <ChevronDown size={16} />
-        </div>
-        {window.workspaceDesktop?.workspace.revealFolder ? <button className="location-chip location-chip-button" type="button" aria-label={`Show folder for ${props.workspace.name}`} title={`Show folder: ${props.workspace.rootPath}`} onClick={() => void window.workspaceDesktop?.workspace.revealFolder?.(props.workspace.id).catch((revealError) => props.onError(errorText(revealError)))}>{props.workspace.location.providerHint === "google-drive" ? <Cloud size={14} /> : <Folder size={14} />}{props.workspace.location.providerHint === "google-drive" ? "Google Drive" : "This computer"}</button> : <span className="location-chip" title={props.workspace.rootPath}>{props.workspace.location.providerHint === "google-drive" ? <Cloud size={14} /> : <Folder size={14} />}{props.workspace.location.providerHint === "google-drive" ? "Google Drive" : "This computer"}</span>}
-        <div className="space-actions"><button className="header-action" type="button" onClick={props.onCreateSpace}><CirclePlus size={15} /> New Space</button><button className="header-action" type="button" onClick={() => void props.onOpenFolder()} title="Turn an existing folder into a Space"><FolderOpen size={15} /> Add folder as Space</button></div>
-      </header>
-
-      {props.pane === "space" ? (
-        <SpacePane key={props.workspace.id} workspace={props.workspace} selectedPath={selectedPath} onSelectPath={setSelectedPath} onAttach={(path) => setChatContextPaths((current) => unique([...current, path]))} onError={props.onError} />
-      ) : null}
-      {props.pane === "chats" ? (
-        <ChatsPane key={props.workspace.id} workspace={props.workspace} agent={props.agent} contextPaths={chatContextPaths} onContextPathsChange={setChatContextPaths} onOpenSetup={props.onOpenSetup} onError={props.onError} />
-      ) : null}
-      {props.pane === "skills" || props.pane === "extensions" ? (
-        <AssistantCapabilityPane key={`${props.workspace.id}:${props.pane}`} workspace={props.workspace} mode={props.pane} agent={props.agent} onOpenSetup={props.onOpenSetup} onError={props.onError} />
-      ) : null}
-      {props.pane === "setup" ? <AssistantSetupPane key={props.workspace.id} workspace={props.workspace} status={props.agent} onConfigured={props.onAgentChanged} /> : null}
-      {props.pane === "library" ? <LibraryPane key={props.workspace.id} workspace={props.workspace} onError={props.onError} /> : null}
-      {props.pane === "history" ? <HistoryPane key={props.workspace.id} workspace={props.workspace} onError={props.onError} /> : null}
-    </main>
-  );
-}
-
-function SpacePane({ workspace, selectedPath, onSelectPath, onAttach, onError }: {
-  workspace: WorkspaceSummary;
-  selectedPath: string | null;
-  onSelectPath: (path: string | null) => void;
-  onAttach: (path: string) => void;
-  onError: (message: string | null) => void;
-}) {
-  const [tree, setTree] = useState<TreeEntry[]>([]);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [fileText, setFileText] = useState<string | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
+  const [activeMode, setActiveMode] = useState<WorkspaceRailMode>(() => fixture ? "space" : normalizeMode(localStorage.getItem("workspace.mode")));
+  const [customizations, setCustomizations] = useState<WorkspaceCustomizationMap>(() => fixture ? {} : readStoredJsonValue(workspaceCustomizationStorageKey, normalizeCustomizations, {}));
+  const [conversationGroups, setConversationGroups] = useState<Record<string, ConversationSummary[]>>(() => fixture ? fixtureConversationGroups(fixture) : {});
+  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [chatRename, setChatRename] = useState<ChatRenameState | null>(null);
+  const [versionHistory, setVersionHistory] = useState<{ workspace: WorkspaceSummary; path: string; name: string } | null>(null);
+  const [contextRequest, setContextRequest] = useState<ChatContextPathRequest | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const commandPaletteReturnFocusRef = useRef<HTMLElement | null>(null);
+  const [historyRefreshRequest, setHistoryRefreshRequest] = useState(0);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [uploadTargetPath, setUploadTargetPath] = useState("");
   const uploadRef = useRef<HTMLInputElement>(null);
+  const contextRequestId = useRef(0);
+  const pendingDeletesRef = useRef(new Map<string, PendingDelete>());
+  const activeWorkspaceIdRef = useRef(workspace.id);
+  activeWorkspaceIdRef.current = workspace.id;
+  const tree = useWorkspaceTree(workspace, onError, fixture?.trees[workspace.id]);
+  const selectedPathRef = useRef(tree.selectedPath);
+  selectedPathRef.current = tree.selectedPath;
+  const paneResize = usePaneResize(Boolean(fixture));
+  const tabs = useSurfaceTabs({ workspace, workspaces, fixtureMode: Boolean(fixture), onSwitchWorkspace });
+  const activeTab = tabs.surfaceTabs.find((tab) => tab.id === tabs.activeSurfaceTabId) ?? null;
+  const identity = workspaceIdentityFor(workspace, customizations);
 
-  useEffect(() => { void loadTree(); }, [workspace.id]);
+  const openCommandPalette = useCallback(() => {
+    if (commandPaletteBlockedByDialog()) return;
+    commandPaletteReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setCommandPaletteOpen(true);
+  }, []);
+  const closeCommandPalette = useCallback((options: { restoreFocus?: boolean } = {}) => {
+    setCommandPaletteOpen(false);
+    if (options.restoreFocus === false) return;
+    const returnFocus = commandPaletteReturnFocusRef.current;
+    window.requestAnimationFrame(() => { if (returnFocus?.isConnected) returnFocus.focus(); });
+  }, []);
+
+
+  useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
+  useEffect(() => { if (fixture) { setConversationGroups(fixtureConversationGroups(fixture)); return; } void loadConversationGroups(); }, [fixture, workspaces.map((item) => item.id).join("|")]);
+  useEffect(() => { tabs.syncSurfaceTabConversationTitles(conversationGroups); }, [conversationGroups]);
   useEffect(() => {
-    setFileText(null);
-    setFileError(null);
-    if (!selectedPath) return;
-    void api<{ text: string }>(`/api/workspaces/${workspace.id}/file?path=${encodeURIComponent(selectedPath)}`)
-      .then((result) => setFileText(result.text))
-      .catch((readError) => setFileError(errorText(readError)));
-  }, [selectedPath, workspace.id]);
-
-  async function loadTree() {
-    setLoading(true);
-    try {
-      const result = await api<{ tree: TreeEntry[] }>(`/api/workspaces/${workspace.id}/tree`);
-      setTree(result.tree);
-    } catch (treeError) {
-      onError(errorText(treeError));
-    } finally {
-      setLoading(false);
+    function closeMenus(event: PointerEvent) { if (event.target instanceof Element && event.target.closest(".context-menu")) return; setFileContextMenu(null); }
+    document.addEventListener("pointerdown", closeMenus); return () => document.removeEventListener("pointerdown", closeMenus);
+  }, []);
+  useEffect(() => {
+    if (!desktopAction) return;
+    if (desktopAction.command === "new-chat") openChat(workspace, null);
+    else if (desktopAction.command === "open-setup") setActiveMode("setup");
+    else if (desktopAction.command === "open-skills") setActiveMode("skills");
+    else if (desktopAction.command === "open-extensions") setActiveMode("extensions");
+    else if (desktopAction.command === "open-command-palette") openCommandPalette();
+  }, [desktopAction?.id, openCommandPalette]);
+  useEffect(() => {
+    const flushBeforeUnload = () => flushAllPendingDeletes(true);
+    window.addEventListener("beforeunload", flushBeforeUnload);
+    window.addEventListener("pagehide", flushBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", flushBeforeUnload);
+      window.removeEventListener("pagehide", flushBeforeUnload);
+      flushBeforeUnload();
+    };
+  }, []);
+  useEffect(() => {
+    function keydown(event: KeyboardEvent) {
+      if (isCommandPaletteShortcut(event)) {
+        if (commandPaletteOpen) {
+          event.preventDefault();
+          closeCommandPalette();
+          return;
+        }
+        if (commandPaletteBlockedByDialog()) return;
+        event.preventDefault();
+        openCommandPalette();
+      }
     }
+    window.addEventListener("keydown", keydown, true); return () => window.removeEventListener("keydown", keydown, true);
+  }, [closeCommandPalette, commandPaletteOpen, openCommandPalette]);
+
+  async function loadConversationGroups() {
+    const pairs = await Promise.all(workspaces.map(async (item) => {
+      try { return [item.id, (await api<{ conversations: ConversationSummary[] }>(`/api/workspaces/${item.id}/conversations`)).conversations] as const; }
+      catch { return [item.id, []] as const; }
+    }));
+    setConversationGroups(Object.fromEntries(pairs));
   }
 
-  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
-    if (!files.length) return;
+  function customizeWorkspace(workspaceId: string, patch: WorkspaceCustomizationPatch) {
+    setCustomizations((current) => { const next = { ...current, [workspaceId]: { ...(current[workspaceId] ?? {}), ...patch } }; if (!fixture) writeStoredJsonValue(workspaceCustomizationStorageKey, next); return next; });
+  }
+
+  async function renameSpace(target: WorkspaceSummary, name: string) {
+    if (fixture) { showToast({ text: "Space rename is disabled in the preview", tone: "info" }); return; }
+    try { await api(`/api/workspaces/${target.id}`, { method: "PATCH", body: { name } }); await onRefreshBootstrap(); showToast({ text: `Renamed Space to ${name}`, tone: "success" }); }
+    catch (caught) { onError(errorText(caught)); throw caught; }
+  }
+
+  async function removeSpace(target: WorkspaceSummary) {
+    if (fixture) { showToast({ text: "Space removal is disabled in the preview", tone: "info" }); return; }
+    const confirmed = await requestConfirm({ title: target.location.storage === "linked" ? `Remove ${target.name}?` : `Delete ${target.name}?`, body: removeWorkspaceConfirmText(target), confirmLabel: target.location.storage === "linked" ? "Remove Space" : "Delete Space", tone: "danger" });
+    if (!confirmed) return;
+    try {
+      await api(`/api/workspaces/${target.id}`, { method: "DELETE" });
+      tabs.removeWorkspaceSurfaceTabs(target.id);
+      await onRefreshBootstrap();
+      showToast({ text: target.location.storage === "linked" ? `${target.name} removed. The folder and its files remain on your computer.` : `${target.name} and its managed folder were deleted.`, tone: "success" });
+    } catch (caught) { onError(errorText(caught)); }
+  }
+
+  function openChat(targetWorkspace: WorkspaceSummary, conversation: ConversationSummary | null) { tabs.openChatSurfaceTab(targetWorkspace, conversation); }
+  function attachToChat(path: string) {
+    const existing = tabs.surfaceTabs.find((tab) => tab.kind === "chat" && tab.workspaceId === workspace.id && (!tab.conversationId || tab.id === tabs.activeSurfaceTabId));
+    if (existing) tabs.setActiveSurfaceTabId(existing.id); else tabs.openChatSurfaceTab(workspace, null);
+    setContextRequest({ id: ++contextRequestId.current, path });
+    showToast({ text: `Attached ${path.split("/").pop() ?? path} to Chat`, tone: "success" });
+  }
+
+  function openContextMenu(entry: TreeEntry, event: React.MouseEvent<HTMLElement>) { event.preventDefault(); event.stopPropagation(); setFileContextMenu({ entry, x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 390), returnFocusTarget: event.currentTarget as HTMLElement }); }
+  function openRootContextMenu(event: React.MouseEvent<HTMLElement>) { if ((event.target as HTMLElement).closest("[data-tree-row]")) return; openContextMenu({ name: workspace.name, path: "", kind: "folder" }, event); }
+
+  async function uploadFiles(files: DroppedUploadFile[], targetFolderPath: string) {
+    if (!files.length || fixture) return;
     const form = new FormData();
-    form.set("targetFolderPath", "");
-    form.set("relativePaths", JSON.stringify(files.map((file) => file.webkitRelativePath || file.name)));
-    for (const file of files) form.append("files", file, file.name);
+    form.set("targetFolderPath", targetFolderPath);
+    form.set("relativePaths", JSON.stringify(files.map((item) => item.relativePath)));
+    files.forEach((item) => form.append("files", item.file, item.file.name));
+    setUploadingFiles(true);
+    onError(null);
     try {
       await apiForm(`/api/workspaces/${workspace.id}/upload-local-files`, form);
-      await loadTree();
-    } catch (uploadError) {
-      onError(errorText(uploadError));
-    }
+      await tree.refresh();
+      showToast({ text: formatItemCount(files.length, "file") + " added", tone: "success" });
+    } catch (caught) { onError(errorText(caught)); }
+    finally { setUploadingFiles(false); }
   }
+  function chooseUpload(targetPath = "") { setUploadTargetPath(targetPath); uploadRef.current?.click(); }
 
-  const visibleTree = query.trim() ? filterTree(tree, query.trim().toLocaleLowerCase()) : tree;
-  return (
-    <div className="pane-layout">
-      <aside className="sidebar-pane">
-        <PaneTitle icon={<FolderOpen size={18} />} title="Space" detail="Files and folders for this work" />
-        <div className="pane-toolbar">
-          <label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files" /></label>
-          <button className="icon-button" type="button" onClick={() => uploadRef.current?.click()} title="Add files"><Upload size={16} /></button>
-          <button className="icon-button" type="button" onClick={() => void loadTree()} title="Refresh"><RefreshCw size={16} /></button>
-          <input ref={uploadRef} hidden type="file" multiple onChange={(event) => void uploadFiles(event)} />
-        </div>
-        <div className="tree-scroll">{loading ? <LoadingRow label="Loading files" /> : <FileTree entries={visibleTree} selectedPath={selectedPath} onSelect={onSelectPath} />}</div>
-      </aside>
-      <section className="content-pane">
-        {!selectedPath ? <EmptyState icon={<FileText size={30} />} title="Choose something in this Space" detail="Preview a text file or attach it to your next Chat." /> : (
-          <>
-            <div className="content-header"><div><p className="eyebrow">SPACE FILE</p><h2>{selectedPath.split("/").pop()}</h2><span>{selectedPath}</span></div><button className="secondary-button" type="button" onClick={() => onAttach(selectedPath)}><Paperclip size={16} /> Attach to Chat</button></div>
-            <div className="file-preview">{fileError ? <div className="inline-error">{fileError}</div> : fileText === null ? <LoadingRow label="Reading file" /> : <pre>{fileText}</pre>}</div>
-          </>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function FileTree({ entries, selectedPath, onSelect, selectFolders = false, level = 0 }: { entries: TreeEntry[]; selectedPath: string | null; onSelect: (path: string) => void; selectFolders?: boolean; level?: number }) {
-  const [closed, setClosed] = useState<Set<string>>(() => new Set());
-  if (!entries.length && level === 0) return <div className="sidebar-empty">Drop or upload files to get started.</div>;
-  return <div className="file-tree">{entries.map((entry) => {
-    const collapsed = closed.has(entry.path);
-    return <div key={entry.path}>
-      <button className={selectedPath === entry.path ? "tree-row selected" : "tree-row"} type="button" style={{ paddingLeft: 12 + level * 16 }} onClick={() => {
-        if (entry.kind === "folder") {
-          setClosed((current) => toggleSet(current, entry.path));
-          if (selectFolders) onSelect(entry.path);
-        }
-        else onSelect(entry.path);
-      }}>
-        {entry.kind === "folder" ? (collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />) : <span className="tree-spacer" />}
-        {entry.kind === "folder" ? <Folder size={16} /> : <File size={16} />}<span>{entry.name}</span>
-      </button>
-      {entry.kind === "folder" && !collapsed && entry.children?.length ? <FileTree entries={entry.children} selectedPath={selectedPath} onSelect={onSelect} selectFolders={selectFolders} level={level + 1} /> : null}
-    </div>;
-  })}</div>;
-}
-
-function ChatsPane({ workspace, agent, contextPaths, onContextPathsChange, onOpenSetup, onError }: {
-  workspace: WorkspaceSummary;
-  agent: AgentStatus;
-  contextPaths: string[];
-  onContextPathsChange: (paths: string[]) => void;
-  onOpenSetup: () => void;
-  onError: (message: string | null) => void;
-}) {
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [activeId, setActiveId] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [streaming, setStreaming] = useState("");
-  const [status, setStatus] = useState("");
-  const [sending, setSending] = useState(false);
-  const [streamConnected, setStreamConnected] = useState(false);
-  const [extensionRequest, setExtensionRequest] = useState<ExtensionUiRequest | null>(null);
-  const endRef = useRef<HTMLDivElement>(null);
-  const sendingRef = useRef(false);
-  const firstConversationRef = useRef<{ workspaceId: string; promise: Promise<ConversationSummary> } | null>(null);
-
-  useEffect(() => { void loadConversations(); }, [workspace.id]);
-  useEffect(() => { if (activeId) void loadMessages(activeId); else setMessages([]); }, [activeId, workspace.id]);
-  useEffect(() => {
-    setStreamConnected(false);
-    if (!activeId) return;
-    const stream = createEventSource(`/api/workspaces/${workspace.id}/conversations/${activeId}/events`);
-    stream.onmessage = (event) => handleStream(JSON.parse(event.data) as ChatStreamEvent);
-    stream.onopen = () => {
-      setStreamConnected(true);
-      if (sendingRef.current) void reconcileAfterReconnect(activeId);
-    };
-    stream.onerror = () => setStreamConnected(false);
-    return () => { stream.close(); setStreamConnected(false); };
-  }, [activeId, workspace.id]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streaming, status]);
-
-  async function loadConversations() {
+  async function moveEntry(sourcePath: string, targetFolderPath: string) {
+    if (fixture || !sourcePath || sourcePath === targetFolderPath || isInsideFolder(targetFolderPath, sourcePath)) return;
+    tree.setMovingTreePath(sourcePath);
     try {
-      const result = await api<{ conversations: ConversationSummary[] }>(`/api/workspaces/${workspace.id}/conversations`);
-      const next = result.conversations.length ? result.conversations : [
-        await createFirstConversation(),
-      ];
-      setConversations(next);
-      setActiveId((current) => next.some((item) => item.id === current) ? current : next[0]?.id ?? "");
-    } catch (loadError) { onError(errorText(loadError)); }
-  }
-  async function createFirstConversation(): Promise<ConversationSummary> {
-    if (firstConversationRef.current?.workspaceId !== workspace.id) {
-      const promise = api<{ conversation: ConversationSummary }>(`/api/workspaces/${workspace.id}/conversations`, { method: "POST", body: {} })
-        .then((result) => result.conversation)
-        .catch((error) => { firstConversationRef.current = null; throw error; });
-      firstConversationRef.current = { workspaceId: workspace.id, promise };
+      const result = await api<{ moved: { path: string; name: string }; safetyCheckpointId: string }>(`/api/workspaces/${workspace.id}/move-local-entry`, { method: "POST", body: { sourcePath, targetFolderPath } });
+      const preview = moveTreeEntry(tree.tree, sourcePath, targetFolderPath);
+      tree.setTree(preview.entries);
+      tabs.retargetFileSurfaceTabsForMove(workspace.id, sourcePath, result.moved.path);
+      showHistorySaved(`Moved ${result.moved.name}`);
     }
-    return firstConversationRef.current.promise;
+    catch (caught) { onError(errorText(caught)); }
+    finally { tree.setMovingTreePath(null); }
   }
-  async function loadMessages(id: string): Promise<ChatMessage[]> {
-    try {
-      const result = await api<{ messages: ChatMessage[] }>(`/api/workspaces/${workspace.id}/conversations/${id}`);
-      const visible = result.messages.filter((message) => message.role !== "system");
-      setMessages(visible);
-      return visible;
-    } catch (loadError) { onError(errorText(loadError)); return []; }
-  }
-  async function reconcileAfterReconnect(id: string) {
-    const latest = await loadMessages(id);
-    if (sendingRef.current && latest.at(-1)?.role === "assistant") {
-      sendingRef.current = false;
-      setSending(false); setStatus(""); setStreaming(""); void loadConversations();
+
+  async function deleteEntry(path: string) {
+    if (!path || fixture) return;
+    const entry = findTreeEntry(tree.tree, path);
+    if (entry?.kind === "folder") {
+      const confirmed = await requestConfirm({ title: `Delete ${entry.name}?`, body: "The folder and everything in it will be removed after the Undo window closes.", confirmLabel: "Delete folder", tone: "danger" });
+      if (!confirmed) return;
     }
+    const selectedPath = tree.selectedPath && (tree.selectedPath === path || tree.selectedPath.startsWith(`${path}/`)) ? tree.selectedPath : null;
+    const deletedTabPaths = new Set(tabs.surfaceTabs.filter((tab) => tab.kind === "file" && tab.workspaceId === workspace.id && tab.path && (tab.path === path || tab.path.startsWith(`${path}/`))).map((tab) => tab.path as string));
+    const pending: PendingDelete = { workspaceId: workspace.id, path, name: entry?.name ?? path, selectedPath, deletedTabPaths };
+    pendingDeletesRef.current.set(pendingDeleteKey(pending), pending);
+    tree.setTree((current) => removeTreeEntries(current, new Set([path])));
+    showToast({ text: `Removed ${pending.name}`, tone: "success", actionLabel: "Undo", durationMs: 6500,
+      onAction: () => {
+        if (pendingDeletesRef.current.get(pendingDeleteKey(pending)) !== pending) return;
+        pendingDeletesRef.current.delete(pendingDeleteKey(pending));
+        if (pending.workspaceId !== activeWorkspaceIdRef.current) return;
+        const restoreSelection = Boolean(pending.selectedPath && (!selectedPathRef.current || selectedPathRef.current === pending.selectedPath));
+        void refreshTreeWithPendingDeletes().then(() => {
+          if (pending.workspaceId === activeWorkspaceIdRef.current && pending.selectedPath && restoreSelection) tree.setSelectedPath(pending.selectedPath);
+        });
+      },
+      onClose: (reason) => { if (reason !== "action") void commitPendingDelete(pending); },
+    });
   }
-  async function newChat() {
-    try {
-      const result = await api<{ conversation: ConversationSummary }>(`/api/workspaces/${workspace.id}/conversations`, { method: "POST", body: {} });
-      setConversations((current) => [result.conversation, ...current]);
-      setActiveId(result.conversation.id);
-    } catch (createError) { onError(errorText(createError)); }
+
+  async function createFolder(parentPath: string) {
+    if (fixture) return; const name = window.prompt("Folder name"); if (!name?.trim()) return;
+    try { await api<{ folder: { path: string }; safetyCheckpointId: string }>(`/api/workspaces/${workspace.id}/folders`, { method: "POST", body: { parentPath, name: name.trim() } }); await tree.refresh(); showHistorySaved(`Created ${name.trim()}`); }
+    catch (caught) { onError(errorText(caught)); }
   }
-  function handleStream(event: ChatStreamEvent) {
-    if (event.type === "assistant_delta") setStreaming((current) => current + (event.text ?? ""));
-    else if (event.type === "status") setStatus(event.message === "Connected." && !sendingRef.current ? "" : event.message ?? "");
-    else if (event.type === "tool") setStatus([event.toolName, event.phase, event.detail].filter(Boolean).join(" · "));
-    else if (event.type === "extension_ui_request" && event.request) setExtensionRequest(event.request);
-    else if (event.type === "editor") setDraft((current) => event.editorMode === "replace" ? event.text ?? "" : `${current}${event.text ?? ""}`);
-    else if (event.type === "error") { sendingRef.current = false; setSending(false); setStatus(""); onError(event.message ?? "The Assistant could not finish that turn."); }
-    else if (event.type === "done") {
-      sendingRef.current = false; setSending(false); setStatus(""); setStreaming(""); void loadMessages(activeId); void loadConversations();
-    }
+  async function createFile(parentPath: string) {
+    if (fixture) return; const name = window.prompt("File name", "notes.md"); if (!name?.trim()) return;
+    try { const result = await api<{ file: { path: string }; safetyCheckpointId: string }>(`/api/workspaces/${workspace.id}/files`, { method: "POST", body: { parentPath, name: name.trim(), text: "" } }); await tree.refresh(); tabs.openFileSurfaceTab(workspace, result.file.path); showHistorySaved(`Created ${name.trim()}`); }
+    catch (caught) { onError(errorText(caught)); }
   }
-  async function sendMessage(event: FormEvent) {
+  async function renameEntry(path: string) {
+    if (!path || fixture) return; const entry = findTreeEntry(tree.tree, path); const name = window.prompt("Rename", entry?.name ?? path.split("/").pop()); if (!name?.trim() || name.trim() === entry?.name) return;
+    try { const result = await api<{ renamed: { path: string }; safetyCheckpointId: string }>(`/api/workspaces/${workspace.id}/rename-local-entry`, { method: "POST", body: { path, newName: name.trim() } }); tabs.retargetFileSurfaceTabsForMove(workspace.id, path, result.renamed.path); await tree.refresh(); showHistorySaved(`Renamed ${entry?.name ?? path}`); }
+    catch (caught) { onError(errorText(caught)); }
+  }
+
+  async function openLocalPath(path: string, action: "reveal" | "open" | "open-native", targetWorkspace = workspace) {
+    if (fixture) { showToast({ text: "Opening files is disabled in the preview", tone: "info" }); return; }
+    const desktop = window.workspaceDesktop;
+    try { if (!path) await desktop?.workspace.revealFolder?.(targetWorkspace.id); else if (desktop?.workspace.openPath) await desktop.workspace.openPath(targetWorkspace.id, path, action); else await desktop?.workspace.revealFolder?.(targetWorkspace.id); }
+    catch (caught) { onError(errorText(caught)); }
+  }
+  function openVersionHistory(targetWorkspace: WorkspaceSummary, path: string) {
+    if (fixture) { showToast({ text: "Version history is disabled in the preview", tone: "info" }); return; }
+    setVersionHistory({ workspace: targetWorkspace, path, name: path.split("/").pop() ?? path });
+  }
+  async function copyPath(path: string) { const full = path ? `${workspace.rootPath}\\${path.replaceAll("/", "\\")}` : workspace.rootPath; await navigator.clipboard.writeText(full); showToast({ text: "Path copied", tone: "success" }); }
+
+  function updateDropTarget(event: React.DragEvent<HTMLElement>, target: string) { event.preventDefault(); if (hasNativeFiles(event) || hasWorkspacePathDrag(event)) { event.dataTransfer.dropEffect = hasNativeFiles(event) ? "copy" : "move"; tree.setDropTargetFolderPath(target); } }
+  function clearDropTarget(event?: React.DragEvent<HTMLElement>) { if (event && event.currentTarget.contains(event.relatedTarget as Node | null)) return; tree.setDropTargetFolderPath(null); }
+  async function dropOnTarget(event: React.DragEvent<HTMLElement>, target: string) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || sending || !activeId || !streamConnected) return;
-    if (!agent.configured) { onOpenSetup(); return; }
-    const conversationId = activeId;
-    const optimistic: ChatMessage = { id: `local-${Date.now()}`, role: "user", content, createdAt: new Date().toISOString() };
-    setMessages((current) => [...current, optimistic]);
-    sendingRef.current = true; setDraft(""); setStreaming(""); setSending(true); setStatus("Pi is thinking…");
-    try {
-      await api(`/api/workspaces/${workspace.id}/conversations/${conversationId}/messages`, { method: "POST", body: { content, contextPaths } });
-      onContextPathsChange([]);
-    } catch (sendError) {
-      sendingRef.current = false; setSending(false); setStatus(""); onError(errorText(sendError));
-    }
-  }
-  async function stopTurn() {
-    if (!activeId || !sending) return;
-    setStatus("Stopping Pi…");
-    try {
-      const result = await api<{ aborted: boolean }>(`/api/workspaces/${workspace.id}/conversations/${activeId}/abort`, { method: "POST", body: {} });
-      if (!result.aborted) {
-        sendingRef.current = false;
-        setSending(false); setStatus(""); setStreaming("");
-        await loadMessages(activeId);
+    tree.setDropTargetFolderPath(null);
+    if (hasNativeFiles(event)) {
+      try {
+        const files = await collectDroppedUploadFiles(event.dataTransfer);
+        if (!files.length) {
+          onError("Drop one or more files. Empty folders do not create Space entries.");
+          return;
+        }
+        await uploadFiles(files, target);
       }
-    } catch (abortError) { onError(errorText(abortError)); }
-  }
-  async function respondToExtension(value: unknown, cancelled = false) {
-    if (!extensionRequest || !activeId) return;
-    if (extensionRequest.method === "notify") {
-      setExtensionRequest(null);
+      catch (caught) { onError(errorText(caught)); }
       return;
     }
-    try {
-      await api(`/api/workspaces/${workspace.id}/conversations/${activeId}/extension-ui/${extensionRequest.id}`, { method: "POST", body: { value, cancelled } });
-      setExtensionRequest(null);
-    } catch (responseError) { onError(errorText(responseError)); }
+    const source = hasWorkspacePathDrag(event) ? event.dataTransfer.getData(workspacePathDragType) || event.dataTransfer.getData("text/plain") : "";
+    if (source) await moveEntry(source, target);
+  }
+  function startTreeDrag(path: string, event: React.DragEvent<HTMLElement>) { tree.setMovingTreePath(path); event.dataTransfer.setData(workspacePathDragType, path); event.dataTransfer.setData("text/plain", path); event.dataTransfer.effectAllowed = "move"; }
+  function endTreeDrag() { tree.setMovingTreePath(null); tree.setDropTargetFolderPath(null); }
+
+  function startNativeFileDrag(path: string, event: React.DragEvent<HTMLElement>) {
+    if (!event.altKey || !window.workspaceDesktop?.workspace.startDrag) return false;
+    event.preventDefault();
+    void window.workspaceDesktop.workspace.startDrag(workspace.id, path).catch((caught) => onError(errorText(caught)));
+    return true;
   }
 
-  return <div className="pane-layout">
-    <aside className="sidebar-pane">
-      <PaneTitle icon={<MessageSquare size={18} />} title="Chats" detail="Conversations in this Space" action={<button className="icon-button" type="button" onClick={() => void newChat()} title="New Chat" disabled={sending}><CirclePlus size={17} /></button>} />
-      <div className="conversation-list">{conversations.length ? conversations.map((conversation) => <button className={activeId === conversation.id ? "conversation-row active" : "conversation-row"} type="button" key={conversation.id} onClick={() => setActiveId(conversation.id)} disabled={sending}><MessageSquare size={15} /><span><strong>{conversation.title}</strong><small>{formatDate(conversation.updatedAt)}</small></span></button>) : <div className="sidebar-empty">Preparing your first chat…</div>}</div>
+  async function commitPendingDelete(pending: PendingDelete) {
+    const key = pendingDeleteKey(pending);
+    if (pendingDeletesRef.current.get(key) !== pending) return;
+    pendingDeletesRef.current.delete(key);
+    try {
+      await deleteLocalFileRequest(pending);
+      tabs.closeFileSurfaceTabsForDeletedPaths(pending.workspaceId, pending.deletedTabPaths);
+    } catch (caught) {
+      onError(errorText(caught));
+      if (pending.workspaceId === activeWorkspaceIdRef.current) {
+        const restoreSelection = Boolean(pending.selectedPath && (!selectedPathRef.current || selectedPathRef.current === pending.selectedPath));
+        await refreshTreeWithPendingDeletes();
+        if (pending.selectedPath && restoreSelection) tree.setSelectedPath(pending.selectedPath);
+      }
+    }
+  }
+
+  function flushAllPendingDeletes(keepalive = false) {
+    for (const pending of [...pendingDeletesRef.current.values()]) {
+      if (!keepalive) {
+        void commitPendingDelete(pending);
+        continue;
+      }
+      const key = pendingDeleteKey(pending);
+      if (pendingDeletesRef.current.get(key) !== pending) continue;
+      pendingDeletesRef.current.delete(key);
+      void deleteLocalFileRequest(pending, true).catch(() => {});
+    }
+  }
+
+  async function refreshTreeWithPendingDeletes() {
+    await tree.refresh();
+    const pendingPaths = new Set([...pendingDeletesRef.current.values()].filter((item) => item.workspaceId === workspace.id).map((item) => item.path));
+    if (pendingPaths.size) tree.setTree((current) => removeTreeEntries(current, pendingPaths));
+  }
+
+  function showHistorySaved(text: string) {
+    showToast({ text: `${text}. Restore point saved in History.`, tone: "success" });
+  }
+
+  async function saveRestorePoint() {
+    if (fixture) return;
+    try {
+      await api(`/api/workspaces/${workspace.id}/history/checkpoints`, { method: "POST", body: { label: "Manual restore point" } });
+      setHistoryRefreshRequest((current) => current + 1);
+      setActiveMode("history");
+      showToast({ text: "Restore point saved", tone: "success" });
+    } catch (caught) { onError(errorText(caught)); }
+  }
+
+  async function renameChat(targetWorkspace: WorkspaceSummary, conversation: ConversationSummary, title: string) {
+    if (fixture) { const updated = { ...conversation, title }; setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: (current[targetWorkspace.id] ?? []).map((item) => item.id === conversation.id ? updated : item) })); tabs.updateSurfaceTabConversationTitle(targetWorkspace.id, updated); setChatRename(null); return; }
+    const result = await api<{ conversation: ConversationSummary }>(`/api/workspaces/${targetWorkspace.id}/conversations/${conversation.id}`, { method: "PATCH", body: { title } });
+    setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: (current[targetWorkspace.id] ?? []).map((item) => item.id === conversation.id ? result.conversation : item) })); tabs.updateSurfaceTabConversationTitle(targetWorkspace.id, result.conversation); setChatRename(null);
+  }
+
+  const commands = useMemo<CommandPaletteCommand[]>(() => [
+    ...(["space", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode === "space" ? "Space" : mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
+    ...workspaces.map((item) => ({ id: `space:${item.id}`, groupId: "switch-workspace" as const, groupLabel: "Switch Space", label: item.name, detail: workspaceHeaderSourceBadgeLabel(item), matchTargets: [item.rootPath], run: () => onSwitchWorkspace(item) })),
+    ...Object.entries(conversationGroups).flatMap(([workspaceId, conversations]) => conversations.map((conversation) => ({ id: `chat:${workspaceId}:${conversation.id}`, groupId: "chats" as const, groupLabel: "Chats", label: conversation.title, run: () => { const target = workspaces.find((item) => item.id === workspaceId); if (target) openChat(target, conversation); } }))),
+    ...collectLoadedFileEntries(tree.tree).flatMap((entry) => {
+      const matchTargets = [entry.name, entry.path];
+      return [
+        { id: `reveal-file:${workspace.id}:${entry.path}`, groupId: "files" as const, groupLabel: "Files", label: `Reveal in Files: ${entry.name}`, detail: entry.path, matchTargets, minQueryLength: 2, run: () => { setActiveMode("space"); tree.setSelectedPath(entry.path); tabs.openFileSurfaceTab(workspace, entry.path); } },
+        { id: `attach-file:${workspace.id}:${entry.path}`, groupId: "files" as const, groupLabel: "Files", label: `Attach to Chat: ${entry.name}`, detail: entry.path, matchTargets, minQueryLength: 2, run: () => attachToChat(entry.path) },
+      ];
+    }),
+    { id: "action:new-chat", groupId: "actions", groupLabel: "Actions", label: "New Chat", keywords: ["chat", "conversation", "assistant"], defaultVisible: true, run: () => openChat(workspace, null) },
+    ...(!fixture ? [{ id: "action:save-restore-point", groupId: "actions" as const, groupLabel: "Actions", label: "Save restore point", keywords: ["history", "checkpoint", "backup"], defaultVisible: true, run: () => { void saveRestorePoint(); } }] : []),
+    { id: "action:new-space", groupId: "actions", groupLabel: "Actions", label: "Create a new Space", defaultVisible: true, run: onCreateSpace },
+    { id: "action:open-folder", groupId: "actions", groupLabel: "Actions", label: "Turn a folder into a Space", defaultVisible: true, run: onOpenFolder },
+    { id: "action:settings", groupId: "actions", groupLabel: "Actions", label: "Settings", defaultVisible: true, run: onOpenSettings },
+    { id: "action:shortcuts", groupId: "actions", groupLabel: "Actions", label: "Keyboard shortcuts", run: onOpenShortcuts },
+    ...(["light", "dark", "system"] as AppThemePreference[]).map((preference) => ({ id: `theme:${preference}`, groupId: "actions" as const, groupLabel: "Actions", label: preference === "system" ? "Use device theme" : `Use ${preference} theme`, detail: themePreference === preference ? "Current" : undefined, keywords: ["appearance", "color", "mode"], run: () => onThemePreferenceChange(preference) })),
+  ], [conversationGroups, fixture, themePreference, tree.selectedPath, tree.tree, workspaces, workspace.id]);
+
+  const paneTitle = activeMode === "workspaces" ? "Spaces" : activeMode === "space" ? workspace.name : activeMode[0]!.toUpperCase() + activeMode.slice(1);
+  const paneDetail = activeMode === "space" ? workspaceHeaderSourceBadgeLabel(workspace) : activeMode === "library" ? "Reusable files for every Space" : activeMode === "history" ? "Restore points and recent activity" : activeMode === "setup" || activeMode === "skills" || activeMode === "extensions" ? "Assistant" : `${workspace.name}`;
+  const layoutStyle = { ...(workspaceIdentityStyle(identity)), ...(paneResize.sidebarWidth ? { "--workspace-sidebar-width": `${paneResize.sidebarWidth}px` } : {}) } as CSSProperties;
+
+  return <main className={paneResize.sidebarResizing ? "workspace-layout resizing" : "workspace-layout"} ref={paneResize.workspaceLayoutRef} style={layoutStyle}>
+    <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings"><Settings2 size={18} /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
+    <section className={`workspace-mode-pane workspace-mode-pane-${activeMode} ${activeMode === "space" ? "file-panel local-files-panel" : ""}`} id="workspace-file-panel">
+      <WorkspacePaneHeader workspace={workspace} title={paneTitle} detail={paneDetail} identity={identity} workspaces={workspaces} workspaceCustomizations={customizations} onSwitchWorkspace={onSwitchWorkspace} action={activeMode === "space" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><RefreshCw className={tree.status === "refreshing" ? "spin" : undefined} size={16} /></button> : undefined} />
+      {activeMode === "workspaces" ? <SpacesPane workspace={workspace} workspaces={workspaces} identities={customizations} onSwitch={onSwitchWorkspace} onCreate={onCreateSpace} onOpenFolder={onOpenFolder} onCustomize={(target) => tabs.openAppearanceSurfaceTab(target)} onRename={renameSpace} onRemove={(target) => void removeSpace(target)} /> : null}
+      {activeMode === "space" ? <>
+        <input
+          ref={uploadRef}
+          className="hidden-file-input"
+          type="file"
+          multiple
+          tabIndex={-1}
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []).map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
+            event.target.value = "";
+            void uploadFiles(files, uploadTargetPath);
+          }}
+        />
+        <div className="file-tree-toolbar">
+          <label className="file-tree-search">
+            <Search size={15} />
+            <input
+              aria-label="Search files"
+              type="search"
+              placeholder="Search files"
+              value={tree.query}
+              onChange={(event) => tree.setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && tree.query) {
+                  event.preventDefault();
+                  tree.setQuery("");
+                }
+              }}
+            />
+            {tree.query ? <button type="button" onClick={() => tree.setQuery("")} aria-label="Clear file search" title="Clear file search"><X size={14} /></button> : null}
+          </label>
+          {tree.query ? <span className="file-tree-search-count">{tree.searchHydrating ? "Searching" : formatItemCount(tree.matchCount, "match", "matches")}</span> : null}
+          <button className="minimal-icon-button" type="button" disabled={uploadingFiles} onClick={() => chooseUpload("")} aria-label="Add files" title="Add files"><Upload size={15} /></button>
+          <button className="minimal-icon-button" type="button" disabled={uploadingFiles} onClick={() => void createFolder("")} aria-label="New folder" title="New folder"><FolderPlus size={15} /></button>
+          <button className="minimal-icon-button" type="button" disabled={uploadingFiles} onClick={() => void createFile("")} aria-label="New file" title="New file"><FilePlus2 size={15} /></button>
+        </div>
+        <div
+          className={["file-tree-shell", uploadingFiles ? "uploading-files" : "", tree.status === "refreshing" ? "refreshing-files" : "", tree.dropTargetFolderPath === "" ? "root-drop-target" : ""].filter(Boolean).join(" ")}
+          onContextMenu={openRootContextMenu}
+          onDragEnter={(event) => updateDropTarget(event, "")}
+          onDragOver={(event) => updateDropTarget(event, "")}
+          onDragLeave={clearDropTarget}
+          onDrop={(event) => void dropOnTarget(event, "")}
+          onClick={(event) => { if (!(event.target as HTMLElement).closest("[data-tree-row]")) tree.setSelectedPath(null); }}
+          onKeyDown={(event) => { if (event.key === "Escape" && tree.selectedPath) { event.preventDefault(); tree.setSelectedPath(null); } }}
+        >
+          {uploadingFiles ? <div className="file-upload-progress" aria-live="polite"><Loader2 className="spin" size={14} />Adding files</div> : null}
+          {tree.status === "refreshing" ? <div className="file-tree-refresh-progress" aria-live="polite"><Loader2 className="spin" size={14} />Updating files</div> : null}
+          {tree.status === "loading" ? <FileTreeLoadingState /> : tree.status === "error" ? <EmptyInline text="Couldn't load this Space. Refresh to try again." /> : <FileTree entries={tree.visibleEntries} collapsedPaths={tree.query ? new Set() : tree.collapsedPaths} loadingFolderPaths={tree.loadingFolderPaths} selectedPath={tree.selectedPath} movingTreePath={tree.movingTreePath} dropTargetFolderPath={tree.dropTargetFolderPath} searchQuery={tree.query} onToggleFolder={tree.toggleFolder} onSelectFile={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onOpenFile={(path) => void openLocalPath(path, "open")} onOpenContextMenu={openContextMenu} onUpdateDropTarget={updateDropTarget} onDropOnTarget={dropOnTarget} onNativeDragStartFile={startNativeFileDrag} onDragStartEntry={startTreeDrag} onDragEndEntry={endTreeDrag} />}
+        </div>
+      </> : null}
+      {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.conversationId} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
+      {activeMode === "library" ? <LibraryPane workspace={workspace} fixtureTree={fixture?.library} onError={onError} /> : null}
+      {activeMode === "history" ? <HistoryPane workspace={workspace} fixtureItems={fixture?.checkpoints[workspace.id]} refreshRequest={historyRefreshRequest} onOpen={(item) => tabs.openHistorySurfaceTab(workspace, item?.checkpointId, item?.label ?? "History")} onError={onError} /> : null}
+      {activeMode === "setup" ? <AssistantSetupPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} onConfigured={onAgentChanged} /> : null}
+      {activeMode === "skills" || activeMode === "extensions" ? <AssistantCapabilityPane workspace={workspace} mode={activeMode} status={agent} fixtureMode={Boolean(fixture)} onOpenSetup={() => setActiveMode("setup")} onError={onError} /> : null}
+    </section>
+    <button className="workspace-resizer" type="button" role="separator" aria-label="Resize the navigation pane and work area" aria-controls="workspace-file-panel workspace-chat-panel" aria-orientation="vertical" aria-valuemin={Math.round(paneResize.sidebarResizeBounds.min)} aria-valuemax={Math.round(paneResize.sidebarResizeBounds.max)} aria-valuenow={paneResize.sidebarResizeValue} title="Resize panes" onPointerDown={paneResize.startSidebarResize} onDoubleClick={paneResize.resetWorkspaceSidebarWidth} onKeyDown={paneResize.handleSidebarResizeKeyDown}><span className="sr-only">Resize panes</span></button>
+    <aside className="right-rail" id="workspace-chat-panel">
+      <WorkspaceSurfaceTabBar tabs={tabs.surfaceTabs} workspaces={workspaces} workspaceCustomizations={customizations} activeTabId={tabs.activeSurfaceTabId} newChatWorkspaceId={workspace.id} newChatWorkspaceName={workspace.name} onActivate={tabs.setActiveSurfaceTabId} onClose={tabs.closeSurfaceTab} onNewChat={() => openChat(workspace, null)} onNewChatInWorkspace={(target) => openChat(target, null)} onRenameChat={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} />
+      {tabs.surfaceTabs.length ? tabs.surfaceTabs.map((tab) => { const targetWorkspace = workspaces.find((item) => item.id === tab.workspaceId); if (!targetWorkspace) return null; const active = tab.id === tabs.activeSurfaceTabId; const targetIdentity = workspaceIdentityFor(targetWorkspace, customizations); return <div className="workspace-surface-body" role="tabpanel" id={surfacePanelDomId(tab.id)} aria-labelledby={surfaceTabDomId(tab.id)} hidden={!active} key={tab.id} style={workspaceIdentityStyle(targetIdentity)}>{tab.kind === "file" && tab.path ? <FileDetailsPane workspace={targetWorkspace} path={tab.path} entry={targetWorkspace.id === workspace.id ? findTreeEntry(tree.tree, tab.path) : null} fixtureMode={Boolean(fixture)} onOpenLocal={(path, action) => openLocalPath(path, action, targetWorkspace)} onAddToChatContext={attachToChat} onShowVersionHistory={(path) => openVersionHistory(targetWorkspace, path)} onRename={targetWorkspace.id === workspace.id ? renameEntry : undefined} /> : tab.kind === "appearance" ? <div className="workspace-appearance-surface"><div className="workspace-appearance-surface-heading"><span className="workspace-appearance-surface-icon"><Palette size={18} /></span><h2>Customize {targetWorkspace.name}</h2></div><WorkspaceAppearancePanel workspaceId={targetWorkspace.id} identity={targetIdentity} onCustomizeWorkspace={customizeWorkspace} /></div> : tab.kind === "history" ? <div className="workspace-surface-empty"><History size={30} /><h2>{tab.title}</h2><p>Open History in the left pane to inspect or restore this point.</p><button className="secondary-button" type="button" onClick={() => { onSwitchWorkspace(targetWorkspace); setActiveMode("history"); }}>Open History</button></div> : <ChatPanel workspace={targetWorkspace} workspaceCustomizations={customizations} active={active} targetConversationId={tab.conversationId ?? null} targetConversationTitle={tab.conversationId ? tab.title : null} contextPathRequest={active && targetWorkspace.id === workspace.id ? contextRequest : null} onAddPathToChatContext={active && targetWorkspace.id === workspace.id ? attachToChat : undefined} onOpenWorkspaceFile={active && targetWorkspace.id === workspace.id ? (path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); } : undefined} selectedPath={active && targetWorkspace.id === workspace.id ? tree.selectedPath : null} onConversationActivated={(conversation) => tabs.handleTabConversationActivated(tab.id, targetWorkspace, conversation)} onConversationsChanged={(conversations) => setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: conversations }))} onAgentFinished={() => targetWorkspace.id === workspace.id ? tree.refresh() : undefined} fixtureMode={Boolean(fixture)} fixtureConversations={fixture ? (tab.conversationId || tab.id === `chat:${targetWorkspace.id}:new` ? fixture.conversations[targetWorkspace.id] : []) : undefined} fixtureTreeEntries={fixture?.trees[targetWorkspace.id]} />}</div>; }) : <WorkspaceSurfaceEmptyState workspace={workspace} identity={identity} onNewChat={() => openChat(workspace, null)} />}
     </aside>
-    <section className="content-pane chat-pane">
-      <div className="chat-header"><div><p className="eyebrow">ASSISTANT</p><h2>{conversations.find((item) => item.id === activeId)?.title ?? "New Chat"}</h2></div><button className="agent-status-chip" type="button" onClick={onOpenSetup}><span className={agent.configured ? "status-dot ready" : "status-dot"} />{agent.configured ? `${agent.provider} / ${agent.model}` : "Set up Assistant"}<Settings2 size={14} /></button></div>
-      {!agent.configured ? <AgentEmpty onOpenSetup={onOpenSetup} /> : <div className="message-list">{messages.map((message) => <ChatBubble message={message} key={message.id} />)}{streaming ? <div className="message assistant"><div className="message-avatar"><Bot size={15} /></div><div className="message-body markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown></div></div> : null}{status ? <div className="turn-status"><Loader2 className={sending ? "spin" : ""} size={14} />{status}</div> : null}<div ref={endRef} /></div>}
-      <form className="composer" onSubmit={(event) => void sendMessage(event)}>
-        {contextPaths.length ? <div className="context-chips">{contextPaths.map((path) => <button type="button" key={path} onClick={() => onContextPathsChange(contextPaths.filter((item) => item !== path))}><Paperclip size={12} />{path}<X size={12} /></button>)}</div> : null}
-        <div className="composer-row"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={!agent.configured ? "Set up Pi to start chatting…" : streamConnected ? "Ask Pi anything, or use /skill:name…" : "Connecting this chat…"} rows={2} disabled={sending || !streamConnected} /><button className="send-button" type={sending ? "button" : "submit"} onClick={sending ? () => void stopTurn() : undefined} disabled={!sending && (!streamConnected || !draft.trim())} title={sending ? "Stop Pi" : "Send"}>{sending ? <X size={18} /> : <Send size={18} />}</button></div>
-      </form>
-      {extensionRequest ? <ExtensionDialog request={extensionRequest} onRespond={respondToExtension} /> : null}
-    </section>
-  </div>;
+    {fileContextMenu ? <FileContextMenu state={fileContextMenu} onSelect={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onOpenLocal={openLocalPath} onAddToChatContext={attachToChat} onCopyPath={copyPath} onShowVersionHistory={(path) => openVersionHistory(workspace, path)} onRename={fileContextMenu.entry.path ? renameEntry : undefined} onNewFolder={createFolder} onNewFile={createFile} onUploadHere={chooseUpload} onDelete={deleteEntry} onClose={() => setFileContextMenu(null)} /> : null}
+    {chatRename ? <ChatRenamePopover state={chatRename} onRename={renameChat} onClose={() => setChatRename(null)} /> : null}
+    {versionHistory ? <FileVersionHistoryModal workspace={versionHistory.workspace} filePath={versionHistory.path} fileName={versionHistory.name} onClose={() => setVersionHistory(null)} onRestored={() => void tree.refresh()} /> : null}
+    {commandPaletteOpen ? <CommandPaletteHost commands={commands} onClose={closeCommandPalette} /> : null}
+  </main>;
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
-  return <div className={`message ${message.role}`}><div className="message-avatar">{message.role === "assistant" ? <Bot size={15} /> : <span>Y</span>}</div><div className="message-body markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown><small>{formatTime(message.createdAt)}</small></div></div>;
+function WorkspaceSurfaceEmptyState({ workspace, identity, onNewChat }: { workspace: WorkspaceSummary; identity: ReturnType<typeof workspaceIdentityFor>; onNewChat: () => void }) {
+  return <div className="workspace-surface-body workspace-surface-body-empty"><div className="workspace-surface-empty" style={workspaceIdentityStyle(identity)}><span className="workspace-surface-empty-icon"><WorkspaceIconGlyph icon={identity.Icon} size={24} /></span><h2>{workspace.name}</h2><p>Open a file, Chat, restore point, or appearance tab here.</p><button className="primary-button" type="button" onClick={onNewChat}><CirclePlus size={16} />New Chat</button></div></div>;
 }
 
-function AgentEmpty({ onOpenSetup }: { onOpenSetup: () => void }) {
-  return <div className="agent-empty"><div className="agent-orbit"><Bot size={32} /></div><p className="eyebrow">BRING YOUR OWN PI</p><h2>Set up your Assistant</h2><p>Choose any Pi-supported provider and model. Workspace itself does not require an account.</p><button className="primary-button" type="button" onClick={onOpenSetup}><Settings2 size={16} /> Set up Assistant</button></div>;
+function DesktopUpdateButton({ status, onClick }: { status: DesktopUpdateStatus; onClick: () => void }) {
+  const busy = status.phase === "checking" || status.phase === "downloading" || status.phase === "installing";
+  const title = updateActionLabel(status);
+  const tone = status.phase === "available" || status.phase === "ready" ? "available" : busy ? "working" : status.phase === "error" ? "error" : "idle";
+  return <button className={`update-button rail-update-button ${tone}`} type="button" onClick={onClick} disabled={busy} aria-label={title} title={title}>{busy ? <Loader2 className="spin" size={16} /> : status.phase === "error" ? <AlertTriangle size={16} /> : <Download size={16} />}</button>;
 }
 
-function AssistantSetupPane({ workspace, status, onConfigured }: { workspace: WorkspaceSummary; status: AgentStatus; onConfigured: (status: AgentStatus) => void }) {
-  const [models, setModels] = useState<AgentModel[]>([]);
-  const [provider, setProvider] = useState(status.provider ?? "openrouter");
-  const [model, setModel] = useState(status.model ?? "");
-  const [apiKey, setApiKey] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => { void api<{ models: AgentModel[] }>(`/api/agent/models?workspaceId=${encodeURIComponent(workspace.id)}`).then((result) => {
-    setModels(result.models); setLoading(false);
-    const first = result.models.find((item) => item.provider === provider)
-      ?? result.models.find((item) => item.provider === "openrouter")
-      ?? result.models[0];
-    if (first) {
-      setProvider(first.provider);
-      setModel((current) => result.models.some((item) => item.provider === first.provider && item.id === current) ? current : first.id);
-    }
-  }).catch((loadError) => { setError(errorText(loadError)); setLoading(false); }); }, [workspace.id]);
-  const providers = unique(models.map((item) => item.provider)).sort();
-  const providerModels = models.filter((item) => item.provider === provider);
-  useEffect(() => { if (!providerModels.some((item) => item.id === model)) setModel(providerModels[0]?.id ?? ""); }, [provider]);
-  const oauthSupported = providerModels.some((item) => item.oauthSupported);
-  const providerAuthConfigured = providerModels.some((item) => item.authConfigured);
-  async function save() {
-    if (!provider || !model) return;
-    setSaving(true); setError(null);
-    try {
-      const result = await api<{ status: AgentStatus }>("/api/agent/configure", { method: "POST", body: { workspaceId: workspace.id, provider, model, apiKey: apiKey.trim() || undefined } });
-      setModels((current) => current.map((item) => item.provider === provider ? { ...item, authConfigured: true } : item));
-      setApiKey("");
-      onConfigured(result.status);
-    } catch (saveError) { setError(errorText(saveError)); } finally { setSaving(false); }
+function updateNeedsAttention(status: DesktopUpdateStatus) { return ["available", "downloading", "ready", "error"].includes(status.phase); }
+function updateActionLabel(status: DesktopUpdateStatus) {
+  if (status.phase === "available") return `Download Workspace ${status.availableVersion ?? "update"}`;
+  if (status.phase === "downloading") return status.progressPercent === null ? "Downloading update" : `Downloading update · ${Math.round(status.progressPercent)}%`;
+  if (status.phase === "ready") return `Restart and install Workspace ${status.availableVersion ?? "update"}`;
+  if (status.phase === "installing") return "Restarting to install update";
+  if (status.phase === "error") return "Retry update";
+  if (status.phase === "not_available") return "Workspace is up to date";
+  return "Check for updates";
+}
+
+function isCommandPaletteShortcut(event: KeyboardEvent) {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLocaleLowerCase() === "k";
+}
+
+function commandPaletteBlockedByDialog() {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector(".modal-backdrop, .publish-review-backdrop, [role='dialog'][aria-modal='true']"));
+}
+
+function pendingDeleteKey(pending: Pick<PendingDelete, "workspaceId" | "path">) {
+  return `${pending.workspaceId}:${pending.path}`;
+}
+
+async function deleteLocalFileRequest(pending: PendingDelete, keepalive = false) {
+  const sessionHeaders = await window.workspaceDesktop?.api.getSessionHeaders?.();
+  const response = await fetch(apiUrl(`/api/workspaces/${pending.workspaceId}/local-file`), {
+    method: "DELETE",
+    headers: { "content-type": "application/json", ...(sessionHeaders ?? {}) },
+    body: JSON.stringify({ path: pending.path }),
+    keepalive,
+  });
+  if (response.ok) return;
+  let message = response.statusText || `Request failed (${response.status}).`;
+  try { message = (await response.json() as { error?: string }).error || message; } catch { /* keep the status message */ }
+  throw new Error(message);
+}
+
+async function collectDroppedUploadFiles(dataTransfer: DataTransfer): Promise<DroppedUploadFile[]> {
+  const entries = Array.from(dataTransfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.webkitGetAsEntry?.() ?? null)
+    .filter((entry): entry is FileSystemEntry => entry !== null);
+  if (entries.length) {
+    const files: DroppedUploadFile[] = [];
+    for (const entry of entries) await collectDroppedEntryFiles(entry, "", files);
+    return files;
   }
-  async function connectOAuth() {
-    setSaving(true); setError(null);
-    try {
-      const result = await api<{ status: AgentStatus }>("/api/agent/oauth", { method: "POST", body: { workspaceId: workspace.id, provider, model } });
-      setModels((current) => current.map((item) => item.provider === provider ? { ...item, authConfigured: true } : item));
-      onConfigured(result.status);
-    } catch (oauthError) { setError(errorText(oauthError)); } finally { setSaving(false); }
+  return Array.from(dataTransfer.files).map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
+}
+
+async function collectDroppedEntryFiles(entry: FileSystemEntry, parentPath: string, output: DroppedUploadFile[]): Promise<void> {
+  if (isDroppedFileEntry(entry)) {
+    const file = await droppedFileFromEntry(entry);
+    output.push({ file, relativePath: joinDropPath(parentPath, entry.name || file.name) });
+    return;
   }
-  return <div className="single-pane assistant-surface">
-    <div className="library-heading"><div><p className="eyebrow">NATIVE PI</p><h1>Assistant setup</h1><p>Choose the provider and model that power your Assistant.</p></div></div>
-    <section className="assistant-setup-card">
-      {loading ? <LoadingRow label="Loading Pi models" /> : <div className="setup-grid">
-        <div className="setup-intro"><Bot size={24} /><div><strong>Your Assistant, your provider</strong><p>Workspace uses native Pi, including its built-in tools, Skills, commands, and trusted Extensions.</p></div></div>
-        {error ? <div className="inline-error">{error}</div> : null}
-        <label>Provider<select value={provider} onChange={(event) => { setProvider(event.target.value); setModel(""); }}>{providers.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label>Model<select value={model} onChange={(event) => setModel(event.target.value)}>{providerModels.map((item) => <option value={item.id} key={item.id}>{item.name || item.id}</option>)}</select></label>
-        <label>API key <span>stored securely on this computer</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={providerAuthConfigured ? "Saved credential available" : "Paste a key"} autoComplete="off" /></label>
-        <button className="primary-button" type="button" onClick={() => void save()} disabled={saving || !model || (!providerAuthConfigured && !apiKey.trim())}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />} Save setup</button>
-        {oauthSupported ? <button className="secondary-button" type="button" onClick={() => void connectOAuth()} disabled={saving}><Cloud size={16} /> Connect subscription with OAuth</button> : null}
-        <p className="security-note"><ShieldCheck size={14} /> Extensions stored in this Space load only after you trust the Space.</p>
-      </div>}
-    </section>
-  </div>;
+  if (!isDroppedDirectoryEntry(entry)) return;
+  const directoryPath = joinDropPath(parentPath, entry.name);
+  for (const child of await readDroppedDirectoryEntries(entry)) await collectDroppedEntryFiles(child, directoryPath, output);
 }
 
-function AssistantCapabilityPane({ workspace, mode, agent, onOpenSetup, onError }: {
-  workspace: WorkspaceSummary;
-  mode: "skills" | "extensions";
-  agent: AgentStatus;
-  onOpenSetup: () => void;
-  onError: (message: string | null) => void;
-}) {
-  const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
-  const [packageSource, setPackageSource] = useState("");
-  const [scope, setScope] = useState<"global" | "project">("global");
-  const [busy, setBusy] = useState(false);
-  const importRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { void load(); }, [workspace.id]);
-  async function load() { try { setCatalog(await api<AgentCatalog>(`/api/workspaces/${workspace.id}/agent/catalog`)); } catch (loadError) { onError(errorText(loadError)); } }
-  async function setTrusted(trusted: boolean) { try { const result = await api<{ catalog: AgentCatalog }>(`/api/workspaces/${workspace.id}/agent/trust`, { method: "POST", body: { trusted } }); setCatalog(result.catalog); } catch (trustError) { onError(errorText(trustError)); } }
-  async function installPackage() {
-    if (!packageSource.trim()) return; setBusy(true);
-    try { await api("/api/agent/packages/install", { method: "POST", body: { workspaceId: workspace.id, source: packageSource.trim(), scope } }); setPackageSource(""); await load(); } catch (installError) { onError(errorText(installError)); } finally { setBusy(false); }
+function isDroppedFileEntry(entry: FileSystemEntry): entry is FileSystemFileEntry {
+  return entry.isFile && typeof (entry as Partial<FileSystemFileEntry>).file === "function";
+}
+
+function isDroppedDirectoryEntry(entry: FileSystemEntry): entry is FileSystemDirectoryEntry {
+  return entry.isDirectory && typeof (entry as Partial<FileSystemDirectoryEntry>).createReader === "function";
+}
+
+function droppedFileFromEntry(entry: FileSystemFileEntry): Promise<File> {
+  return new Promise((resolvePromise, reject) => { entry.file(resolvePromise, reject); });
+}
+
+async function readDroppedDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+  const reader = entry.createReader();
+  const entries: FileSystemEntry[] = [];
+  for (;;) {
+    const batch = await new Promise<FileSystemEntry[]>((resolvePromise, reject) => { reader.readEntries(resolvePromise, reject); });
+    if (!batch.length) break;
+    entries.push(...batch);
   }
-  async function importSkills(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []); event.target.value = ""; if (!files.length) return;
-    const form = new FormData(); form.set("workspaceId", workspace.id); form.set("scope", scope); for (const file of files) form.append("files", file, file.name);
-    setBusy(true); try { await apiForm("/api/agent/skills/import", form); await load(); } catch (importError) { onError(errorText(importError)); } finally { setBusy(false); }
-  }
-  return <div className="single-pane assistant-surface">
-    <div className="library-heading"><div><p className="eyebrow">ASSISTANT</p><h1>{mode === "skills" ? "Skills" : "Extensions"}</h1><p>{mode === "skills" ? "Reusable ways of working, loaded progressively when relevant." : "Capabilities and connections your Assistant can use."}</p></div><button className="secondary-button" type="button" onClick={() => void load()}><RefreshCw size={15} /> Refresh</button></div>
-    {!agent.configured ? <div className="trust-banner"><Bot size={18} /><div><strong>Assistant not set up yet</strong><span>You can organize Skills and Extensions now, then choose a provider when you are ready to Chat.</span></div><button className="secondary-button compact" type="button" onClick={onOpenSetup}>Open Setup</button></div> : null}
-    <div className="trust-banner"><ShieldCheck size={18} /><div><strong>{catalog?.projectTrusted ? "This Space is trusted" : "This Space is not trusted"}</strong><span>{catalog?.projectTrusted ? "Skills, Extensions, packages, and settings stored in this Space may load." : "Personal Skills and Extensions still work. Trust this Space to enable capabilities stored inside it."}</span></div><button className="secondary-button compact" type="button" onClick={() => void setTrusted(!catalog?.projectTrusted)}>{catalog?.projectTrusted ? "Remove trust" : "Trust Space"}</button></div>
-    <section className="install-panel"><div className="scope-toggle"><button className={scope === "global" ? "active" : ""} type="button" onClick={() => setScope("global")}>Personal</button><button className={scope === "project" ? "active" : ""} type="button" onClick={() => setScope("project")}>This Space</button></div>{mode === "skills" ? <><button className="primary-button" type="button" disabled={busy} onClick={() => importRef.current?.click()}><Upload size={15} /> Import Skill or pack</button><input hidden ref={importRef} type="file" accept=".zip,.skill,.md" multiple onChange={(event) => void importSkills(event)} /></> : null}<label className="package-input"><Package size={15} /><input value={packageSource} onChange={(event) => setPackageSource(event.target.value)} placeholder="npm package, git URL, or local package path" /><button type="button" disabled={busy || !packageSource.trim()} onClick={() => void installPackage()}>{busy ? <Loader2 className="spin" size={15} /> : "Install"}</button></label></section>
-    {mode === "skills" ? <p className="security-note"><ShieldCheck size={14} /> Skills can include executable scripts. Inspect packs before importing; Skills added to this Space also require Space trust.</p> : <p className="security-note"><ShieldCheck size={14} /> Npm and git sources use command-line tools installed on this computer.</p>}
-    {catalog?.diagnostics.length ? <div className="diagnostics">{catalog.diagnostics.map((item, index) => <span className={item.type} key={`${item.message}-${index}`}>{item.message}</span>)}</div> : null}
-    {mode === "skills" ? <div className="card-grid">{catalog?.skills.length ? catalog.skills.map((skill) => <article className="resource-card" key={`${skill.source}:${skill.name}`}><div className="card-icon"><Sparkles size={18} /></div><div><strong>{skill.name}</strong><p>{skill.description}</p><small>{skill.source} · {skill.path}</small></div><span className={skill.enabled ? "enabled-badge" : "disabled-badge"}>{skill.enabled ? "Enabled" : "Disabled"}</span></article>) : <EmptyState icon={<Sparkles size={30} />} title="No Skills loaded" detail="Import a Skill or compatible pack, add a Pi package, or place Skills in a standard Pi location." />}</div> : <><div className="card-grid">{catalog?.extensions.length ? catalog.extensions.map((extension) => <article className="resource-card" key={`${extension.source}:${extension.id}`}><div className="card-icon"><Plug size={18} /></div><div><strong>{extension.name}</strong><p>{extension.tools.length} tools · {extension.commands.length} commands</p><small>{extension.source} · {extension.path}</small></div><span className={extension.enabled ? "enabled-badge" : "disabled-badge"}>{extension.enabled ? "Loaded" : "Disabled"}</span></article>) : <EmptyState icon={<Plug size={30} />} title="No Extensions loaded" detail="Install a Pi package containing an Extension, or add one to a trusted .pi/extensions folder." />}</div>{catalog?.tools.length ? <details className="tool-details"><summary><Code2 size={15} /> Available tools ({catalog.tools.length})</summary><div className="tool-list">{catalog.tools.map((tool) => <span key={tool.name}><strong>{tool.name}</strong>{tool.description}<small>{tool.source}</small></span>)}</div></details> : null}</>}
-  </div>;
+  return entries;
 }
 
-function LibraryPane({ workspace, onError }: { workspace: WorkspaceSummary; onError: (message: string | null) => void }) {
-  const [tree, setTree] = useState<TreeEntry[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [copying, setCopying] = useState(false);
-  const [copyStatus, setCopyStatus] = useState("");
-  const uploadRef = useRef<HTMLInputElement>(null);
-  const selectedEntry = selected ? findTreeEntry(tree, selected) : null;
-  useEffect(() => { void load(); }, []);
-  useEffect(() => { setCopyStatus(""); }, [selected, workspace.id]);
-  async function load() { try { setTree((await api<{ tree: TreeEntry[] }>("/api/resources/tree")).tree); } catch (loadError) { onError(errorText(loadError)); } }
-  async function upload(event: ChangeEvent<HTMLInputElement>) { const files = Array.from(event.target.files ?? []); event.target.value = ""; if (!files.length) return; const form = new FormData(); form.set("targetFolderPath", selectedEntry?.kind === "folder" ? selectedEntry.path : ""); form.set("relativePaths", JSON.stringify(files.map((file) => file.webkitRelativePath || file.name))); for (const file of files) form.append("files", file, file.name); try { await apiForm("/api/resources/upload", form); await load(); } catch (uploadError) { onError(errorText(uploadError)); } }
-  async function createFolder() { const name = window.prompt("Folder name"); if (!name?.trim()) return; try { await api("/api/resources/folders", { method: "POST", body: { parentPath: selectedEntry?.kind === "folder" ? selectedEntry.path : "", name: name.trim() } }); await load(); } catch (folderError) { onError(errorText(folderError)); } }
-  async function addToSpace() {
-    if (!selected || copying) return;
-    setCopying(true);
-    setCopyStatus("");
-    try {
-      const result = await api<{ copied: string[] }>("/api/resources/copy-to-workspace", { method: "POST", body: { workspaceId: workspace.id, paths: [selected], targetFolder: "From Library" } });
-      setCopyStatus(`Added ${result.copied[0] ?? selectedEntry?.name ?? "item"} to ${workspace.name}.`);
-    } catch (copyError) {
-      onError(errorText(copyError));
-    } finally {
-      setCopying(false);
-    }
-  }
-  return <div className="pane-layout"><aside className="sidebar-pane"><PaneTitle icon={<LibraryBig size={18} />} title="Library" detail="Reusable materials for every Space" /><div className="pane-toolbar"><label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search Library" /></label><button className="icon-button" type="button" onClick={() => uploadRef.current?.click()} title={selectedEntry?.kind === "folder" ? `Upload to ${selectedEntry.name}` : "Add to Library"}><Upload size={16} /></button><button className="icon-button" type="button" onClick={() => void createFolder()} title={selectedEntry?.kind === "folder" ? `New folder in ${selectedEntry.name}` : "New Library folder"}><Folder size={16} /></button><input hidden ref={uploadRef} type="file" multiple onChange={(event) => void upload(event)} /></div><div className="tree-scroll"><FileTree entries={query.trim() ? filterTree(tree, query.trim().toLocaleLowerCase()) : tree} selectedPath={selected} onSelect={setSelected} selectFolders /></div></aside><section className="content-pane">{selectedEntry ? <div className="resource-selection"><div className="card-icon large">{selectedEntry.kind === "folder" ? <Folder size={26} /> : <FileText size={26} />}</div><p className="eyebrow">LIBRARY ITEM</p><h2>{selectedEntry.name}</h2><span>{selectedEntry.path}</span><button className="primary-button" type="button" disabled={copying} onClick={() => void addToSpace()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />} {copying ? "Adding…" : `Add to ${workspace.name}`}</button>{copyStatus ? <p className="copy-status" role="status"><Check size={15} /> {copyStatus}</p> : null}<p>An independent copy is added to this Space under <strong>From Library</strong>. Your Library original stays unchanged, and nothing is shared with the Assistant automatically.</p></div> : <EmptyState icon={<LibraryBig size={30} />} title="Build your Library" detail="Add templates, references, examples, or anything else you want to reuse across Spaces." />}</section></div>;
+function joinDropPath(...segments: string[]) {
+  return segments.map((segment) => segment.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
 }
 
-function HistoryPane({ workspace, onError }: { workspace: WorkspaceSummary; onError: (message: string | null) => void }) {
-  const [items, setItems] = useState<WorkspaceCheckpoint[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { void load(); }, [workspace.id]);
-  async function load() { try { setItems((await api<{ checkpoints: WorkspaceCheckpoint[] }>(`/api/workspaces/${workspace.id}/history/checkpoints`)).checkpoints); } catch (loadError) { onError(errorText(loadError)); } }
-  async function savePoint() { setBusy(true); try { await api(`/api/workspaces/${workspace.id}/history/checkpoints`, { method: "POST", body: { label: "Manual restore point" } }); await load(); } catch (saveError) { onError(errorText(saveError)); } finally { setBusy(false); } }
-  async function restore(item: WorkspaceCheckpoint) { if (!window.confirm(`Restore ${workspace.name} to ${formatDate(item.createdAt)}?`)) return; setBusy(true); try { await api(`/api/workspaces/${workspace.id}/history/checkpoints/${item.checkpointId}/restore`, { method: "POST", body: {} }); await load(); } catch (restoreError) { onError(errorText(restoreError)); } finally { setBusy(false); } }
-  return <div className="single-pane history-surface"><div className="library-heading"><div><p className="eyebrow">SPACE HISTORY</p><h1>Restore points</h1><p>Workspace stores restore points separately from this Space.</p></div><button className="primary-button" type="button" onClick={() => void savePoint()} disabled={busy}>{busy ? <Loader2 className="spin" size={15} /> : <Clock3 size={15} />} Save restore point</button></div><div className="history-list">{items.length ? items.map((item) => <article key={item.checkpointId}><div className="history-icon"><History size={17} /></div><div><strong>{item.label || item.reason}</strong><span>{formatDate(item.createdAt)} · {item.fileCount} files</span></div><button className="secondary-button compact" type="button" onClick={() => void restore(item)} disabled={busy}>Restore</button></article>) : <EmptyState icon={<History size={30} />} title="No restore points yet" detail="Create one before a large set of edits when you want a local rollback point." />}</div></div>;
+function fixtureConversationGroups(fixture: WorkspaceUiFixture): Record<string, ConversationSummary[]> { return Object.fromEntries(Object.entries(fixture.conversations).map(([id, conversations]) => [id, conversations.map(({ messages: _messages, ...summary }) => summary)])); }
+function normalizeMode(value: string | null): WorkspaceRailMode { return (["workspaces", "space", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "space"; }
+function normalizeCustomizations(value: unknown): WorkspaceCustomizationMap { return value && typeof value === "object" && !Array.isArray(value) ? value as WorkspaceCustomizationMap : {}; }
+
+function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {
+  const [preference, setPreference] = useState<AppThemePreference>(() => { if (fixtureRequested) return "light"; const value = readStoredValue(themePreferenceKey); return value === "light" || value === "dark" || value === "system" ? value : "system"; });
+  const [system, setSystem] = useState<AppTheme>(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const theme = preference === "system" ? system : preference;
+  useEffect(() => { const media = window.matchMedia?.("(prefers-color-scheme: dark)"); if (!media) return; const change = () => setSystem(media.matches ? "dark" : "light"); media.addEventListener("change", change); return () => media.removeEventListener("change", change); }, []);
+  useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; window.workspaceDesktop?.window.setTheme(theme); if (!fixtureRequested) writeStoredValue(themePreferenceKey, preference); }, [preference, theme]);
+  return [theme, preference, setPreference];
 }
 
-function ExtensionDialog({ request, onRespond }: { request: ExtensionUiRequest; onRespond: (value: unknown, cancelled?: boolean) => Promise<void> }) {
-  const [value, setValue] = useState(request.initialValue ?? "");
-  if (request.method === "notify") return <div className="extension-notice"><Plug size={15} /><span>{request.message}</span><button type="button" onClick={() => void onRespond(true)}><X size={14} /></button></div>;
-  return <Modal title={request.title || "Extension request"} subtitle={request.message || "A Pi extension needs your input."} onClose={() => void onRespond(null, true)}>
-    <div className="extension-dialog-content">{request.method === "select" ? <div className="select-options">{request.options?.map((option) => <button className="secondary-button" type="button" key={option} onClick={() => void onRespond(option)}>{option}</button>)}</div> : request.method === "confirm" ? <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void onRespond(false)}>No</button><button className="primary-button" type="button" onClick={() => void onRespond(true)}>Yes</button></div> : <><label>{request.method === "editor" ? "Response" : "Value"}{request.method === "editor" ? <textarea rows={8} value={value} onChange={(event) => setValue(event.target.value)} placeholder={request.placeholder} /> : <input type={request.secret ? "password" : "text"} value={value} onChange={(event) => setValue(event.target.value)} placeholder={request.placeholder} autoComplete={request.secret ? "off" : undefined} />}</label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void onRespond(null, true)}>Cancel</button><button className="primary-button" type="button" onClick={() => void onRespond(value)}>Continue</button></div></>}</div>
-  </Modal>;
+function useTypographyPreference(): [AppTypographyPreference, (update: Partial<AppTypographyPreference>) => void] {
+  const [value, setValue] = useState<AppTypographyPreference>(() => fixtureRequested ? defaultTypographyPreference : readStoredJsonValue(typographyPreferenceKey, (raw) => { const record = raw as Partial<AppTypographyPreference>; return { font: typographyFontValues.includes(record.font as AppTypographyFont) ? record.font as AppTypographyFont : defaultTypographyPreference.font, textSize: textSizeValues.includes(record.textSize as AppTypographyPreference["textSize"]) ? record.textSize as AppTypographyPreference["textSize"] : defaultTypographyPreference.textSize }; }, defaultTypographyPreference));
+  useEffect(() => { document.documentElement.dataset.workspaceFont = value.font; document.documentElement.dataset.workspaceTextSize = value.textSize; if (!fixtureRequested) writeStoredJsonValue(typographyPreferenceKey, value); }, [value]);
+  return [value, (update) => setValue((current) => ({ ...current, ...update }))];
 }
 
-function Modal({ title, subtitle, onClose, children }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal-card" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{title}</h2>{subtitle ? <p>{subtitle}</p> : null}</div><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><X size={17} /></button></header><div className="modal-body">{children}</div></section></div>;
+function useScrollbarActivity() {
+  useEffect(() => {
+    const activeClass = "scrollbars-active";
+    const nearClass = "scrollbar-near";
+    let timer: number | null = null;
+    let nearElement: HTMLElement | null = null;
+    const clearTimer = () => { if (timer !== null) window.clearTimeout(timer); timer = null; };
+    const active = () => {
+      document.body.classList.add(activeClass);
+      clearTimer();
+      timer = window.setTimeout(() => { document.body.classList.remove(activeClass); timer = null; }, 900);
+    };
+    const scrollableAncestorFrom = (target: EventTarget | null) => {
+      let node = target instanceof Element ? target : null;
+      while (node && node !== document.body) {
+        if (node instanceof HTMLElement) {
+          const style = window.getComputedStyle(node);
+          const scrollsY = node.scrollHeight > node.clientHeight && /(auto|scroll|overlay)/.test(style.overflowY);
+          const scrollsX = node.scrollWidth > node.clientWidth && /(auto|scroll|overlay)/.test(style.overflowX);
+          if (scrollsY || scrollsX) return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    };
+    const setNearElement = (next: HTMLElement | null) => {
+      if (nearElement === next) return;
+      nearElement?.classList.remove(nearClass);
+      nearElement = next;
+      nearElement?.classList.add(nearClass);
+    };
+    const pointerMove = (event: PointerEvent) => {
+      const scrollable = scrollableAncestorFrom(event.target);
+      if (!scrollable) return setNearElement(null);
+      const rect = scrollable.getBoundingClientRect();
+      const threshold = 24;
+      const nearVertical = scrollable.scrollHeight > scrollable.clientHeight && event.clientX >= rect.right - threshold && event.clientX <= rect.right + 2;
+      const nearHorizontal = scrollable.scrollWidth > scrollable.clientWidth && event.clientY >= rect.bottom - threshold && event.clientY <= rect.bottom + 2;
+      setNearElement(nearVertical || nearHorizontal ? scrollable : null);
+    };
+    const pointerLeave = () => setNearElement(null);
+    document.addEventListener("scroll", active, true);
+    document.addEventListener("wheel", active, { passive: true, capture: true });
+    document.addEventListener("pointermove", pointerMove, { passive: true, capture: true });
+    document.addEventListener("pointerleave", pointerLeave, true);
+    return () => {
+      clearTimer();
+      document.body.classList.remove(activeClass);
+      setNearElement(null);
+      document.removeEventListener("scroll", active, true);
+      document.removeEventListener("wheel", active, true);
+      document.removeEventListener("pointermove", pointerMove, true);
+      document.removeEventListener("pointerleave", pointerLeave, true);
+    };
+  }, []);
 }
 
-function PaneTitle({ icon, title, detail, action }: { icon: ReactNode; title: string; detail: string; action?: ReactNode }) { return <div className="pane-title"><span>{icon}</span><div><h2>{title}</h2><p>{detail}</p></div>{action ? <div className="pane-title-action">{action}</div> : null}</div>; }
-function LoadingRow({ label }: { label: string }) { return <div className="loading-row"><Loader2 className="spin" size={15} />{label}</div>; }
-function EmptyState({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <div className="empty-state"><div>{icon}</div><h2>{title}</h2><p>{detail}</p></div>; }
-function Centered({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <main className="centered-state"><div>{icon}</div><h1>{title}</h1><p>{detail}</p></main>; }
-function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
-function toggleSet(current: Set<string>, value: string): Set<string> { const next = new Set(current); if (next.has(value)) next.delete(value); else next.add(value); return next; }
-function formatDate(value: string): string { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
-function formatTime(value: string): string { return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
-function filterTree(entries: TreeEntry[], query: string): TreeEntry[] { return entries.flatMap((entry) => { const children = entry.children ? filterTree(entry.children, query) : []; return entry.name.toLocaleLowerCase().includes(query) || children.length ? [{ ...entry, children }] : []; }); }
-function findTreeEntry(entries: TreeEntry[], path: string): TreeEntry | null { for (const entry of entries) { if (entry.path === path) return entry; const child = entry.children ? findTreeEntry(entry.children, path) : null; if (child) return child; } return null; }
+function useDesktopAccentColor() {
+  useEffect(() => {
+    const desktopWindow = window.workspaceDesktop?.window;
+    if (!desktopWindow) return;
+    let cancelled = false;
+    const apply = (color: string | null) => {
+      if (!color) document.documentElement.style.removeProperty("--workspace-accent");
+      else if (/^#[0-9a-f]{6}$/i.test(color)) document.documentElement.style.setProperty("--workspace-accent", color);
+    };
+    void desktopWindow.getAccentColor().then((color) => { if (!cancelled) apply(color); }).catch(() => {});
+    const unsubscribe = desktopWindow.onAccentColorChanged(apply);
+    return () => { cancelled = true; unsubscribe(); };
+  }, []);
+}

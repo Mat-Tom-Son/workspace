@@ -1,0 +1,41 @@
+import type { AgentStatus, ConversationSummary, TreeEntry, WorkspaceCheckpoint, WorkspaceFixtureConversation, WorkspaceSummary } from "../types";
+
+export interface WorkspaceUiFixture {
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  trees: Record<string, TreeEntry[]>;
+  conversations: Record<string, WorkspaceFixtureConversation[]>;
+  checkpoints: Record<string, WorkspaceCheckpoint[]>;
+  library: TreeEntry[];
+  agent: AgentStatus;
+}
+
+export function buildWorkspaceFixture(): WorkspaceUiFixture {
+  const now = "2026-07-10T18:30:00.000Z";
+  const home: WorkspaceSummary = { id: "fixture-home", name: "Home projects", rootPath: "C:\\Users\\you\\Documents\\Home projects", location: { kind: "local", storage: "linked" }, createdAt: now, updatedAt: now };
+  const trip: WorkspaceSummary = { id: "fixture-trip", name: "Japan trip", rootPath: "G:\\My Drive\\Japan trip", location: { kind: "local", storage: "linked", providerHint: "google-drive" }, createdAt: now, updatedAt: now };
+  return {
+    workspaces: [home, trip], activeWorkspaceId: home.id,
+    agent: { ready: true, configured: true, provider: "openrouter", model: "anthropic/claude-sonnet-4", piVersion: "0.80.3", projectTrusted: true, error: null },
+    trees: {
+      [home.id]: [
+        { name: "Kitchen refresh", path: "Kitchen refresh", kind: "folder", hasChildren: true, children: [{ name: "ideas.md", path: "Kitchen refresh/ideas.md", kind: "file", sizeBytes: 5240, updatedAt: now }, { name: "budget.xlsx", path: "Kitchen refresh/budget.xlsx", kind: "file", sizeBytes: 48200, updatedAt: now }] },
+        { name: "Garden", path: "Garden", kind: "folder", hasChildren: true, children: [{ name: "planting-plan.pdf", path: "Garden/planting-plan.pdf", kind: "file", sizeBytes: 812000, updatedAt: now }] },
+        { name: "weekend checklist.md", path: "weekend checklist.md", kind: "file", sizeBytes: 2120, updatedAt: now },
+      ],
+      [trip.id]: [{ name: "Bookings", path: "Bookings", kind: "folder", hasChildren: true, children: [{ name: "hotel.pdf", path: "Bookings/hotel.pdf", kind: "file", sizeBytes: 222000, updatedAt: now }] }, { name: "itinerary.md", path: "itinerary.md", kind: "file", sizeBytes: 8430, updatedAt: now }],
+    },
+    conversations: {
+      [home.id]: [
+        { id: "fixture-chat-1", title: "Compare contractor estimates", createdAt: now, updatedAt: now, messages: [{ id: "u1", role: "user", content: "Compare the two estimates and make me a short decision table.", createdAt: now }, { id: "a1", role: "assistant", content: "I compared the scope, allowances, and timelines. The biggest difference is cabinetry: one quote is fixed-price, while the other leaves it as an allowance. I’d clarify that before choosing.", createdAt: now }] },
+        { id: "fixture-chat-2", title: "Plan this weekend", createdAt: now, updatedAt: "2026-07-09T16:00:00.000Z", messages: [{ id: "u2", role: "user", content: "Turn my checklist into a realistic Saturday plan.", createdAt: now }] },
+      ],
+      [trip.id]: [{ id: "fixture-chat-3", title: "Build a relaxed itinerary", createdAt: now, updatedAt: now, messages: [{ id: "u3", role: "user", content: "Use the bookings and make a relaxed seven-day itinerary.", createdAt: now }] }],
+    },
+    checkpoints: {
+      [home.id]: [{ checkpointId: "cp-home-1", createdAt: now, label: "Before reorganizing project notes", reason: "before_turn", fileCount: 5 }],
+      [trip.id]: [{ checkpointId: "cp-trip-1", createdAt: now, label: "Before itinerary edits", reason: "before_turn", fileCount: 2 }],
+    },
+    library: [{ name: "Templates", path: "Templates", kind: "folder", hasChildren: true, children: [{ name: "comparison-table.docx", path: "Templates/comparison-table.docx", kind: "file", sizeBytes: 18600, updatedAt: now }] }, { name: "packing-list.md", path: "packing-list.md", kind: "file", sizeBytes: 1240, updatedAt: now }],
+  };
+}

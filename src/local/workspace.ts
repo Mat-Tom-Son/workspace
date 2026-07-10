@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -21,12 +22,15 @@ import {
   sep,
 } from "node:path";
 
+import { isOfficeDocumentPath, isOfficeLockFileName, officeDocumentLockPresent } from "./office-lock-files.js";
 import {
   managedWorkspaceRoot,
+  workspaceStateDir,
   workspaceStateRoot,
   workspaceManifestFile,
   workspaceRegistryFile,
 } from "./state-paths.js";
+import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState } from "./workspace-ignore.js";
 
 export interface WorkspaceLocation {
   kind: "local";
@@ -49,7 +53,44 @@ export interface TreeEntry {
   kind: "file" | "folder";
   sizeBytes?: number;
   updatedAt?: string;
+  ignored?: boolean;
+  descendantIgnoredCount?: number;
+  hasChildren?: boolean;
   children?: TreeEntry[];
+}
+
+export interface WorkspaceEntryInfo {
+  name: string;
+  path: string;
+  kind: "file" | "folder";
+  sizeBytes: number;
+  createdAt: string;
+  modifiedAt: string;
+  extension: string | null;
+  mimeType: string;
+  hashSha256: string | null;
+  officeDocument: boolean;
+  openInOffice: boolean;
+}
+
+export interface WorkspaceMovedEntry {
+  fromPath: string;
+  path: string;
+  name: string;
+  kind: "file" | "folder";
+  updatedAt: string;
+}
+
+export interface WorkspaceCreatedEntry {
+  path: string;
+  name: string;
+  kind: "file" | "folder";
+  sizeBytes?: number;
+  updatedAt: string;
+}
+
+export interface WorkspaceTreeOptions {
+  includeIgnored?: boolean;
 }
 
 interface WorkspaceRegistry {
@@ -103,9 +144,53 @@ export async function getWorkspace(workspaceId: string): Promise<WorkspaceSummar
   return workspace;
 }
 
-export async function scanWorkspaceTree(rootPath: string, maxDepth = 20): Promise<TreeEntry[]> {
+export async function renameWorkspace(workspaceId: string, name: string): Promise<WorkspaceSummary> {
+  assertId(workspaceId);
+  const normalizedName = normalizeWorkspaceName(name);
+  const registry = await readRegistry();
+  const workspace = registry.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace || !existsSync(workspace.rootPath)) throw notFound("Space not found.");
+  workspace.name = normalizedName;
+  workspace.updatedAt = new Date().toISOString();
+  await writeRegistry(registry);
+  await writeExternalManifest(workspace);
+  return workspace;
+}
+
+export async function removeWorkspace(
+  workspaceId: string,
+  managedBase = managedWorkspaceRoot(),
+): Promise<{ removed: true; deleted: boolean; rootPath: string }> {
+  const workspace = await getWorkspace(workspaceId);
+  const registry = await readRegistry();
+  const rootPath = ensureSafeWorkspaceRoot(workspace.rootPath);
+  let deleted = false;
+  if (workspace.location.storage === "managed") {
+    const base = resolve(managedBase);
+    if (samePath(rootPath, base) || !pathContains(base, rootPath)) {
+      throw new Error("Workspace will only delete a managed Space inside its registered managed-content folder.");
+    }
+    await rm(rootPath, { recursive: true, force: false });
+    deleted = true;
+  }
+  registry.workspaces = registry.workspaces.filter((item) => item.id !== workspaceId);
+  await writeRegistry(registry);
+  await rm(workspaceStateDir(rootPath), { recursive: true, force: true });
+  return { removed: true, deleted, rootPath };
+}
+
+export async function scanWorkspaceTree(
+  rootPath: string,
+  maxDepth = 20,
+  relativePath = "",
+  options: WorkspaceTreeOptions = {},
+): Promise<TreeEntry[]> {
   const safeRoot = ensureSafeWorkspaceRoot(rootPath);
-  return scanDirectory(safeRoot, safeRoot, 0, maxDepth);
+  const scanRoot = resolveWorkspacePath(safeRoot, relativePath || ".");
+  const info = await stat(scanRoot).catch(() => null);
+  if (!info?.isDirectory()) throw new Error("Requested Space tree path is not a folder.");
+  const ignoreState = await readWorkspaceIgnoreState(safeRoot);
+  return scanDirectory(safeRoot, scanRoot, 0, Math.min(Math.max(maxDepth, 0), 50), ignoreState.patterns, options.includeIgnored !== false);
 }
 
 export async function readWorkspaceTextFile(rootPath: string, relativePath: string): Promise<{ text: string }> {
@@ -116,6 +201,181 @@ export async function readWorkspaceTextFile(rootPath: string, relativePath: stri
   const bytes = await readFile(path);
   if (looksBinary(bytes)) throw new Error("This file is binary and cannot be previewed as text.");
   return { text: bytes.toString("utf8") };
+}
+
+export async function writeWorkspaceTextFile(rootPath: string, relativePath: string, text: string): Promise<{ path: string; text: string }> {
+  const path = resolveWorkspacePath(rootPath, relativePath);
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile()) throw notFound("File not found.");
+  if (Buffer.byteLength(text, "utf8") > maxPreviewBytes) throw new Error("This file is too large to edit (2 MB maximum).");
+  await writeFile(path, text, "utf8");
+  await touchWorkspace(rootPath);
+  return { path: normalizeRelative(relative(ensureSafeWorkspaceRoot(rootPath), path)), text };
+}
+
+export async function getWorkspaceEntryInfo(rootPath: string, relativePath: string): Promise<WorkspaceEntryInfo> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const path = resolveWorkspacePath(root, relativePath);
+  const info = await stat(path).catch(() => null);
+  if (!info || (!info.isFile() && !info.isDirectory())) throw notFound("Space item not found.");
+  const extension = info.isFile() ? extname(path).toLowerCase() || null : null;
+  const officeDocument = info.isFile() && isOfficeDocumentPath(path);
+  return {
+    name: basename(path),
+    path: normalizeRelative(relative(root, path)),
+    kind: info.isDirectory() ? "folder" : "file",
+    sizeBytes: info.isFile() ? info.size : 0,
+    createdAt: info.birthtime.toISOString(),
+    modifiedAt: info.mtime.toISOString(),
+    extension,
+    mimeType: info.isDirectory() ? "inode/directory" : contentTypeForExtension(extension),
+    hashSha256: info.isFile() ? await sha256File(path) : null,
+    officeDocument,
+    openInOffice: officeDocument ? await officeDocumentLockPresent(path) : false,
+  };
+}
+
+export async function findExistingWorkspaceFilePaths(rootPath: string, requestedPaths: string[]): Promise<string[]> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const requests = [...new Set(requestedPaths.map(normalizeRelative).filter(Boolean))].slice(0, 32);
+  const existing = new Set<string>();
+  const unresolvedNames = new Set<string>();
+  for (const request of requests) {
+    try {
+      const path = resolveWorkspacePath(root, request);
+      if ((await stat(path)).isFile()) {
+        existing.add(normalizeRelative(relative(root, path)));
+        continue;
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!request.includes("/")) unresolvedNames.add(request.toLocaleLowerCase());
+  }
+  if (unresolvedNames.size) {
+    const matches = new Map<string, string[]>();
+    for (const name of unresolvedNames) matches.set(name, []);
+    await visitWorkspaceFiles(root, root, (path, name) => matches.get(name.toLocaleLowerCase())?.push(path));
+    for (const paths of matches.values()) if (paths.length === 1 && paths[0]) existing.add(paths[0]);
+  }
+  return [...existing].sort((left, right) => left.localeCompare(right));
+}
+
+export async function moveWorkspaceEntry(
+  rootPath: string,
+  input: { sourcePath: string; targetFolderPath?: string },
+): Promise<WorkspaceMovedEntry> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const sourcePath = normalizeRelative(input.sourcePath);
+  const targetFolderPath = normalizeRelative(input.targetFolderPath ?? "");
+  if (!sourcePath || sourcePath === ".") throw new Error("Select a file or folder to move.");
+  if (targetFolderPath === sourcePath || targetFolderPath.startsWith(`${sourcePath}/`)) throw new Error("Folders cannot be moved into themselves.");
+  const source = resolveWorkspacePath(root, sourcePath);
+  if (samePath(source, root)) throw new Error("The Space root cannot be moved.");
+  const sourceInfo = await stat(source).catch(() => null);
+  if (!sourceInfo || (!sourceInfo.isFile() && !sourceInfo.isDirectory())) throw notFound("Space item not found.");
+  const targetFolder = resolveWorkspacePath(root, targetFolderPath || ".");
+  if (!(await stat(targetFolder)).isDirectory()) throw new Error("Move items into a folder.");
+  if (dirname(source) === targetFolder) throw new Error("That item is already in the selected folder.");
+  const destination = join(targetFolder, basename(source));
+  if (existsSync(destination)) throw new Error(`A file or folder named ${basename(source)} already exists there.`);
+  await rename(source, destination);
+  const movedInfo = await stat(destination);
+  await touchWorkspace(root);
+  return {
+    fromPath: sourcePath,
+    path: normalizeRelative(relative(root, destination)),
+    name: basename(destination),
+    kind: movedInfo.isDirectory() ? "folder" : "file",
+    updatedAt: movedInfo.mtime.toISOString(),
+  };
+}
+
+export async function renameWorkspaceEntry(
+  rootPath: string,
+  input: { path: string; newName: string },
+): Promise<WorkspaceMovedEntry> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const sourcePath = normalizeRelative(input.path);
+  if (!sourcePath || sourcePath === ".") throw new Error("Select a file or folder to rename.");
+  const newName = safeFileName(input.newName);
+  const source = resolveWorkspacePath(root, sourcePath);
+  if (samePath(source, root)) throw new Error("The Space root cannot be renamed.");
+  const sourceInfo = await stat(source).catch(() => null);
+  if (!sourceInfo || (!sourceInfo.isFile() && !sourceInfo.isDirectory())) throw notFound("Space item not found.");
+  if (basename(source) === newName) throw new Error("That item already has this name.");
+  const destination = join(dirname(source), newName);
+  resolveWorkspacePath(root, normalizeRelative(relative(root, destination)));
+  if (existsSync(destination)) throw new Error(`A file or folder named ${newName} already exists there.`);
+  await rename(source, destination);
+  const renamedInfo = await stat(destination);
+  await touchWorkspace(root);
+  return {
+    fromPath: sourcePath,
+    path: normalizeRelative(relative(root, destination)),
+    name: newName,
+    kind: renamedInfo.isDirectory() ? "folder" : "file",
+    updatedAt: renamedInfo.mtime.toISOString(),
+  };
+}
+
+export async function createWorkspaceFolder(
+  rootPath: string,
+  parentPath: string,
+  name: string,
+): Promise<WorkspaceCreatedEntry> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const parent = resolveWorkspacePath(root, parentPath || ".");
+  if (!(await stat(parent)).isDirectory()) throw new Error("Create folders inside a Space folder.");
+  const safeName = safeFileName(name);
+  const destination = join(parent, safeName);
+  if (existsSync(destination)) throw new Error(`A file or folder named ${safeName} already exists there.`);
+  await mkdir(destination, { recursive: false });
+  const info = await stat(destination);
+  await touchWorkspace(root);
+  return {
+    path: normalizeRelative(relative(root, destination)),
+    name: safeName,
+    kind: "folder",
+    updatedAt: info.mtime.toISOString(),
+  };
+}
+
+export async function createWorkspaceTextFile(
+  rootPath: string,
+  parentPath: string,
+  name: string,
+  text = "",
+): Promise<WorkspaceCreatedEntry> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const parent = resolveWorkspacePath(root, parentPath || ".");
+  if (!(await stat(parent)).isDirectory()) throw new Error("Create files inside a Space folder.");
+  const safeName = safeFileName(name);
+  const destination = join(parent, safeName);
+  if (Buffer.byteLength(text, "utf8") > maxPreviewBytes) throw new Error("The new file is too large (2 MB maximum).");
+  await writeFile(destination, text, { encoding: "utf8", flag: "wx" });
+  const info = await stat(destination);
+  await touchWorkspace(root);
+  return {
+    path: normalizeRelative(relative(root, destination)),
+    name: safeName,
+    kind: "file",
+    sizeBytes: info.size,
+    updatedAt: info.mtime.toISOString(),
+  };
+}
+
+export async function deleteWorkspaceEntry(rootPath: string, relativePath: string): Promise<{ deleted: true; path: string; kind: "file" | "folder" }> {
+  const root = ensureSafeWorkspaceRoot(rootPath);
+  const normalized = normalizeRelative(relativePath);
+  if (!normalized || normalized === ".") throw new Error("Select a file or folder to delete.");
+  const path = resolveWorkspacePath(root, normalized);
+  if (samePath(path, root)) throw new Error("The Space root cannot be deleted.");
+  const info = await stat(path).catch(() => null);
+  if (!info || (!info.isFile() && !info.isDirectory())) throw notFound("Space item not found.");
+  await rm(path, { recursive: info.isDirectory(), force: false });
+  await touchWorkspace(root);
+  return { deleted: true, path: normalized, kind: info.isDirectory() ? "folder" : "file" };
 }
 
 export async function writeUploadedFiles(
@@ -247,32 +507,76 @@ async function atomicJsonWrite(file: string, value: unknown): Promise<void> {
   await rename(temp, file);
 }
 
-async function scanDirectory(root: string, directory: string, depth: number, maxDepth: number): Promise<TreeEntry[]> {
+async function scanDirectory(
+  root: string,
+  directory: string,
+  depth: number,
+  maxDepth: number,
+  ignorePatterns: string[],
+  includeIgnored: boolean,
+): Promise<TreeEntry[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const result: TreeEntry[] = [];
   for (const entry of entries) {
-    if (entry.name === ".DS_Store" || entry.isSymbolicLink()) continue;
+    if (entry.isSymbolicLink() || isAlwaysHiddenWorkspaceEntry(entry.name) || isOfficeLockFileName(entry.name)) continue;
     const path = join(directory, entry.name);
     const info = await stat(path);
+    const relativePath = normalizeRelative(relative(root, path));
+    const ignored = isWorkspaceIgnored(relativePath, ignorePatterns);
+    if (ignored && !includeIgnored) continue;
     if (entry.isDirectory()) {
+      const children = depth < maxDepth ? await scanDirectory(root, path, depth + 1, maxDepth, ignorePatterns, includeIgnored) : [];
+      const descendantIgnoredCount = children.reduce((total, child) => total + (child.ignored ? 1 : 0) + (child.descendantIgnoredCount ?? 0), 0);
       result.push({
         name: entry.name,
-        path: normalizeRelative(relative(root, path)),
+        path: relativePath,
         kind: "folder",
         updatedAt: info.mtime.toISOString(),
-        children: depth < maxDepth ? await scanDirectory(root, path, depth + 1, maxDepth) : [],
+        ...(ignored ? { ignored: true } : {}),
+        ...(descendantIgnoredCount ? { descendantIgnoredCount } : {}),
+        hasChildren: children.length > 0,
+        children,
       });
     } else if (entry.isFile()) {
       result.push({
         name: entry.name,
-        path: normalizeRelative(relative(root, path)),
+        path: relativePath,
         kind: "file",
         sizeBytes: info.size,
         updatedAt: info.mtime.toISOString(),
+        ...(ignored ? { ignored: true } : {}),
       });
     }
   }
   return result.sort((left, right) => left.kind === right.kind ? left.name.localeCompare(right.name) : left.kind === "folder" ? -1 : 1);
+}
+
+async function visitWorkspaceFiles(root: string, directory: string, visitor: (relativePath: string, name: string) => void): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || isAlwaysHiddenWorkspaceEntry(entry.name) || isOfficeLockFileName(entry.name)) continue;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await visitWorkspaceFiles(root, path, visitor);
+    else if (entry.isFile()) visitor(normalizeRelative(relative(root, path)), entry.name);
+  }
+}
+
+function contentTypeForExtension(extension: string | null): string {
+  switch (extension) {
+    case ".txt": return "text/plain";
+    case ".md": case ".markdown": return "text/markdown";
+    case ".json": return "application/json";
+    case ".csv": return "text/csv";
+    case ".html": case ".htm": return "text/html";
+    case ".pdf": return "application/pdf";
+    case ".docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case ".pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case ".png": return "image/png";
+    case ".jpg": case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".svg": return "image/svg+xml";
+    default: return "application/octet-stream";
+  }
 }
 
 async function copyVisiblePath(source: string, destination: string): Promise<void> {
@@ -351,7 +655,7 @@ function safeSegment(value: string): string {
 }
 
 function normalizeRelative(value: string): string {
-  return value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  return value.trim().replace(/\\/g, "/").replace(/^(?:\.\/)+/, "").replace(/^\/+|\/+$/g, "");
 }
 
 function stableWorkspaceId(rootPath: string): string {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, normalize, relative, resolve } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   app,
@@ -10,10 +11,17 @@ import {
   ipcMain,
   Menu,
   net,
+  nativeImage,
+  Notification,
+  powerMonitor,
   powerSaveBlocker,
   protocol,
   screen,
   shell,
+  systemPreferences,
+  Tray,
+  type ContextMenuParams,
+  type IpcMainEvent,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
   type Rectangle,
@@ -25,24 +33,56 @@ import { startLocalApi } from "../../src/local/server.js";
 import { getWorkspace } from "../../src/local/workspace.js";
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
 import { SecureSettingsStore } from "./settings.js";
-import { WorkspaceUpdater, type WorkspaceUpdateCheckResult } from "./updater.js";
+import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
 
 const productName = "Workspace";
 const appProtocol = "workspace-desktop";
 const appUserModelId = "io.github.mattomson.workspace";
+const desktopAssetRoutePrefix = "/_desktop-assets/";
+const desktopTitleBarHeight = 40;
+const desktopTitleBarOverlayPalettes = {
+  light: { color: "#f3f4f6", symbolColor: "#1b2433" },
+  dark: { color: "#20242b", symbolColor: "#f8fafc" },
+} as const;
 const currentFile = fileURLToPath(import.meta.url);
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const folderGrantTtlMs = 5 * 60 * 1000;
+const shutdownTimeoutMs = 10_000;
+const windowStateSaveDelayMs = 500;
+const rendererRecoveryMaxAttempts = 6;
+const rendererRecoveryBaseDelayMs = 1_000;
+const rendererRecoveryMaxDelayMs = 30_000;
+const resumeRendererHealthDelayMs = 5_000;
+const resumeUpdateCheckDelayMs = 20_000;
+const defaultWindowState = { width: 1440, height: 960 };
+const minimumWindowState = { width: 1100, height: 760 };
 const folderGrants = new Map<string, { rootPath: string; expiresAt: number }>();
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let closeLocalApi: (() => Promise<void>) | null = null;
 let piRuntime: PackagedPiRuntimeProvider | null = null;
+let secureSettings: SecureSettingsStore | null = null;
 let apiSessionToken = "";
 let quitting = false;
+let quittingForUpdate = false;
+let quitShutdownComplete = false;
+let quitFlowPromise: Promise<void> | null = null;
+let activeAgentTurns = 0;
 let powerBlockerId: number | null = null;
 let workspaceUpdater: WorkspaceUpdater | null = null;
 let shutdownPromise: Promise<void> | null = null;
+let rendererProtocolRegistered = false;
+let ipcRegistered = false;
+let powerMonitorRegistered = false;
+let accentColorMonitorRegistered = false;
+let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let rendererRecoveryInFlight = false;
+let rendererRecoveryAttempts = 0;
+let rendererLoadFailed = false;
+let rendererRecoveryFailurePromptShown = false;
+let createWindowPromise: Promise<void> | null = null;
+let rendererMenuState: RendererMenuState = { spaceOpen: false };
 
 protocol.registerSchemesAsPrivileged([{
   scheme: appProtocol,
@@ -65,13 +105,14 @@ if (ownsInstance) {
   app.on("second-instance", () => showWindow());
   app.whenReady().then(async () => {
     configureStableUserDataPath();
+    loadDesktopPreferences();
     registerRendererProtocol();
     registerIpc();
-    await createMainWindow();
+    await ensureMainWindow();
     configureUpdater();
-    configureMenu();
+    createTrayIfSupported();
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
+      if (BrowserWindow.getAllWindows().length === 0) void ensureMainWindow();
       else showWindow();
     });
   }).catch((error) => {
@@ -81,14 +122,35 @@ if (ownsInstance) {
 }
 
 app.on("window-all-closed", () => {
+  if (quittingForUpdate) return;
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", (event) => {
-  if (quitting) return;
+  quitting = true;
+  if (quitShutdownComplete) return;
   event.preventDefault();
-  void prepareToQuit().finally(() => app.quit());
+  if (quitFlowPromise) return;
+  quitFlowPromise = finishQuitFlow().finally(() => { quitFlowPromise = null; });
 });
+
+async function finishQuitFlow(): Promise<void> {
+  destroyTray();
+  if (workspaceUpdater?.shouldInstallOnQuit()) {
+    await shutdownForUpdateInstall();
+    const status = await workspaceUpdater.installDownloadedUpdateOnQuit();
+    if (status.phase === "installing") return;
+    workspaceUpdater.dispose();
+    workspaceUpdater = null;
+    app.quit();
+    return;
+  }
+  await shutdown();
+  workspaceUpdater?.dispose();
+  workspaceUpdater = null;
+  quitShutdownComplete = true;
+  app.quit();
+}
 
 async function createMainWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -98,6 +160,7 @@ async function createMainWindow(): Promise<void> {
 
   const userData = app.getPath("userData");
   const settings = new SecureSettingsStore(join(userData, "secure-settings.bin"));
+  secureSettings = settings;
   const extensionUi = new RoutedPiExtensionUiBridge();
   extensionUi.on("event", (event: PiExtensionUiEvent) => {
     if (event.method === "openExternal") void openExternal(event.url);
@@ -127,17 +190,24 @@ async function createMainWindow(): Promise<void> {
   });
   closeLocalApi = api.close;
 
-  const state = readWindowState();
+  const state = visibleWindowState(readWindowState());
+  const initialState = state ?? defaultWindowState;
   mainWindow = new BrowserWindow({
-    width: state?.width ?? 1440,
-    height: state?.height ?? 920,
-    x: state?.x,
-    y: state?.y,
-    minWidth: 1000,
-    minHeight: 680,
+    ...initialState,
+    minWidth: minimumWindowState.width,
+    minHeight: minimumWindowState.height,
     title: productName,
     icon: resolveWindowIcon(),
-    backgroundColor: "#0b1020",
+    autoHideMenuBar: process.platform === "win32",
+    ...(process.platform === "win32" ? {
+      backgroundMaterial: "mica",
+      titleBarStyle: "hidden",
+      titleBarOverlay: {
+        ...desktopTitleBarOverlayPalettes.light,
+        height: desktopTitleBarHeight,
+      },
+    } : {}),
+    backgroundColor: "#f7f8fb",
     show: false,
     webPreferences: {
       preload: resolvePreloadPath(),
@@ -154,42 +224,82 @@ async function createMainWindow(): Promise<void> {
     },
   });
 
+  try {
+    mainWindow.webContents.session.setSpellCheckerLanguages(["en-US"]);
+  } catch (error) {
+    console.warn(`${productName} could not configure spellchecker languages: ${errorMessage(error)}`);
+  }
+  configureWindowStatePersistence(mainWindow);
+  if (state?.isMaximized) mainWindow.maximize();
   mainWindow.on("ready-to-show", () => mainWindow?.show());
-  mainWindow.on("close", () => saveWindowState(mainWindow));
-  mainWindow.on("closed", () => { mainWindow = null; });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openExternal(url);
-    return { action: "deny" };
-  });
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isTrustedRendererUrl(url)) return;
+  mainWindow.on("close", (event) => {
+    if (quitting || quittingForUpdate || quitShutdownComplete) return;
+    if (!tray || !desktopPreferences.closeToTray) return;
     event.preventDefault();
-    void openExternal(url);
+    mainWindow?.hide();
+    maybeShowTrayNotice();
   });
+  mainWindow.on("query-session-end", () => { void shutdown(); });
+  mainWindow.on("session-end", () => {
+    quitting = true;
+    void shutdown();
+  });
+  mainWindow.on("closed", () => { mainWindow = null; });
+  configureWindowNavigation(mainWindow);
+  configureContextMenu(mainWindow);
+  configureWindowResilience(mainWindow);
+  configurePowerMonitor();
+  configureAccentColorMonitor();
+  configureMenu();
 
-  await mainWindow.loadURL(`${appProtocol}://app/index.html`);
+  try {
+    await loadMainRenderer(mainWindow);
+  } catch (error) {
+    console.warn(`${productName} renderer load failed: ${errorMessage(error)}`);
+    scheduleRendererRecovery(`initial renderer load failed: ${errorMessage(error)}`);
+  }
 }
 
 function registerRendererProtocol(): void {
+  if (rendererProtocolRegistered) return;
+  rendererProtocolRegistered = true;
   const rendererRoot = resolveRendererDir();
-  protocol.handle(appProtocol, async (request) => {
+  const desktopAssets = resolveDesktopAssetsDir();
+  protocol.handle(appProtocol, (request) => {
     const url = new URL(request.url);
     if (url.hostname !== "app") return new Response("Not found", { status: 404 });
-    const relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "index.html";
-    const candidate = resolve(rendererRoot, relativePath);
-    const relativeCandidate = relative(rendererRoot, candidate);
-    if (!relativeCandidate || (!relativeCandidate.startsWith("..") && !normalize(relativeCandidate).startsWith(`..${process.platform === "win32" ? "\\" : "/"}`))) {
-      if (candidate === rendererRoot) return net.fetch(pathToFileURL(join(rendererRoot, "index.html")).href);
-      if (existsSync(candidate)) return net.fetch(pathToFileURL(candidate).href);
+    if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+    const requestedPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+    if (requestedPath.startsWith(desktopAssetRoutePrefix)) {
+      if (requestedPath !== `${desktopAssetRoutePrefix}icon-32.png`) return new Response("Not found", { status: 404 });
+      return fetchProtocolFile(desktopAssets, "icon-32.png", request.method);
     }
-    return new Response("Not found", { status: 404 });
+    return fetchProtocolFile(rendererRoot, requestedPath.replace(/^\/+/, ""), request.method);
   });
 }
 
+function fetchProtocolFile(rootDir: string, requestedPath: string, method: string): Promise<Response> | Response {
+  const candidate = resolve(rootDir, requestedPath);
+  const relativeCandidate = relative(rootDir, candidate);
+  if (/^\.\.(?:[\\/]|$)/.test(relativeCandidate) || isAbsolute(relativeCandidate)) return new Response("Not found", { status: 404 });
+  if (!existsSync(candidate)) return new Response("Not found", { status: 404 });
+  if (method === "HEAD") return new Response(null, { status: 200 });
+  return net.fetch(pathToFileURL(candidate).href);
+}
+
 function registerIpc(): void {
+  if (ipcRegistered) return;
+  ipcRegistered = true;
   ipcMain.handle("workspace:api:session-headers", (event) => {
     assertTrustedRenderer(event);
     return { "x-workspace-session": apiSessionToken };
+  });
+  ipcMain.handle("workspace:runtime:health", async (event) => {
+    assertTrustedRenderer(event);
+    return {
+      pi: piRuntime ? await piRuntime.health() : { ok: false, configured: false, version: "", message: "Pi is still starting." },
+      settings: secureSettings ? await secureSettings.status() : { encryptionAvailable: false, configuredProviders: [] },
+    };
   });
   ipcMain.handle("workspace:workspace:choose-folder", async (event) => {
     assertTrustedRenderer(event);
@@ -207,63 +317,237 @@ function registerIpc(): void {
     const error = await shell.openPath(workspace.rootPath);
     if (error) throw new Error(`Workspace could not show this Space's folder. ${error}`);
   });
+  ipcMain.handle("workspace:workspace:open-path", async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    const request = workspacePathRequest(value);
+    const filePath = await resolveWorkspaceItem(request.workspaceId, request.path);
+    if (request.action === "reveal") {
+      shell.showItemInFolder(filePath);
+      return;
+    }
+    const result = await shell.openPath(filePath);
+    if (result) throw new Error(`${productName} could not open this item. ${result}`);
+  });
+  ipcMain.handle("workspace:workspace:start-drag", async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    const request = workspacePathRequest(value, false);
+    const filePath = await resolveWorkspaceItem(request.workspaceId, request.path);
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error("Only files can be dragged out of a Space.");
+    const icon = nativeImage.createFromPath(join(resolveDesktopAssetsDir(), "icon-32.png"));
+    if (icon.isEmpty()) return false;
+    event.sender.startDrag({ file: filePath, icon });
+    return true;
+  });
   ipcMain.handle("workspace:shell:open-external", async (event, value: unknown) => {
     assertTrustedRenderer(event);
     if (typeof value !== "string") throw new Error("A URL is required.");
     await openExternal(value);
   });
-  ipcMain.handle("workspace:updates:check", async (event): Promise<WorkspaceUpdateCheckResult> => {
+  ipcMain.handle("workspace:window:accent-color", (event) => {
+    assertTrustedRenderer(event);
+    return getWindowsAccentColor();
+  });
+  ipcMain.handle("workspace:window:get-close-to-tray", (event) => {
+    assertTrustedRenderer(event);
+    return closeToTrayStatus();
+  });
+  ipcMain.handle("workspace:window:set-close-to-tray", (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    if (typeof value !== "boolean") throw new Error("Close-to-background preference must be a boolean.");
+    updateDesktopPreferences({ closeToTray: value });
+    return closeToTrayStatus();
+  });
+  ipcMain.on("workspace:window:set-theme", (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    if (value !== "light" && value !== "dark") return;
+    if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setTitleBarOverlay({ ...desktopTitleBarOverlayPalettes[value], height: desktopTitleBarHeight });
+  });
+  ipcMain.on("workspace:menu:set-state", (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    updateApplicationMenuState(value);
+  });
+  ipcMain.handle("workspace:menu:popup", (event, menuId: unknown, bounds: unknown) => {
+    assertTrustedRenderer(event);
+    popupApplicationSubmenu(menuId, bounds);
+  });
+  ipcMain.handle("workspace:settings:status", (event) => {
+    assertTrustedRenderer(event);
+    return secureSettings?.status() ?? { encryptionAvailable: false, configuredProviders: [] };
+  });
+  ipcMain.handle("workspace:updates:status", (event): WorkspaceUpdateStatus => {
+    assertTrustedRenderer(event);
+    return getUpdateStatus();
+  });
+  ipcMain.handle("workspace:updates:check", async (event): Promise<WorkspaceUpdateStatus> => {
     assertTrustedRenderer(event);
     return checkForUpdates();
   });
+  ipcMain.handle("workspace:updates:install", async (event): Promise<WorkspaceUpdateStatus> => {
+    assertTrustedRenderer(event);
+    return workspaceUpdater?.install() ?? getUpdateStatus();
+  });
+  ipcMain.handle("workspace:updates:update-now", async (event): Promise<WorkspaceUpdateStatus> => {
+    assertTrustedRenderer(event);
+    return workspaceUpdater?.updateNow() ?? getUpdateStatus();
+  });
+}
+
+type RendererMenuCommand =
+  | "new-space"
+  | "open-local-folder"
+  | "new-chat"
+  | "reload-workspace-state"
+  | "check-for-updates"
+  | "open-settings"
+  | "open-skills"
+  | "open-extensions"
+  | "open-command-palette"
+  | "open-keyboard-shortcuts";
+
+type ApplicationMenuId = "file" | "edit" | "view" | "help";
+
+interface RendererMenuState {
+  spaceOpen: boolean;
 }
 
 function configureMenu(): void {
-  const viewMenu: MenuItemConstructorOptions[] = [
-    { role: "reload" },
-    ...(!app.isPackaged ? [{ role: "toggleDevTools" } as MenuItemConstructorOptions] : []),
-    { type: "separator" },
-    { role: "resetZoom" },
-    { role: "zoomIn" },
-    { role: "zoomOut" },
-    { type: "separator" },
-    { role: "togglefullscreen" },
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildApplicationMenuTemplate()));
+  if (process.platform === "win32" && mainWindow) {
+    mainWindow.setAutoHideMenuBar(false);
+    mainWindow.setMenuBarVisibility(false);
+  }
+  updateApplicationMenuState(rendererMenuState);
+}
+
+function buildApplicationMenuTemplate(): MenuItemConstructorOptions[] {
+  return [
+    { id: "file", label: "File", submenu: buildApplicationSubmenuTemplate("file") },
+    { id: "edit", label: "Edit", submenu: buildApplicationSubmenuTemplate("edit") },
+    { id: "view", label: "View", submenu: buildApplicationSubmenuTemplate("view") },
+    { id: "help", label: "Help", submenu: buildApplicationSubmenuTemplate("help") },
   ];
-  const template: MenuItemConstructorOptions[] = [
-    {
-      label: "File",
-      submenu: [
-        { label: "Turn Folder into a Space…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("workspace:menu:open-folder") },
-        { type: "separator" },
-        process.platform === "darwin" ? { role: "close" } : { role: "quit" },
-      ],
-    },
-    { label: "Edit", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-    { label: "View", submenu: viewMenu },
-    { label: "Window", submenu: [{ role: "minimize" }, { role: "close" }] },
-    {
-      label: "Help",
-      submenu: [
-        { label: "Check for Updates…", click: () => { void checkForUpdates(); } },
-        { type: "separator" },
-        { label: `Workspace ${app.getVersion()}`, enabled: false },
-      ],
-    },
+}
+
+function buildApplicationSubmenuTemplate(menuId: ApplicationMenuId): MenuItemConstructorOptions[] {
+  if (menuId === "file") {
+    return [
+      { label: "New Space", accelerator: "CommandOrControl+N", click: () => sendRendererMenuCommand("new-space") },
+      { label: "Turn Folder into a Space...", accelerator: "CommandOrControl+O", click: () => sendRendererMenuCommand("open-local-folder") },
+      { id: "new-chat", label: "New Chat", accelerator: "CommandOrControl+Shift+N", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("new-chat") },
+      { id: "refresh-space", label: "Refresh Space", accelerator: "CommandOrControl+R", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("reload-workspace-state") },
+      { type: "separator" },
+      { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
+      { label: "Settings...", accelerator: "CommandOrControl+,", click: () => sendRendererMenuCommand("open-settings") },
+      { type: "separator" },
+      process.platform === "darwin" ? { role: "close" } : { role: "quit" },
+    ];
+  }
+  if (menuId === "edit") {
+    return [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "separator" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { role: "delete" },
+      { type: "separator" },
+      { role: "selectAll" },
+    ];
+  }
+  if (menuId === "view") {
+    return [
+      { label: "Command Palette...", accelerator: "CommandOrControl+K", click: () => sendRendererMenuCommand("open-command-palette") },
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      ...(!app.isPackaged ? [{ type: "separator" }, { role: "toggleDevTools" }] as MenuItemConstructorOptions[] : []),
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ];
+  }
+  return [
+    { id: "open-skills", label: "Skills", accelerator: "CommandOrControl+Shift+S", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-skills") },
+    { id: "open-extensions", label: "Extensions", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-extensions") },
+    { label: "Keyboard Shortcuts", accelerator: "CommandOrControl+/", click: () => sendRendererMenuCommand("open-keyboard-shortcuts") },
+    { type: "separator" },
+    { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
+    { type: "separator" },
+    { label: `About ${productName} ${app.getVersion()}`, enabled: false },
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function popupApplicationSubmenu(menuId: unknown, bounds: unknown): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !isApplicationMenuId(menuId)) return;
+  const point = menuPopupPoint(bounds);
+  Menu.buildFromTemplate(buildApplicationSubmenuTemplate(menuId)).popup({ window: mainWindow, x: point.x, y: point.y });
+}
+
+function isApplicationMenuId(value: unknown): value is ApplicationMenuId {
+  return value === "file" || value === "edit" || value === "view" || value === "help";
+}
+
+function menuPopupPoint(value: unknown): { x: number; y: number } {
+  const rawX = isRecord(value) ? Number(value.x) : Number.NaN;
+  const rawY = isRecord(value) ? Number(value.y) : Number.NaN;
+  return {
+    x: Number.isFinite(rawX) ? Math.max(0, Math.round(rawX)) : 0,
+    y: Number.isFinite(rawY) ? Math.max(0, Math.round(rawY)) : desktopTitleBarHeight,
+  };
+}
+
+function sendRendererMenuCommand(command: RendererMenuCommand): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+  showWindow();
+  window.webContents.send("workspace:menu-command", command);
+}
+
+function updateApplicationMenuState(value: unknown): void {
+  rendererMenuState = {
+    spaceOpen: isRecord(value)
+      ? value.spaceOpen === true || value.workspaceOpen === true
+      : rendererMenuState.spaceOpen,
+  };
+  const menu = Menu.getApplicationMenu();
+  setMenuItemEnabled(menu, "new-chat", rendererMenuState.spaceOpen);
+  setMenuItemEnabled(menu, "refresh-space", rendererMenuState.spaceOpen);
+  setMenuItemEnabled(menu, "open-skills", rendererMenuState.spaceOpen);
+  setMenuItemEnabled(menu, "open-extensions", rendererMenuState.spaceOpen);
+}
+
+function setMenuItemEnabled(menu: Menu | null, id: string, enabled: boolean): void {
+  const item = menu?.getMenuItemById(id);
+  if (item) item.enabled = enabled;
 }
 
 function configureUpdater(): void {
   if (workspaceUpdater) return;
   workspaceUpdater = new WorkspaceUpdater({
     getWindow: () => mainWindow,
-    prepareToInstall: prepareToQuit,
+    prepareToInstall: shutdownForUpdateInstall,
   });
   workspaceUpdater.start();
 }
 
-function checkForUpdates(): Promise<WorkspaceUpdateCheckResult> {
-  return workspaceUpdater?.check(true) ?? Promise.resolve({ status: "unsupported" });
+function getUpdateStatus(): WorkspaceUpdateStatus {
+  return workspaceUpdater?.getStatus() ?? {
+    supported: false,
+    phase: "unsupported",
+    currentVersion: app.getVersion(),
+    availableVersion: null,
+    progressPercent: null,
+    checkedAt: null,
+    message: "Updates are available after Workspace is installed on Windows.",
+    error: null,
+  };
+}
+
+function checkForUpdates(interactive = true): Promise<WorkspaceUpdateStatus> {
+  return workspaceUpdater?.check(interactive) ?? Promise.resolve(getUpdateStatus());
 }
 
 function configureStableUserDataPath(): void {
@@ -272,18 +556,61 @@ function configureStableUserDataPath(): void {
 }
 
 function createFolderGrant(rootPath: string): string {
+  cleanupFolderGrants();
   const id = randomUUID();
   folderGrants.set(id, { rootPath: resolve(rootPath), expiresAt: Date.now() + folderGrantTtlMs });
   return id;
 }
 
 function consumeLocalFolderGrant(input: { rootPath: string; grantId: string }): boolean {
+  cleanupFolderGrants();
   const grant = folderGrants.get(input.grantId);
   folderGrants.delete(input.grantId);
   return Boolean(grant && grant.expiresAt >= Date.now() && samePath(grant.rootPath, input.rootPath));
 }
 
+function cleanupFolderGrants(): void {
+  const now = Date.now();
+  for (const [id, grant] of folderGrants) {
+    if (grant.expiresAt <= now) folderGrants.delete(id);
+  }
+}
+
+type WorkspacePathAction = "open" | "open-native" | "reveal";
+
+function workspacePathRequest(value: unknown, requireAction = true): { workspaceId: string; path: string; action: WorkspacePathAction } {
+  if (!isRecord(value)) throw new Error("A Space file request is required.");
+  const workspaceId = typeof value.workspaceId === "string" ? value.workspaceId.trim() : "";
+  const path = typeof value.path === "string" ? value.path : "";
+  const action = value.action === "reveal" || value.action === "open-native" || value.action === "open"
+    ? value.action
+    : "open";
+  if (!workspaceId) throw new Error("A Space id is required.");
+  if (!path || path.includes("\0") || isAbsolute(path)) throw new Error("A relative Space file path is required.");
+  if (requireAction && value.action !== undefined && value.action !== "reveal" && value.action !== "open-native" && value.action !== "open") {
+    throw new Error("Unsupported Space file action.");
+  }
+  return { workspaceId, path, action };
+}
+
+async function resolveWorkspaceItem(workspaceId: string, itemPath: string): Promise<string> {
+  const workspace = await getWorkspace(workspaceId);
+  const rootPath = await realpath(workspace.rootPath);
+  const candidate = resolve(rootPath, itemPath);
+  assertPathInsideRoot(rootPath, candidate);
+  const resolvedCandidate = await realpath(candidate);
+  assertPathInsideRoot(rootPath, resolvedCandidate);
+  return resolvedCandidate;
+}
+
+function assertPathInsideRoot(rootPath: string, candidate: string): void {
+  const child = relative(rootPath, candidate);
+  if (!child || /^\.\.(?:[\\/]|$)/.test(child) || isAbsolute(child)) throw new Error("The requested item is outside this Space.");
+}
+
 function updateAgentPowerState(activeTurns: number): void {
+  activeAgentTurns = Math.max(0, activeTurns);
+  updateTrayTooltip();
   if (activeTurns > 0 && powerBlockerId === null) {
     powerBlockerId = powerSaveBlocker.start("prevent-app-suspension");
   } else if (activeTurns <= 0 && powerBlockerId !== null) {
@@ -299,30 +626,318 @@ async function openExternal(value: string): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
-  workspaceUpdater?.dispose();
+  if (shutdownPromise) return shutdownPromise;
+  if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
+  rendererRecoveryTimer = null;
   updateAgentPowerState(0);
   const close = closeLocalApi;
   closeLocalApi = null;
-  await Promise.allSettled([
-    close?.() ?? Promise.resolve(),
-    piRuntime?.flush() ?? Promise.resolve(),
-  ]);
-}
-
-function prepareToQuit(): Promise<void> {
-  quitting = true;
-  shutdownPromise ??= shutdown();
+  const runtime = piRuntime;
+  piRuntime = null;
+  shutdownPromise = (async () => {
+    const outcomes = await Promise.allSettled([
+      withShutdownTimeout(close?.() ?? Promise.resolve(), "local API"),
+      withShutdownTimeout(runtime?.flush() ?? Promise.resolve(), "Pi state"),
+    ]);
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") console.warn(`${productName} shutdown cleanup failed: ${errorMessage(outcome.reason)}`);
+    }
+  })();
   return shutdownPromise;
 }
 
-function showWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
+async function shutdownForUpdateInstall(): Promise<void> {
+  quittingForUpdate = true;
+  quitting = true;
+  destroyTray();
+  await shutdown();
+  quitShutdownComplete = true;
 }
 
-function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
+async function withShutdownTimeout<T>(promise: Promise<T>, label: string): Promise<T | void> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<void>((resolveTimeout) => {
+        timeout = setTimeout(() => {
+          console.warn(`${productName} shutdown timed out waiting for ${label}; continuing.`);
+          resolveTimeout();
+        }, shutdownTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function showWindow(): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) {
+    if (app.isReady()) void ensureMainWindow();
+    return;
+  }
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+}
+
+function ensureMainWindow(): Promise<void> {
+  if (mainWindow && !mainWindow.isDestroyed()) return Promise.resolve();
+  createWindowPromise ??= createMainWindow().finally(() => { createWindowPromise = null; });
+  return createWindowPromise;
+}
+
+interface DesktopPreferences {
+  closeToTray: boolean;
+  trayNoticeShown: boolean;
+}
+
+let desktopPreferences: DesktopPreferences = { closeToTray: true, trayNoticeShown: false };
+
+function desktopPreferencesPath(): string {
+  return join(app.getPath("userData"), "desktop-preferences.json");
+}
+
+function loadDesktopPreferences(): void {
+  if (!existsSync(desktopPreferencesPath())) return;
+  try {
+    const parsed = JSON.parse(readFileSync(desktopPreferencesPath(), "utf8"));
+    if (!isRecord(parsed)) return;
+    desktopPreferences = {
+      closeToTray: typeof parsed.closeToTray === "boolean" ? parsed.closeToTray : true,
+      trayNoticeShown: parsed.trayNoticeShown === true,
+    };
+  } catch (error) {
+    console.warn(`${productName} could not read desktop preferences: ${errorMessage(error)}`);
+  }
+}
+
+function updateDesktopPreferences(update: Partial<DesktopPreferences>): void {
+  desktopPreferences = { ...desktopPreferences, ...update };
+  try {
+    writeFileSync(desktopPreferencesPath(), `${JSON.stringify(desktopPreferences, null, 2)}\n`, "utf8");
+  } catch (error) {
+    console.warn(`${productName} could not save desktop preferences: ${errorMessage(error)}`);
+  }
+}
+
+function createTrayIfSupported(): void {
+  if (tray || process.platform !== "win32") return;
+  const iconPath = resolveWindowIcon();
+  if (!existsSync(iconPath)) {
+    console.warn(`${productName} tray icon was not found; close-to-background is unavailable.`);
+    return;
+  }
+  tray = new Tray(iconPath);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: `Open ${productName}`, click: showWindow },
+    { type: "separator" },
+    { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
+    { type: "separator" },
+    { label: `Quit ${productName}`, click: () => app.quit() },
+  ]));
+  tray.on("click", showWindow);
+  tray.on("double-click", showWindow);
+  updateTrayTooltip();
+}
+
+function destroyTray(): void {
+  tray?.destroy();
+  tray = null;
+}
+
+function updateTrayTooltip(): void {
+  if (!tray) return;
+  tray.setToolTip(activeAgentTurns > 0
+    ? `${productName} — Assistant is working on ${activeAgentTurns === 1 ? "a task" : `${activeAgentTurns} tasks`}`
+    : productName);
+}
+
+function maybeShowTrayNotice(): void {
+  if (desktopPreferences.trayNoticeShown) return;
+  updateDesktopPreferences({ trayNoticeShown: true });
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: `${productName} is still running`,
+    body: "Your Assistant can keep working in the background. Use the tray icon to reopen or quit Workspace, or change this in Settings.",
+  }).show();
+}
+
+function closeToTrayStatus(): { supported: boolean; enabled: boolean } {
+  return { supported: tray !== null, enabled: desktopPreferences.closeToTray };
+}
+
+function configurePowerMonitor(): void {
+  if (powerMonitorRegistered) return;
+  powerMonitorRegistered = true;
+  powerMonitor.on("resume", () => {
+    setTimeout(ensureRendererAfterResume, resumeRendererHealthDelayMs);
+    setTimeout(() => { void checkForUpdates(false); }, resumeUpdateCheckDelayMs);
+  });
+  powerMonitor.on("shutdown", () => { void shutdown(); });
+}
+
+function configureAccentColorMonitor(): void {
+  if (accentColorMonitorRegistered || process.platform !== "win32") return;
+  accentColorMonitorRegistered = true;
+  systemPreferences.on("accent-color-changed", () => {
+    mainWindow?.webContents.send("workspace:window:accent-color-changed", getWindowsAccentColor());
+  });
+}
+
+function getWindowsAccentColor(): string | null {
+  if (process.platform !== "win32") return null;
+  try {
+    const raw = systemPreferences.getAccentColor().replace(/^#/, "");
+    return /^[0-9a-fA-F]{8}$/.test(raw) ? `#${raw.slice(0, 6)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function configureWindowResilience(window: BrowserWindow): void {
+  window.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+    if (!isMainFrame || !isTrustedRendererUrl(url)) return;
+    rendererLoadFailed = true;
+    scheduleRendererRecovery(description || `load failed with error ${code}`);
+  });
+  window.webContents.on("did-finish-load", () => {
+    rendererLoadFailed = false;
+    rendererRecoveryAttempts = 0;
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (!window.isDestroyed()) scheduleRendererRecovery(`renderer process ended: ${details.reason}`);
+  });
+}
+
+function ensureRendererAfterResume(): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isLoadingMainFrame()) return;
+  const currentUrl = window.webContents.getURL();
+  if (!isTrustedRendererUrl(currentUrl)) scheduleRendererRecovery(`renderer was not on the app URL after resume: ${currentUrl || "blank"}`, 0);
+}
+
+function loadMainRenderer(window: BrowserWindow): Promise<void> {
+  return window.loadURL(`${appProtocol}://app/index.html`);
+}
+
+function scheduleRendererRecovery(reason: string, delayMs?: number): void {
+  if (quitting || quittingForUpdate || quitShutdownComplete) return;
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || rendererRecoveryTimer || rendererRecoveryInFlight) return;
+  if (rendererRecoveryAttempts >= rendererRecoveryMaxAttempts) {
+    void showRendererRecoveryFailedDialog(reason);
+    return;
+  }
+  const delay = delayMs ?? Math.min(rendererRecoveryMaxDelayMs, rendererRecoveryBaseDelayMs * (2 ** rendererRecoveryAttempts));
+  rendererRecoveryTimer = setTimeout(() => {
+    rendererRecoveryTimer = null;
+    void recoverRenderer(reason);
+  }, delay);
+}
+
+async function recoverRenderer(reason: string): Promise<void> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+  rendererRecoveryInFlight = true;
+  rendererRecoveryAttempts += 1;
+  let retryReason: string | null = null;
+  try {
+    console.warn(`${productName} reloading its window after a recoverable issue: ${reason}`);
+    await loadMainRenderer(window);
+  } catch (error) {
+    retryReason = errorMessage(error);
+  } finally {
+    rendererRecoveryInFlight = false;
+  }
+  if (retryReason) scheduleRendererRecovery(retryReason);
+  else {
+    rendererLoadFailed = false;
+    rendererRecoveryAttempts = 0;
+    rendererRecoveryFailurePromptShown = false;
+    window.webContents.send("workspace:runtime:renderer-recovered");
+  }
+}
+
+async function showRendererRecoveryFailedDialog(reason: string): Promise<void> {
+  if (rendererRecoveryFailurePromptShown) return;
+  rendererRecoveryFailurePromptShown = true;
+  const options = {
+    type: "error" as const,
+    message: `${productName} could not recover this window.`,
+    detail: `The window failed to reload after ${rendererRecoveryAttempts} attempts. Restart to try again. (${reason})`,
+    buttons: [`Restart ${productName}`, "Close"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  if (result.response === 0) {
+    app.relaunch();
+    app.exit(0);
+  } else {
+    app.quit();
+  }
+}
+
+function configureWindowNavigation(window: BrowserWindow): void {
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternal(url).catch((error) => console.warn(`${productName} blocked external navigation: ${errorMessage(error)}`));
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (isTrustedRendererUrl(url)) return;
+    event.preventDefault();
+    void openExternal(url).catch((error) => console.warn(`${productName} blocked external navigation: ${errorMessage(error)}`));
+  });
+}
+
+function configureContextMenu(window: BrowserWindow): void {
+  window.webContents.on("context-menu", (_event, params) => {
+    const template = buildContextMenuTemplate(window, params);
+    if (template) Menu.buildFromTemplate(template).popup({ window });
+  });
+}
+
+function buildContextMenuTemplate(window: BrowserWindow, params: ContextMenuParams): MenuItemConstructorOptions[] | null {
+  if (params.isEditable) return buildEditableContextMenuTemplate(window, params);
+  if (params.selectionText.length > 0 || params.linkURL.length > 0) return buildSelectionContextMenuTemplate(params);
+  return null;
+}
+
+function buildEditableContextMenuTemplate(window: BrowserWindow, params: ContextMenuParams): MenuItemConstructorOptions[] {
+  const template: MenuItemConstructorOptions[] = [];
+  if (params.misspelledWord.length > 0) {
+    const suggestions = params.dictionarySuggestions.slice(0, 5);
+    template.push(...(suggestions.length ? suggestions.map((suggestion) => ({
+      label: suggestion,
+      click: () => window.webContents.replaceMisspelling(suggestion),
+    })) : [{ label: "No suggestions", enabled: false }]));
+    template.push({ label: "Add to Dictionary", click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord) }, { type: "separator" });
+  }
+  template.push(
+    { role: "undo", enabled: params.editFlags.canUndo },
+    { role: "redo", enabled: params.editFlags.canRedo },
+    { type: "separator" },
+    { role: "cut", enabled: params.editFlags.canCut },
+    { role: "copy", enabled: params.editFlags.canCopy },
+    { role: "paste", enabled: params.editFlags.canPaste },
+    { role: "selectAll" },
+  );
+  return template;
+}
+
+function buildSelectionContextMenuTemplate(params: ContextMenuParams): MenuItemConstructorOptions[] {
+  const template: MenuItemConstructorOptions[] = [];
+  if (params.selectionText.length > 0) template.push({ role: "copy", enabled: params.editFlags.canCopy });
+  if (params.linkURL.length > 0) template.push({ label: "Copy Link Address", click: () => clipboard.writeText(params.linkURL) });
+  return template;
+}
+
+function assertTrustedRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
   if (!event.senderFrame || !isTrustedRendererUrl(event.senderFrame.url)) throw new Error("Untrusted renderer IPC request.");
 }
 
@@ -336,11 +951,13 @@ function isTrustedRendererUrl(value: string): boolean {
 }
 
 function rendererArgument(name: string, value: string): string {
-  return `--workspace-${name}=${value}`;
+  return `--workspace-${name}=${encodeURIComponent(value)}`;
 }
 
 function resolveRendererDir(): string {
-  return app.isPackaged ? join(process.resourcesPath, "web-local") : join(repoRoot, "dist", "web-local");
+  const directory = app.isPackaged ? join(process.resourcesPath, "web-local") : join(repoRoot, "dist", "web-local");
+  if (!existsSync(join(directory, "index.html"))) throw new Error(`${productName} renderer build was not found at ${directory}. Run npm run local:build.`);
+  return directory;
 }
 
 function resolvePreloadPath(): string {
@@ -351,11 +968,32 @@ function resolveWindowIcon(): string {
   return app.isPackaged ? join(process.resourcesPath, "assets", "icon.ico") : join(repoRoot, "desktop", "assets", "icon.ico");
 }
 
+function resolveDesktopAssetsDir(): string {
+  return app.isPackaged ? join(process.resourcesPath, "assets") : join(repoRoot, "desktop", "assets");
+}
+
 function dirnameFromFile(value: string): string {
   return resolve(value, "..");
 }
 
-interface WindowState { x: number; y: number; width: number; height: number }
+interface WindowState { x: number; y: number; width: number; height: number; isMaximized: boolean }
+
+function configureWindowStatePersistence(window: BrowserWindow): void {
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSave = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      saveWindowState(window);
+    }, windowStateSaveDelayMs);
+  };
+  window.on("resize", scheduleSave);
+  window.on("move", scheduleSave);
+  window.on("close", () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveWindowState(window);
+  });
+}
 
 function readWindowState(): WindowState | null {
   const path = join(app.getPath("userData"), "window-state.json");
@@ -363,17 +1001,37 @@ function readWindowState(): WindowState | null {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<WindowState>;
     if (![value.x, value.y, value.width, value.height].every((part) => typeof part === "number" && Number.isFinite(part))) return null;
-    const state = value as WindowState;
-    return screen.getAllDisplays().some((display) => intersects(state, display.bounds)) ? state : null;
+    return {
+      x: Math.round(value.x as number),
+      y: Math.round(value.y as number),
+      width: Math.max(minimumWindowState.width, Math.round(value.width as number)),
+      height: Math.max(minimumWindowState.height, Math.round(value.height as number)),
+      isMaximized: value.isMaximized === true,
+    };
   } catch {
     return null;
   }
 }
 
-function saveWindowState(window: BrowserWindow | null): void {
-  if (!window || window.isDestroyed()) return;
+function visibleWindowState(state: WindowState | null): WindowState | null {
+  if (!state || !screen.getAllDisplays().some((display) => intersects(state, display.bounds))) return null;
+  const largestWorkArea = screen.getAllDisplays().reduce(
+    (best, display) => display.workArea.width * display.workArea.height > best.width * best.height ? display.workArea : best,
+    { x: 0, y: 0, width: minimumWindowState.width, height: minimumWindowState.height },
+  );
+  return {
+    ...state,
+    width: Math.min(state.width, largestWorkArea.width),
+    height: Math.min(state.height, largestWorkArea.height),
+  };
+}
+
+function saveWindowState(window: BrowserWindow): void {
+  if (window.isDestroyed()) return;
   try {
-    writeFileSync(join(app.getPath("userData"), "window-state.json"), `${JSON.stringify(window.getNormalBounds(), null, 2)}\n`, "utf8");
+    const bounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds();
+    const state: WindowState = { ...bounds, isMaximized: window.isMaximized() };
+    writeFileSync(join(app.getPath("userData"), "window-state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
   } catch {
     // Window placement is a convenience; startup should not fail if it cannot be saved.
   }
@@ -387,6 +1045,10 @@ function samePath(first: string, second: string): boolean {
   const a = resolve(first);
   const b = resolve(second);
   return process.platform === "win32" ? a.toLocaleLowerCase() === b.toLocaleLowerCase() : a === b;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function errorMessage(error: unknown): string {

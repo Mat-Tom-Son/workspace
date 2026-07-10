@@ -115,3 +115,14 @@ async function readError(response: Response): Promise<string> {
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export function safeExternalHref(href: string | undefined): string | null {
+  if (!href) return null;
+  try {
+    const url = new URL(href, window.location.href);
+    if (url.protocol === "https:" || url.protocol === "mailto:") return url.toString();
+  } catch {
+    return null;
+  }
+  return null;
+}

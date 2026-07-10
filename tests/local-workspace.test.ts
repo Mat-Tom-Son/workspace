@@ -12,6 +12,7 @@ import {
   createManagedWorkspace,
   listWorkspaces,
   readWorkspaceTextFile,
+  removeWorkspace,
   registerLinkedWorkspace,
   resolveWorkspacePath,
   scanWorkspaceTree,
@@ -69,6 +70,12 @@ test("linked folders cannot overlap Workspace application state", async () => {
   await assert.rejects(registerLinkedWorkspace(stateRoot), /cannot contain, or be contained by/);
   await assert.rejects(registerLinkedWorkspace(sandbox), /cannot contain, or be contained by/);
   await assert.rejects(createWorkspaceCheckpoint(sandbox), /does not contain Workspace application data/);
+});
+
+test("managed Space removal refuses a mismatched managed-content boundary", async () => {
+  const workspace = await createManagedWorkspace("Removal guard", contentRoot);
+  await assert.rejects(removeWorkspace(workspace.id, join(sandbox, "different-managed-root")), /only delete a managed Space/);
+  assert.equal(existsSync(workspace.rootPath), true);
 });
 
 test("Library items copy into a visible From Library folder", async () => {

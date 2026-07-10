@@ -1,6 +1,6 @@
 {
   "name": "workspace-desktop",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "A local-first desktop workspace powered by Pi.",
@@ -52,6 +52,7 @@
     "@electron-forge/plugin-fuses": "^7.11.2",
     "@electron/asar": "^4.0.2",
     "@electron/fuses": "^1.8.0",
+    "@fluentui/react-icons": "^2.0.331",
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -60,6 +61,7 @@
     "electron": "^42.6.1",
     "electron-builder": "^26.15.3",
     "lucide-react": "^1.8.0",
+    "material-icon-theme": "^5.36.1",
     "png-to-ico": "^3.0.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

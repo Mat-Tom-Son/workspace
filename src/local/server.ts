@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { createReadStream, existsSync, readFileSync, watch } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -17,7 +18,7 @@ import {
   type PiExtensionUiRequest,
   type PiExtensionUiSettled,
 } from "./agent/extension-ui.js";
-import { appendMessage, createConversation, listConversations, readConversation } from "./agent/chat-store.js";
+import { appendMessage, createConversation, listConversations, readConversation, renameConversation } from "./agent/chat-store.js";
 import { importPiSkillBundle } from "./agent/skill-import.js";
 import { loadAgentSkillCatalog, type PiCatalogSource, type PiResourceCatalog } from "./agent/skill-catalog.js";
 import {
@@ -32,8 +33,16 @@ import {
   type PiOAuthHooks,
   type PiSetupStatus,
 } from "./agent/pi-runtime-config.js";
-import { loadConversationContextAttachmentsForTurn } from "./conversation-context.js";
-import { createWorkspaceCheckpoint, listWorkspaceCheckpoints, restoreWorkspaceCheckpoint } from "./history.js";
+import { loadConversationContextAttachmentsForTurn, previewConversationContextAttachment } from "./conversation-context.js";
+import {
+  createWorkspaceCheckpoint,
+  createWorkspaceMutationCheckpoint,
+  discardWorkspaceCheckpoint,
+  listFileVersions,
+  listWorkspaceCheckpoints,
+  restoreFileVersion,
+  restoreWorkspaceCheckpoint,
+} from "./history.js";
 import {
   copyResourcesToWorkspace,
   createResourceFolder,
@@ -41,13 +50,25 @@ import {
   uploadResourceFiles,
 } from "./resources.js";
 import { configureWorkspaceStateRoot } from "./state-paths.js";
+import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
 import {
   createManagedWorkspace,
+  createWorkspaceFolder,
+  createWorkspaceTextFile,
+  deleteWorkspaceEntry,
+  findExistingWorkspaceFilePaths,
   getWorkspace,
+  getWorkspaceEntryInfo,
   listWorkspaces,
+  moveWorkspaceEntry,
   readWorkspaceTextFile,
+  renameWorkspaceEntry,
   registerLinkedWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  resolveWorkspacePath,
   scanWorkspaceTree,
+  writeWorkspaceTextFile,
   writeUploadedFiles,
 } from "./workspace.js";
 
@@ -72,6 +93,13 @@ export interface LocalApiOptions {
   maxBodyBytes?: number;
   loadEnv?: boolean;
   onAgentTurnActivity?: (activeTurns: number) => void;
+  onHistoryCheckpoint?: (event: {
+    workspaceId: string;
+    conversationId: string;
+    reason: "pre_turn" | "post_turn";
+    checkpointId: string;
+    skippedLargeFiles: string[];
+  }) => void;
 }
 
 export interface LocalApiHandle {
@@ -94,8 +122,10 @@ interface LocalApiState {
   clients: Map<string, PiConversationClient>;
   runningTurns: Set<string>;
   extensionRequests: Map<string, PiExtensionUiRequest>;
+  fileStreams: Set<() => void>;
   activeTurns: number;
   onAgentTurnActivity?: (activeTurns: number) => void;
+  onHistoryCheckpoint?: LocalApiOptions["onHistoryCheckpoint"];
 }
 
 interface MultipartFile {
@@ -138,8 +168,10 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     clients: new Map(),
     runningTurns: new Set(),
     extensionRequests: new Map(),
+    fileStreams: new Set(),
     activeTurns: 0,
     onAgentTurnActivity: options.onAgentTurnActivity,
+    onHistoryCheckpoint: options.onHistoryCheckpoint,
   };
 
   const requestListener = (request: PiExtensionUiRequest) => routeExtensionRequest(state, request);
@@ -167,6 +199,7 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
       extensionUi.off("settled", settledListener);
       extensionUi.cancelAll();
       for (const streams of state.chatStreams.values()) for (const response of streams) response.end();
+      for (const close of [...state.fileStreams]) close();
       for (const client of state.clients.values()) await client.stop().catch(() => undefined);
       await closeServer(server);
     },
@@ -218,10 +251,39 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     return;
   }
 
+  const workspaceMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)$/);
+  if (workspaceMatch && (method === "PUT" || method === "PATCH")) {
+    const body = await readJsonBody<{ name?: string }>(state, req);
+    if (!body.name?.trim()) throw badRequest("A Space name is required.");
+    sendJson(res, { workspace: await renameWorkspace(workspaceMatch[1], body.name) });
+    return;
+  }
+  if (workspaceMatch && method === "DELETE") {
+    const workspace = await getWorkspace(workspaceMatch[1]);
+    await invalidateWorkspaceClients(state, workspace.id);
+    closeWorkspaceStreams(state, workspace.id);
+    for (const request of [...state.extensionRequests.values()]) {
+      if (request.workspaceRoot !== workspace.rootPath) continue;
+      state.extensionUi.cancel(request.id);
+      state.extensionRequests.delete(request.id);
+    }
+    sendJson(res, await removeWorkspace(workspace.id, state.workspaceBase));
+    return;
+  }
+
   const treeMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/tree$/);
   if (method === "GET" && treeMatch) {
     const workspace = await getWorkspace(treeMatch[1]);
-    sendJson(res, { tree: await scanWorkspaceTree(workspace.rootPath) });
+    const maxDepthValue = Number(url.searchParams.get("maxDepth") ?? 20);
+    const maxDepth = Number.isFinite(maxDepthValue) ? Math.min(Math.max(Math.floor(maxDepthValue), 0), 50) : 20;
+    sendJson(res, {
+      tree: await scanWorkspaceTree(
+        workspace.rootPath,
+        maxDepth,
+        url.searchParams.get("path") ?? "",
+        { includeIgnored: url.searchParams.get("includeIgnored") !== "0" },
+      ),
+    });
     return;
   }
 
@@ -231,6 +293,157 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const path = url.searchParams.get("path") ?? "";
     if (!path) throw badRequest("File path is required.");
     sendJson(res, await readWorkspaceTextFile(workspace.rootPath, path));
+    return;
+  }
+  if (method === "PUT" && fileMatch) {
+    const workspace = await getWorkspace(fileMatch[1]);
+    const body = await readJsonBody<{ path?: string; text?: string }>(state, req);
+    if (!body.path?.trim() || typeof body.text !== "string") throw badRequest("A file path and text are required.");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      paths: [body.path],
+      reason: "pre_edit",
+      label: `Before editing ${body.path}`,
+    });
+    const file = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => writeWorkspaceTextFile(workspace.rootPath, body.path!, body.text!));
+    sendJson(res, { file, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles });
+    return;
+  }
+
+  const fileInfoMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/file-info$/);
+  if (method === "GET" && fileInfoMatch) {
+    const workspace = await getWorkspace(fileInfoMatch[1]);
+    const path = url.searchParams.get("path") ?? "";
+    if (!path) throw badRequest("Space item path is required.");
+    sendJson(res, await getWorkspaceEntryInfo(workspace.rootPath, path));
+    return;
+  }
+
+  const pathsExistMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/paths-exist$/);
+  if (method === "POST" && pathsExistMatch) {
+    const workspace = await getWorkspace(pathsExistMatch[1]);
+    const body = await readJsonBody<{ paths?: unknown }>(state, req);
+    if (!Array.isArray(body.paths) || body.paths.some((path) => typeof path !== "string")) {
+      throw badRequest("Space paths must be an array of strings.");
+    }
+    sendJson(res, { existing: await findExistingWorkspaceFilePaths(workspace.rootPath, body.paths) });
+    return;
+  }
+
+  const rawFileMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/raw-file$/);
+  if (method === "GET" && rawFileMatch) {
+    const workspace = await getWorkspace(rawFileMatch[1]);
+    const path = url.searchParams.get("path") ?? "";
+    if (!path) throw badRequest("File path is required.");
+    await sendWorkspaceRawFile(res, workspace.rootPath, path);
+    return;
+  }
+
+  const moveMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/move-local-entry$/);
+  if (method === "POST" && moveMatch) {
+    const workspace = await getWorkspace(moveMatch[1]);
+    const body = await readJsonBody<{ sourcePath?: string; targetFolderPath?: string }>(state, req);
+    if (!body.sourcePath?.trim()) throw badRequest("Select a file or folder to move.");
+    const moveSource = normalizeWorkspaceRelativePath(body.sourcePath);
+    const moveTargetFolder = normalizeWorkspaceRelativePath(body.targetFolderPath ?? "");
+    const moveDestination = [moveTargetFolder, basename(moveSource)].filter(Boolean).join("/");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      movesOnRestore: [{ fromPath: moveDestination, toPath: moveSource }],
+      reason: "pre_move",
+      label: `Before moving ${body.sourcePath}`,
+    });
+    const moved = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => moveWorkspaceEntry(workspace.rootPath, {
+      sourcePath: moveSource,
+      targetFolderPath: body.targetFolderPath ?? "",
+    }));
+    sendJson(res, { moved, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles });
+    return;
+  }
+
+  const renameMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/rename-local-entry$/);
+  if (method === "POST" && renameMatch) {
+    const workspace = await getWorkspace(renameMatch[1]);
+    const body = await readJsonBody<{ path?: string; newName?: string }>(state, req);
+    if (!body.path?.trim() || !body.newName?.trim()) throw badRequest("A Space item and new name are required.");
+    const renameSource = normalizeWorkspaceRelativePath(body.path);
+    const renameParent = renameSource.includes("/") ? renameSource.slice(0, renameSource.lastIndexOf("/")) : "";
+    const renameDestination = [renameParent, body.newName].filter(Boolean).join("/");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      movesOnRestore: [{ fromPath: renameDestination, toPath: renameSource }],
+      reason: "pre_rename",
+      label: `Before renaming ${body.path}`,
+    });
+    const renamed = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => renameWorkspaceEntry(workspace.rootPath, { path: body.path!, newName: body.newName! }));
+    sendJson(res, { renamed, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles });
+    return;
+  }
+
+  const foldersMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/folders$/);
+  if (method === "POST" && foldersMatch) {
+    const workspace = await getWorkspace(foldersMatch[1]);
+    const body = await readJsonBody<{ parentPath?: string; name?: string }>(state, req);
+    if (!body.name?.trim()) throw badRequest("A folder name is required.");
+    const folderTarget = [normalizeWorkspaceRelativePath(body.parentPath ?? ""), body.name].filter(Boolean).join("/");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      deleteOnRestore: [folderTarget],
+      reason: "pre_create",
+      label: `Before creating ${body.name}`,
+    });
+    const folder = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => createWorkspaceFolder(workspace.rootPath, body.parentPath ?? "", body.name!));
+    sendJson(res, { folder, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles }, 201);
+    return;
+  }
+
+  const filesMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/files$/);
+  if (method === "POST" && filesMatch) {
+    const workspace = await getWorkspace(filesMatch[1]);
+    const body = await readJsonBody<{ parentPath?: string; name?: string; text?: string }>(state, req);
+    if (!body.name?.trim()) throw badRequest("A file name is required.");
+    const fileTarget = [normalizeWorkspaceRelativePath(body.parentPath ?? ""), body.name].filter(Boolean).join("/");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      deleteOnRestore: [fileTarget],
+      reason: "pre_create",
+      label: `Before creating ${body.name}`,
+    });
+    const file = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => createWorkspaceTextFile(workspace.rootPath, body.parentPath ?? "", body.name!, body.text ?? ""));
+    sendJson(res, { file, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles }, 201);
+    return;
+  }
+
+  const deleteMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/local-file$/);
+  if (method === "DELETE" && deleteMatch) {
+    const workspace = await getWorkspace(deleteMatch[1]);
+    const body = await readJsonBody<{ path?: string }>(state, req);
+    if (!body.path?.trim()) throw badRequest("Select a file or folder to delete.");
+    const safety = await createWorkspaceMutationCheckpoint(workspace.rootPath, {
+      paths: [body.path],
+      reason: "pre_delete",
+      label: `Before deleting ${body.path}`,
+    });
+    const deleted = await runWithHistorySafety(workspace.rootPath, safety.checkpointId, () => deleteWorkspaceEntry(workspace.rootPath, body.path!));
+    sendJson(res, { ...deleted, safetyCheckpointId: safety.checkpointId, historySkippedPaths: safety.skippedLargeFiles });
+    return;
+  }
+
+  const ignoreMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/ignore-paths$/);
+  if (method === "GET" && ignoreMatch) {
+    const workspace = await getWorkspace(ignoreMatch[1]);
+    sendJson(res, await readWorkspaceIgnoreState(workspace.rootPath));
+    return;
+  }
+  if (method === "POST" && ignoreMatch) {
+    const workspace = await getWorkspace(ignoreMatch[1]);
+    const body = await readJsonBody<{ paths?: unknown; ignored?: unknown }>(state, req);
+    if (!Array.isArray(body.paths) || body.paths.some((path) => typeof path !== "string") || typeof body.ignored !== "boolean") {
+      throw badRequest("Space paths and an ignore decision are required.");
+    }
+    sendJson(res, await setWorkspaceIgnoreState(workspace.rootPath, body.paths, body.ignored));
+    return;
+  }
+
+  const fileEventsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/file-events$/);
+  if (method === "GET" && fileEventsMatch) {
+    const workspace = await getWorkspace(fileEventsMatch[1]);
+    await openWorkspaceFileStream(state, req, res, workspace.rootPath);
     return;
   }
 
@@ -293,6 +506,22 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   if (method === "POST" && checkpointRestoreMatch) {
     const workspace = await getWorkspace(checkpointRestoreMatch[1]);
     sendJson(res, await restoreWorkspaceCheckpoint(workspace.rootPath, checkpointRestoreMatch[2]));
+    return;
+  }
+
+  const fileVersionsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/history\/file-versions$/);
+  if (method === "GET" && fileVersionsMatch) {
+    const workspace = await getWorkspace(fileVersionsMatch[1]);
+    const path = url.searchParams.get("path")?.trim();
+    if (!path) throw badRequest("A Space-relative file path is required.");
+    sendJson(res, { path, versions: await listFileVersions(workspace.rootPath, path) });
+    return;
+  }
+  if (method === "POST" && fileVersionsMatch) {
+    const workspace = await getWorkspace(fileVersionsMatch[1]);
+    const body = await readJsonBody<{ path?: string; hashSha256?: string }>(state, req);
+    if (!body.path?.trim() || !body.hashSha256?.trim()) throw badRequest("A file path and version hash are required.");
+    sendJson(res, { result: await restoreFileVersion(workspace.rootPath, body.path, body.hashSha256) });
     return;
   }
 
@@ -407,6 +636,25 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     return;
   }
 
+  const conversationMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)$/);
+  if (conversationMatch && (method === "PUT" || method === "PATCH")) {
+    const workspace = await getWorkspace(conversationMatch[1]);
+    const body = await readJsonBody<{ title?: string }>(state, req);
+    const conversation = await renameConversation(workspace.rootPath, conversationMatch[2], body.title ?? "");
+    state.clients.get(clientKey(workspace.id, conversationMatch[2]))?.setSessionName(conversation.title);
+    sendJson(res, { conversation });
+    return;
+  }
+
+  const contextAttachmentMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/context-attachments$/);
+  if (contextAttachmentMatch && method === "POST") {
+    const workspace = await getWorkspace(contextAttachmentMatch[1]);
+    const body = await readJsonBody<{ path?: string }>(state, req);
+    if (!body.path?.trim()) throw badRequest("A file path is required.");
+    sendJson(res, { attachment: await previewConversationContextAttachment(workspace.rootPath, { path: body.path }) }, 201);
+    return;
+  }
+
   const eventsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/events$/);
   if (method === "GET" && eventsMatch) {
     await getWorkspace(eventsMatch[1]);
@@ -418,9 +666,11 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const workspace = await getWorkspace(messagesPostMatch[1]);
     const conversationId = messagesPostMatch[2];
     const turnKey = clientKey(workspace.id, conversationId);
-    const body = await readJsonBody<{ content?: string; contextPaths?: string[] }>(state, req);
+    const body = await readJsonBody<{ content?: string; contextPaths?: string[]; selectedPath?: string | null }>(state, req);
     const content = body.content?.trim();
     if (!content) throw badRequest("Message content is required.");
+    const selectedPath = normalizeSelectedPath(workspace.rootPath, body.selectedPath);
+    const contextPaths = normalizeContextPaths(workspace.rootPath, body.contextPaths);
     const existing = await readConversation(workspace.rootPath, conversationId);
     if (!existing.length) throw notFound("Conversation not found.");
     if (state.runningTurns.has(turnKey)) throw httpError(409, "Wait for the current agent turn to finish.");
@@ -432,7 +682,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       state.runningTurns.delete(turnKey);
       throw error;
     }
-    void runAgentTurn(state, workspace.id, workspace.rootPath, conversationId, content, body.contextPaths ?? []);
+    void runAgentTurn(state, workspace.id, workspace.rootPath, conversationId, content, contextPaths, selectedPath);
     sendJson(res, { accepted: true, message }, 202);
     return;
   }
@@ -442,6 +692,19 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const key = clientKey(workspace.id, abortMatch[2]);
     const client = state.clients.get(key);
     sendJson(res, { aborted: client ? await client.abort() : false });
+    return;
+  }
+
+  const compactMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/compact$/);
+  if (method === "POST" && compactMatch) {
+    const workspace = await getWorkspace(compactMatch[1]);
+    if (!(await readConversation(workspace.rootPath, compactMatch[2])).length) throw notFound("Conversation not found.");
+    if (state.runningTurns.has(clientKey(workspace.id, compactMatch[2]))) throw httpError(409, "Wait for the current agent turn to finish.");
+    const body = await readJsonBody<{ customInstructions?: string }>(state, req);
+    const client = await getClient(state, workspace.id, workspace.rootPath, compactMatch[2]);
+    await client.compact(body.customInstructions?.trim() || undefined);
+    broadcast(state, streamKey(workspace.id, compactMatch[2]), { type: "done", conversationId: compactMatch[2] });
+    sendJson(res, { compacted: true });
     return;
   }
   const messagesGetMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)$/);
@@ -476,14 +739,18 @@ async function runAgentTurn(
   conversationId: string,
   content: string,
   contextPaths: string[],
+  selectedPath: string | null,
 ): Promise<void> {
   const key = clientKey(workspaceId, conversationId);
   let client: PiConversationClient | null = null;
+  let promptStarted = false;
   changeTurnCount(state, 1);
   try {
     client = await getClient(state, workspaceId, workspaceRoot, conversationId);
     const contextAttachments = await loadConversationContextAttachmentsForTurn(workspaceRoot, contextPaths);
-    const finalText = await client.prompt(content, { contextAttachments });
+    await captureTurnCheckpointSafe(state, workspaceId, workspaceRoot, conversationId, "pre_turn");
+    promptStarted = true;
+    const finalText = await client.prompt(content, { contextAttachments, selectedPath });
     await appendMessage(workspaceRoot, conversationId, {
       id: randomUUID(),
       role: "assistant",
@@ -497,6 +764,7 @@ async function runAgentTurn(
     await client?.stop().catch(() => undefined);
     state.clients.delete(key);
   } finally {
+    if (promptStarted) await captureTurnCheckpointSafe(state, workspaceId, workspaceRoot, conversationId, "post_turn");
     state.runningTurns.delete(key);
     changeTurnCount(state, -1);
   }
@@ -525,6 +793,15 @@ async function invalidateWorkspaceClients(state: LocalApiState, workspaceId: str
     if (!key.startsWith(`${workspaceId}:`)) continue;
     await client.stop().catch(() => undefined);
     state.clients.delete(key);
+  }
+}
+
+function closeWorkspaceStreams(state: LocalApiState, workspaceId: string): void {
+  const prefix = `${workspaceId}:`;
+  for (const [key, streams] of [...state.chatStreams]) {
+    if (!key.startsWith(prefix)) continue;
+    for (const response of streams) response.end();
+    state.chatStreams.delete(key);
   }
 }
 
@@ -690,6 +967,168 @@ function openChatStream(state: LocalApiState, req: IncomingMessage, res: ServerR
   });
 }
 
+async function openWorkspaceFileStream(
+  state: LocalApiState,
+  req: IncomingMessage,
+  res: ServerResponse,
+  workspaceRoot: string,
+): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  let recursive = true;
+  let watcher: ReturnType<typeof watch>;
+  const sendEvent = (event: unknown) => {
+    try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* disconnected */ }
+  };
+  const onChange = (eventType: string, fileName: string | Buffer | null) => {
+    const rawName = Buffer.isBuffer(fileName) ? fileName.toString("utf8") : fileName ?? "";
+    if (!rawName) {
+      sendEvent({ type: "file_event", eventType, path: null });
+      return;
+    }
+    const path = rawName.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!path || isAlwaysHiddenWorkspaceEntry(basename(path))) return;
+    void readWorkspaceIgnoreState(workspaceRoot).then((ignoreState) => {
+      if (isWorkspaceIgnored(path, ignoreState.patterns)) return;
+      try { resolveWorkspacePath(workspaceRoot, path); } catch { return; }
+      sendEvent({ type: "file_event", eventType, path });
+    });
+  };
+  try {
+    watcher = watch(workspaceRoot, { recursive: true }, onChange);
+  } catch {
+    recursive = false;
+    watcher = watch(workspaceRoot, onChange);
+  }
+  sendEvent({ type: "ready", recursive });
+  const heartbeat = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch { /* disconnected */ }
+  }, 15_000);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    watcher.close();
+    if (!res.writableEnded) res.end();
+    state.fileStreams.delete(close);
+  };
+  state.fileStreams.add(close);
+  watcher.on("error", (error) => sendEvent({ type: "error", message: errorMessage(error) }));
+  req.on("close", close);
+}
+
+async function sendWorkspaceRawFile(res: ServerResponse, workspaceRoot: string, relativePath: string): Promise<void> {
+  const path = resolveWorkspacePath(workspaceRoot, relativePath);
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile()) throw notFound("File not found.");
+  res.writeHead(200, {
+    "content-type": contentTypeForPath(path),
+    "content-length": info.size,
+    "content-disposition": "inline",
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    const stream = createReadStream(path);
+    stream.on("error", reject);
+    stream.on("end", resolvePromise);
+    stream.pipe(res);
+  });
+}
+
+function normalizeSelectedPath(workspaceRoot: string, value: string | null | undefined): string | null {
+  const path = typeof value === "string" ? normalizeWorkspaceRelativePath(value) : "";
+  if (!path) return null;
+  let absolutePath: string;
+  try {
+    absolutePath = resolveWorkspacePath(workspaceRoot, path);
+  } catch (error) {
+    throw badRequest(errorMessage(error));
+  }
+  if (!existsSync(absolutePath)) throw badRequest("The selected Space item no longer exists.");
+  return path;
+}
+
+function normalizeContextPaths(workspaceRoot: string, value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw badRequest("Chat context paths must be an array of strings.");
+  const paths = [...new Set(value.map((item) => normalizeWorkspaceRelativePath(item)).filter(Boolean))].slice(0, 32);
+  for (const path of paths) {
+    try { resolveWorkspacePath(workspaceRoot, path); } catch (error) { throw badRequest(errorMessage(error)); }
+  }
+  return paths;
+}
+
+async function captureTurnCheckpointSafe(
+  state: LocalApiState,
+  workspaceId: string,
+  workspaceRoot: string,
+  conversationId: string,
+  reason: "pre_turn" | "post_turn",
+): Promise<void> {
+  try {
+    const checkpoint = await createWorkspaceCheckpoint(workspaceRoot, {
+      reason,
+      label: reason === "pre_turn" ? "Before Assistant turn" : "After Assistant turn",
+    });
+    state.onHistoryCheckpoint?.({
+      workspaceId,
+      conversationId,
+      reason,
+      checkpointId: checkpoint.checkpointId,
+      skippedLargeFiles: checkpoint.skippedLargeFiles,
+    });
+    if (checkpoint.skippedLargeFiles.length) {
+      broadcast(state, streamKey(workspaceId, conversationId), {
+        type: "status",
+        conversationId,
+        message: `History skipped ${checkpoint.skippedLargeFiles.length} oversized file${checkpoint.skippedLargeFiles.length === 1 ? "" : "s"}.`,
+      });
+    }
+  } catch (error) {
+    broadcast(state, streamKey(workspaceId, conversationId), {
+      type: "status",
+      conversationId,
+      message: `History checkpoint warning: ${errorMessage(error)}`,
+    });
+  }
+}
+
+async function runWithHistorySafety<T>(workspaceRoot: string, checkpointId: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    await discardWorkspaceCheckpoint(workspaceRoot, checkpointId).catch(() => undefined);
+    throw error;
+  }
+}
+
+function normalizeWorkspaceRelativePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^(?:\.\/)+/, "").replace(/^\/+|\/+$/g, "");
+}
+
+function contentTypeForPath(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".txt": return "text/plain; charset=utf-8";
+    case ".md": case ".markdown": return "text/markdown; charset=utf-8";
+    case ".json": return "application/json; charset=utf-8";
+    case ".csv": return "text/csv; charset=utf-8";
+    case ".html": case ".htm": return "text/html; charset=utf-8";
+    case ".pdf": return "application/pdf";
+    case ".docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case ".pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case ".png": return "image/png";
+    case ".jpg": case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".svg": return "image/svg+xml";
+    default: return "application/octet-stream";
+  }
+}
+
 function broadcast(state: LocalApiState, key: string, event: unknown): void {
   for (const response of state.chatStreams.get(key) ?? []) {
     try { response.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* disconnected */ }
@@ -769,7 +1208,7 @@ function authorize(state: LocalApiState, req: IncomingMessage): void {
 function setCorsHeaders(state: LocalApiState, req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin;
   if (origin && state.allowedOrigins.includes(origin)) res.setHeader("access-control-allow-origin", origin);
-  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type,x-workspace-session");
   res.setHeader("vary", "Origin");
   res.setHeader("x-content-type-options", "nosniff");

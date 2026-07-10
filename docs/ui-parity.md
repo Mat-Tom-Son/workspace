@@ -1,0 +1,87 @@
+# Desktop experience parity
+
+Workspace is a product extraction of the mature Kai Workspace desktop experience, not a new interface inspired by it. The neutral desktop interaction model from `win-kymadocs` commit `57ff910` is the behavioral baseline. Product-specific integrations and language may be replaced, but the general-purpose interaction quality should be preserved.
+
+## Product translation
+
+| Baseline concept | Workspace concept |
+| --- | --- |
+| Workspace backed by a local SharePoint mirror | Space backed directly by an ordinary folder |
+| Kits | Skills |
+| Sources | Library |
+| Microsoft organization login | Assistant setup using Pi providers |
+| Kai | Assistant |
+| SharePoint sync and publish | Local files first; cloud-synced folders work through their desktop clients |
+
+The translation is intentionally narrow. It does not justify replacing the shell, tabs, file interactions, chat experience, desktop integration, or accessibility behavior.
+
+## Required interaction model
+
+### Persistent surface tabs
+
+- Chat, file, History, and appearance surfaces open as tabs instead of route-only panes.
+- Tabs persist and restore across application restarts.
+- Each tab retains its Space identity; activating a tab from another Space activates that Space.
+- Each Space remembers its most recently active tab.
+- Existing conversations deduplicate to one tab while multiple unsent New Chat drafts remain possible.
+- Renamed conversations update their tab titles.
+- Moving or renaming a file retargets its open tab; deleting it closes the affected tab.
+- Closing a tab selects the adjacent tab predictably.
+- Arrow keys, Home, and End navigate the tab strip with correct focus and ARIA tab semantics.
+- Inactive tab panels remain mounted when needed so drafts, scroll position, and transient UI state survive tab switches.
+
+### Desktop shell
+
+- Preserve the custom title bar and File, Edit, View, and Help menus.
+- Preserve window size, position, maximized state, theme integration, and renderer recovery behavior.
+- Closing the window may hide Workspace to the system tray when the preference is enabled; explicit Quit exits cleanly.
+- The tray exposes clear Show and Quit actions and does not strand an invisible process.
+- Update status and commands remain available from both the desktop menu and settings surface.
+
+### Files and folders
+
+- The Space rail, resizable file pane, search, expandable tree, file-type icons, details pane, and file history remain first-class.
+- Right-click actions are available throughout the file tree and use native desktop context behavior where appropriate.
+- Supported actions include open, reveal in Explorer/Finder, copy path, attach to chat, rename, move, create folder/file, upload/import, delete, and version history.
+- Desktop drag-out, file opening, and reveal operations use safe workspace-relative paths and never escape the Space root.
+- Destructive actions require clear confirmation and preserve recovery/history behavior where supported.
+- Registering an existing folder as a Space never moves, converts, or injects Workspace metadata into that folder.
+
+### Chat and navigation
+
+- Preserve conversation history, rename, drafts, streaming activity, tool/runtime detail, stop behavior, context attachments, copy actions, suggested prompts, and extension UI requests.
+- Preserve the command palette, keyboard shortcuts, toast/confirm feedback, onboarding, Space creation/linking, themes, typography, and resizable layout.
+- Navigation uses the product nouns `Space`, `Chats`, `Library`, `History`, and `Assistant` with `Setup`, `Skills`, and `Extensions` beneath Assistant.
+
+## Deliberately removed or replaced
+
+- Microsoft/Azure organization authentication and organization-account UI.
+- SharePoint mirror, publish, readiness, and controlled-document semantics.
+- Compliance/SOP-specific review surfaces and Kymanox/Kai branding.
+- Company signing credentials and compatibility identifiers that are not needed by the separate Workspace product.
+
+Pi remains the agent runtime. Workspace should expose Pi's provider setup, standard built-in tools, Skills, Extensions, packages, project trust, and supported extension UI without inventing a second capability system.
+
+## Acceptance evidence
+
+A corrective port is ready for release only when all of the following are true:
+
+1. The original and Workspace fixture screens have been captured at the same viewport and reviewed side by side.
+2. Tabs have been exercised for restore, multiple drafts, cross-Space activation, rename, move, delete, close fallback, and keyboard navigation.
+3. File-tree context actions and native open/reveal/drag behavior have been exercised against a disposable Space.
+4. Custom menus, close-to-tray, Show, Quit, window-state restore, and updater surfaces have been exercised in packaged Electron.
+5. Type checks, tests, renderer build, desktop compile/preflight, and a packaged smoke build pass on the supported Node runtime.
+6. The app contains no user-facing Kai, Kymanox, Kits, Sources, SharePoint, or Microsoft-login copy except in migration or historical documentation.
+7. No public release is published until the side-by-side product review is accepted.
+
+## 0.2.0 local candidate evidence
+
+The July 10, 2026 local candidate has completed the implementation and engineering checks above:
+
+- Side-by-side browser review covered the original shell and the Workspace port at the same viewport, including tabs, file surfaces, command palette, settings, and Assistant navigation.
+- Automated tab coverage exercises persistence, multiple drafts, cross-Space activation, conversation title updates, file retarget/delete behavior, close fallback, and keyboard navigation.
+- Packaged Electron review exercised the custom menus, file-tree context menu, close-to-tray, second-instance Show behavior, explicit Exit, updater status, and the final settings layout.
+- The supported Node runtime passed type checks, 46 automated tests, production renderer/desktop preparation, packaged smoke verification, signed installer creation, and Windows release-asset verification.
+- The personal certificate signs the local installer, but remains self-signed and therefore is not a public trust solution.
+
+Acceptance item 7 remains intentionally open: version 0.2.0 is a local review candidate and has not been pushed, tagged, published, or installed over the existing application.

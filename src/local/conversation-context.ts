@@ -1,9 +1,12 @@
 import { readFile, stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 
+import JSZip from "jszip";
+
+import { OFFICE_OPEN_DOCUMENT_READ_NOTE, officeDocumentLockPresent } from "./office-lock-files.js";
 import { resolveWorkspacePath } from "./workspace.js";
 
-export type ConversationContextMode = "full_original_text" | "path_only_reference";
+export type ConversationContextMode = "full_original_text" | "full_extracted_text" | "path_only_reference";
 
 export interface ConversationContextAttachment {
   sourcePath: string;
@@ -24,6 +27,15 @@ export interface LoadedConversationContextAttachment extends ConversationContext
   text: string | null;
 }
 
+export async function previewConversationContextAttachment(
+  rootPath: string,
+  input: { path: string },
+): Promise<ConversationContextAttachment> {
+  const loaded = await loadAttachment(rootPath, normalizePath(input.path), chatContextBudgetTokens(), chatContextBudgetTokens());
+  const { text: _text, ...attachment } = loaded;
+  return attachment;
+}
+
 export async function loadConversationContextAttachmentsForTurn(
   rootPath: string,
   paths: string[],
@@ -39,53 +51,229 @@ export async function loadConversationContextAttachmentsForTurn(
   return result;
 }
 
-async function loadAttachment(rootPath: string, sourcePath: string, remaining: number, budgetTokens: number): Promise<LoadedConversationContextAttachment> {
+async function loadAttachment(
+  rootPath: string,
+  sourcePath: string,
+  remaining: number,
+  budgetTokens: number,
+): Promise<LoadedConversationContextAttachment> {
   const sourceFileName = basename(sourcePath);
   let sourceSizeBytes = 0;
   try {
+    if (!sourcePath) throw new Error("Choose a file to attach to chat context.");
     const path = resolveWorkspacePath(rootPath, sourcePath);
     const info = await stat(path);
-    if (!info.isFile()) throw new Error("Only files can be attached to chat.");
+    if (!info.isFile()) throw new Error("Only files can be attached to chat context.");
     sourceSizeBytes = info.size;
-    if (sourceSizeBytes > 8 * 1024 * 1024) throw new Error("The file is larger than the 8 MB chat attachment limit.");
+    if (sourceSizeBytes > 32 * 1024 * 1024) throw new Error("The file is larger than the 32 MB chat attachment limit.");
     const bytes = await readFile(path);
-    if (looksBinary(bytes)) throw new Error("Binary files are attached by path; Pi can inspect them with an appropriate tool or extension.");
-    const text = normalizeText(bytes.toString("utf8"));
+    const extracted = await readableAttachmentText(sourceFileName, bytes);
+    const text = normalizeText(extracted.text);
     const estimatedTokens = estimateTokens(text);
-    if (estimatedTokens > remaining) throw new Error(`The file does not fit the remaining ${remaining.toLocaleString()}-token attachment budget.`);
+    if (estimatedTokens > remaining) {
+      return pathOnlyAttachment({
+        sourcePath,
+        sourceFileName,
+        sourceSizeBytes,
+        budgetTokens,
+        estimatedTokens,
+        reason: `The readable text is about ${estimatedTokens.toLocaleString()} tokens, which does not fit the remaining ${remaining.toLocaleString()} tokens of the chat context budget.`,
+        provenance: extracted.provenance,
+        warnings: extracted.warnings,
+      });
+    }
+    const officeOpen = extracted.mode === "full_extracted_text" && await officeDocumentLockPresent(path);
+    const warnings = officeOpen ? [...extracted.warnings, OFFICE_OPEN_DOCUMENT_READ_NOTE] : extracted.warnings;
     return {
       sourcePath,
       sourceFileName,
       sourceSizeBytes,
-      mode: "full_original_text",
+      mode: extracted.mode,
       includedInPrompt: true,
       reason: null,
       estimatedTokens,
       budgetTokens,
-      provenance: ["UTF-8 text attached with normalized line endings."],
-      warnings: [],
-      userLabel: "Full text",
-      detail: `Full text attached to this turn (about ${estimatedTokens.toLocaleString()} tokens).`,
+      provenance: extracted.provenance,
+      warnings,
+      userLabel: extracted.mode === "full_original_text" ? "Full text" : "Extracted text",
+      detail: extracted.mode === "full_original_text"
+        ? `Full text attached to this turn (about ${estimatedTokens.toLocaleString()} tokens).`
+        : `Readable Office text attached to this turn (about ${estimatedTokens.toLocaleString()} tokens). Layout, formulas, comments, and binary formatting are not included.`,
       text,
     };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return {
+    return pathOnlyAttachment({
       sourcePath,
       sourceFileName,
       sourceSizeBytes,
-      mode: "path_only_reference",
-      includedInPrompt: false,
-      reason,
-      estimatedTokens: 0,
       budgetTokens,
+      estimatedTokens: 0,
+      reason: error instanceof Error ? error.message : String(error),
       provenance: [],
       warnings: [],
-      userLabel: "Path only",
-      detail: `The Space-relative path is attached. Pi can inspect the file with tools. Reason: ${reason}`,
-      text: null,
+    });
+  }
+}
+
+async function readableAttachmentText(
+  fileName: string,
+  bytes: Buffer,
+): Promise<{ text: string; mode: Exclude<ConversationContextMode, "path_only_reference">; provenance: string[]; warnings: string[] }> {
+  const extension = extname(fileName).toLowerCase();
+  if (wordExtensions.has(extension)) {
+    return {
+      text: await extractWordText(bytes),
+      mode: "full_extracted_text",
+      provenance: ["Readable text extracted locally from the Word OOXML package."],
+      warnings: [],
     };
   }
+  if (spreadsheetExtensions.has(extension)) {
+    return {
+      text: await extractSpreadsheetText(bytes),
+      mode: "full_extracted_text",
+      provenance: ["Readable cell values extracted locally from the Excel OOXML package."],
+      warnings: [],
+    };
+  }
+  if (presentationExtensions.has(extension)) {
+    return {
+      text: await extractPresentationText(bytes),
+      mode: "full_extracted_text",
+      provenance: ["Readable slide text extracted locally from the PowerPoint OOXML package."],
+      warnings: [],
+    };
+  }
+  if (looksBinary(bytes)) throw new Error("Binary files are attached by path; Pi can inspect them with an appropriate tool or Extension.");
+  return {
+    text: bytes.toString("utf8"),
+    mode: "full_original_text",
+    provenance: ["UTF-8 text attached with normalized line endings."],
+    warnings: [],
+  };
+}
+
+const wordExtensions = new Set([".docx", ".docm", ".dotx", ".dotm"]);
+const spreadsheetExtensions = new Set([".xlsx", ".xlsm", ".xltx", ".xltm"]);
+const presentationExtensions = new Set([".pptx", ".pptm", ".potx", ".potm"]);
+
+async function extractWordText(bytes: Buffer): Promise<string> {
+  const archive = await JSZip.loadAsync(bytes);
+  const xml = await readZipText(archive, "word/document.xml", 16 * 1024 * 1024);
+  if (!xml) throw new Error("The Word package has no readable document part.");
+  return xmlText(xml, [
+    [/<w:tab\b[^>]*\/>/gi, "\t"],
+    [/<w:(?:br|cr)\b[^>]*\/>/gi, "\n"],
+    [/<\/w:p>/gi, "\n"],
+    [/<\/w:tr>/gi, "\n"],
+    [/<\/w:tc>/gi, "\t"],
+  ]);
+}
+
+async function extractPresentationText(bytes: Buffer): Promise<string> {
+  const archive = await JSZip.loadAsync(bytes);
+  const slides = Object.keys(archive.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort(naturalPartOrder)
+    .slice(0, 500);
+  if (!slides.length) throw new Error("The PowerPoint package has no readable slides.");
+  const output: string[] = [];
+  for (const [index, slide] of slides.entries()) {
+    const xml = await readZipText(archive, slide, 8 * 1024 * 1024) ?? "";
+    output.push(`Slide ${index + 1}`, xmlText(xml, [[/<\/a:p>/gi, "\n"]]));
+  }
+  return output.join("\n\n");
+}
+
+async function extractSpreadsheetText(bytes: Buffer): Promise<string> {
+  const archive = await JSZip.loadAsync(bytes);
+  const sharedXml = await readZipText(archive, "xl/sharedStrings.xml", 16 * 1024 * 1024) ?? "";
+  const sharedStrings = [...sharedXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)]
+    .map((match) => extractTaggedText(match[1] ?? "", "t"));
+  const sheets = Object.keys(archive.files)
+    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
+    .sort(naturalPartOrder)
+    .slice(0, 500);
+  if (!sheets.length) throw new Error("The Excel package has no readable worksheets.");
+  const output: string[] = [];
+  for (const [index, sheet] of sheets.entries()) {
+    const xml = await readZipText(archive, sheet, 16 * 1024 * 1024) ?? "";
+    const rows: string[] = [];
+    for (const rowMatch of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/gi)) {
+      const cells: string[] = [];
+      for (const cellMatch of (rowMatch[1] ?? "").matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/gi)) {
+        const attributes = cellMatch[1] ?? "";
+        const body = cellMatch[2] ?? "";
+        const type = /\bt="([^"]+)"/i.exec(attributes)?.[1] ?? "";
+        const raw = /<v\b[^>]*>([\s\S]*?)<\/v>/i.exec(body)?.[1] ?? extractTaggedText(body, "t");
+        const value = type === "s" && /^\d+$/.test(raw.trim()) ? sharedStrings[Number(raw.trim())] ?? raw : decodeXml(raw);
+        cells.push(value.replace(/\s+/g, " ").trim());
+      }
+      if (cells.some(Boolean)) rows.push(cells.join("\t"));
+    }
+    output.push(`Worksheet ${index + 1}`, rows.join("\n") || "(no readable cell values)");
+  }
+  return output.join("\n\n");
+}
+
+async function readZipText(archive: JSZip, path: string, maxBytes: number): Promise<string | null> {
+  const entry = archive.file(path);
+  if (!entry) return null;
+  const internal = entry as JSZip.JSZipObject & { _data?: { uncompressedSize?: number } };
+  const declaredSize = Number(internal._data?.uncompressedSize ?? 0);
+  if (declaredSize > maxBytes) throw new Error(`${path} is too large to extract safely.`);
+  const text = await entry.async("text");
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`${path} is too large to extract safely.`);
+  return text;
+}
+
+function xmlText(xml: string, replacements: Array<[RegExp, string]>): string {
+  let prepared = xml;
+  for (const [pattern, replacement] of replacements) prepared = prepared.replace(pattern, replacement);
+  prepared = prepared.replace(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi, "$1").replace(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi, "$1");
+  return decodeXml(prepared.replace(/<[^>]+>/g, "")).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractTaggedText(xml: string, localName: string): string {
+  const expression = new RegExp(`<(?:(?:\\w+):)?${localName}\\b[^>]*>([\\s\\S]*?)<\\/(?:(?:\\w+):)?${localName}>`, "gi");
+  return [...xml.matchAll(expression)].map((match) => decodeXml((match[1] ?? "").replace(/<[^>]+>/g, ""))).join("");
+}
+
+function naturalPartOrder(left: string, right: string): number {
+  const leftNumber = Number(/(\d+)(?=\.xml$)/i.exec(left)?.[1] ?? 0);
+  const rightNumber = Number(/(\d+)(?=\.xml$)/i.exec(right)?.[1] ?? 0);
+  return leftNumber - rightNumber || left.localeCompare(right);
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function pathOnlyAttachment(input: {
+  sourcePath: string;
+  sourceFileName: string;
+  sourceSizeBytes: number;
+  budgetTokens: number;
+  estimatedTokens: number;
+  reason: string;
+  provenance: string[];
+  warnings: string[];
+}): LoadedConversationContextAttachment {
+  return {
+    ...input,
+    mode: "path_only_reference",
+    includedInPrompt: false,
+    userLabel: "Path only",
+    detail: `The Space-relative path is attached. Pi can inspect the file with tools. Reason: ${input.reason}`,
+    text: null,
+  };
 }
 
 export function chatContextBudgetTokens(): number {
@@ -102,11 +290,14 @@ function normalizePath(value: string): string {
 }
 
 function normalizeText(value: string): string {
-  const text = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return text.endsWith("\n") ? text : `${text}\n`;
+  const text = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+  return `${text}\n`;
 }
 
 function looksBinary(bytes: Buffer): boolean {
   const sample = bytes.subarray(0, Math.min(bytes.length, 8192));
-  return sample.includes(0);
+  if (sample.includes(0)) return true;
+  let controls = 0;
+  for (const byte of sample) if (byte < 9 || (byte > 13 && byte < 32)) controls += 1;
+  return sample.length > 0 && controls / sample.length > 0.1;
 }

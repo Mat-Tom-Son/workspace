@@ -88,7 +88,9 @@ When a design is ambiguous, prefer the option that best preserves these properti
 ### Foundation now
 
 - Create a folder-backed Space or register an existing folder without conversion.
+- Rename a Space, remove a linked-folder registration without deleting its files, or delete a managed Space with an explicit destructive warning.
 - Browse and upload Space files, run Space-scoped Chats, use the Library, and view History.
+- Restore content-addressed History checkpoints created around file mutations and Assistant turns.
 - Configure a Pi provider/model with an API key and use Pi's built-in tools.
 - Discover personal and trusted-Space Skills and Extensions.
 - Import standard Skills and compatible skill bundles while preserving their supporting files.
@@ -96,7 +98,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 
 ### Next product layer
 
-- Round out Space lifecycle controls: rename the display name, remove a registration without deleting files, and make location/trust state easier to understand.
+- Make Space location, storage ownership, History coverage, and trust state easier to inspect at a glance.
 - Add Library organization controls such as rename, move, delete, reveal, and bulk operations.
 - Add capability lifecycle controls: inspect provenance and permissions, enable/disable, update, and remove Skills, Extensions, and packages.
 - Make “what this Chat can see and use” visible before and during a conversation.

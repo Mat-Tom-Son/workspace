@@ -43,7 +43,7 @@ Workspace does not bundle organization-specific tools, instructions, document li
 
 Current desktop boundaries: Google Drive works through a Drive-for-desktop folder rather than native cloud mirroring, and first-run provider setup uses API keys. Native OAuth setup and direct Drive API sync are intentionally left for a later provider-adapter release.
 
-For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md).
+For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature Kai Workspace interactions that this extraction must preserve while replacing company-specific seams.
 
 ## Development
 
