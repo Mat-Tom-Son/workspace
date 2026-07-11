@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: July 10, 2026
+Last updated: July 11, 2026
 
 Workspace is a local-first desktop application. It does not require a Workspace account, and the current application does not include first-party analytics, advertising, or usage telemetry.
 
@@ -11,17 +11,18 @@ This document describes the behavior of the open-source Workspace application. M
 By default, Workspace stores:
 
 - Space files in the ordinary folders the user creates or registers.
-- Library materials, the Space registry, conversation records, History data, and application settings under the local Workspace application-data directory.
-- Pi settings, sessions, personal Skills, Extensions, and packages under the configured Pi agent directory, normally `~/.pi/agent`.
+- A hidden `.workspace/` directory inside each Space. Its `space.json` file stores the portable Space identity, and its `conversations/` directory stores that Space's Chat records.
+- Library materials, the Space registry, History objects, ignore rules, and application settings under the local Workspace application-data directory.
+- Pi settings, sessions, trust decisions, personal Skills, Extensions, and packages under the configured Pi agent directory, normally `~/.pi/agent`.
 - Provider credentials in an application-scoped file encrypted through Electron's operating-system-backed `safeStorage`. Workspace refuses credential operations when that encryption is unavailable.
 
-Registering an existing folder does not upload, move, duplicate, rename, or add metadata to it. Removing or uninstalling Workspace does not itself delete those ordinary Space folders.
+Registering an existing folder does not upload, move, duplicate, or rename the user's files. It does add the documented hidden `.workspace/` identity and Chat storage. Removing a linked Space from Workspace leaves both the ordinary files and `.workspace/` in place. Deleting a Workspace-managed Space deletes its managed folder after confirmation. Uninstalling Workspace does not itself delete linked Space folders.
 
 ## When data leaves this computer
 
 ### Model providers
 
-When a user sends an Assistant message, Pi sends the request to the provider and model selected in Assistant Setup. The request can include the message, relevant conversation history and instructions, explicitly selected text attachments, and tool results produced during the turn. If the Assistant uses filesystem or Extension tools, information those tools return may become part of later model context.
+When a user sends an Assistant message, Pi sends the request to the provider and model selected in Settings → Assistant. The request can include the message, relevant conversation history and instructions, explicitly selected text attachments, and tool results produced during the turn. If the Assistant uses filesystem or Extension tools, information those tools return may become part of later model context.
 
 Workspace does not proxy these requests through a Workspace account service. The selected provider receives and processes them under that provider's terms and settings. Do not send sensitive material to a provider unless its handling is acceptable for that material.
 
@@ -45,7 +46,7 @@ Pi's native context discovery may expose `AGENTS.md` instructions separately fro
 
 ## Google Drive and other synchronized folders
 
-Workspace does not currently connect to the Google Drive API or run its own cloud mirror. It can register an ordinary local folder managed by Google Drive for desktop or another sync application. That separate application may upload and synchronize the folder under its own settings and privacy policy.
+Workspace does not currently connect to the Google Drive API or run its own cloud mirror. It can register an ordinary local folder managed by Google Drive for desktop or another sync application. That separate application may upload and synchronize the folder—including `.workspace/space.json`, `.workspace/conversations/`, and any `.pi/` project configuration—under its own settings and privacy policy. Do not place a Space in a synchronized folder unless synchronizing its Chat history and hidden metadata is acceptable.
 
 ## User choices
 

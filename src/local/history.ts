@@ -72,7 +72,7 @@ export interface StoredBlobRef {
 }
 
 const checkpointIdPattern = /^cp-[A-Za-z0-9-]{10,80}$/;
-const versionScopeSkippedSegments = new Set([".git", ".pi", "node_modules"]);
+const versionScopeSkippedSegments = new Set([".git", ".pi", ".workspace", "node_modules"]);
 const legacyMetadataName = "checkpoint.json";
 const legacySnapshotDirName = "files";
 

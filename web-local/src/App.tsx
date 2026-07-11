@@ -10,13 +10,13 @@ import { Banner, CenteredState, EmptyInline, WorkspaceIconGlyph } from "./compon
 import { DesktopTitleBar } from "./components/chrome/DesktopTitleBar";
 import { CommandPaletteHost, type CommandPaletteCommand } from "./components/modals/CommandPaletteHost";
 import { CreateSpaceModal } from "./components/modals/CreateSpaceModal";
-import { DesktopSettingsModal } from "./components/modals/DesktopSettingsModal";
+import { DesktopSettingsModal, type SettingsPage } from "./components/modals/DesktopSettingsModal";
 import { FileVersionHistoryModal } from "./components/modals/FileVersionHistoryModal";
 import { KeyboardShortcutsModal } from "./components/modals/KeyboardShortcutsModal";
 import { OnboardingFlow } from "./components/onboarding/OnboardingFlow";
 import { FileDetailsPane } from "./components/panes/FileDetailsPane";
 import { WorkspaceAppearancePanel, WorkspaceModeRail, WorkspacePaneHeader } from "./components/panes/workspaceChrome";
-import { AssistantCapabilityPane, AssistantSetupPane, ChatsPane, HistoryPane, LibraryPane, SpacesPane } from "./components/panes/workspacePanes";
+import { AssistantCapabilityPane, ChatsPane, HistoryPane, LibraryPane, SpacesPane } from "./components/panes/workspacePanes";
 import { FileContextMenu } from "./components/tree/FileContextMenu";
 import { FileTree, FileTreeLoadingState } from "./components/tree/FileTree";
 import type { WorkspaceUiFixture } from "./fixtures/workspace-fixture";
@@ -56,9 +56,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialPage, setSettingsInitialPage] = useState<SettingsPage>("appearance");
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const keyboardShortcutsReturnFocusRef = useRef<HTMLElement | null>(null);
-  const [desktopAction, setDesktopAction] = useState<{ id: number; command: "new-chat" | "open-setup" | "open-skills" | "open-extensions" | "open-command-palette" } | null>(null);
+  const [desktopAction, setDesktopAction] = useState<{ id: number; command: "new-chat" | "open-skills" | "open-extensions" | "open-command-palette" } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus | null>(null);
   const showDesktopTitleBar = window.workspaceDesktop?.app.platform === "win32";
 
@@ -70,6 +71,10 @@ export function App() {
     setShortcutsOpen(false);
     const returnFocus = keyboardShortcutsReturnFocusRef.current;
     window.requestAnimationFrame(() => { if (returnFocus?.isConnected) returnFocus.focus(); });
+  }, []);
+  const openSettings = useCallback((page: SettingsPage = "appearance") => {
+    setSettingsInitialPage(page);
+    setSettingsOpen(true);
   }, []);
 
   useScrollbarActivity();
@@ -113,13 +118,13 @@ export function App() {
       else if (command === "open-local-folder") void openFolder();
       else if (command === "reload-workspace-state") void refreshBootstrap();
       else if (command === "check-for-updates") void checkForUpdates();
-      else if (command === "open-settings") setSettingsOpen(true);
+      else if (command === "open-settings") openSettings();
       else if (command === "open-keyboard-shortcuts") openKeyboardShortcuts();
       else if (command === "new-chat" || command === "open-skills" || command === "open-extensions" || command === "open-command-palette") {
         setDesktopAction({ id: Date.now(), command });
       }
     });
-  }, [activeWorkspace?.id, openKeyboardShortcuts, refreshBootstrap]);
+  }, [activeWorkspace?.id, openKeyboardShortcuts, openSettings, refreshBootstrap]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "/" || event.code === "Slash")) {
@@ -136,7 +141,7 @@ export function App() {
     });
     return unsubscribe;
   }, []);
-  useEffect(() => window.workspaceDesktop?.agent.onOpenSettings(() => setDesktopAction({ id: Date.now(), command: "open-setup" })), []);
+  useEffect(() => window.workspaceDesktop?.agent.onOpenSettings(() => openSettings("assistant")), [openSettings]);
 
   async function createSpace(name: string) {
     if (fixtureRequested) { setCreateSpaceOpen(false); showToast({ text: "Space creation is disabled in the preview", tone: "info" }); return; }
@@ -175,31 +180,30 @@ export function App() {
 
   return <div className={`app-shell${showDesktopTitleBar ? " desktop-chrome-shell" : ""}`} data-theme={theme}>
     {showDesktopTitleBar ? <DesktopTitleBar /> : null}
-    {activeWorkspace ? <WorkspaceView workspace={activeWorkspace} workspaces={boot.workspaces} agent={boot.agent} fixture={fixture} desktopAction={desktopAction} updateStatus={updateStatus} themePreference={themePreference} onThemePreferenceChange={setThemePreference} onUpdateAction={() => void runUpdateAction()} onAgentChanged={(agent) => setBoot((current) => current ? { ...current, agent } : current)} onSwitchWorkspace={(workspace) => setActiveWorkspaceId(workspace.id)} onRefreshBootstrap={refreshBootstrap} onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} onOpenSettings={() => setSettingsOpen(true)} onOpenShortcuts={openKeyboardShortcuts} onError={setError} /> : <OnboardingFlow onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} />}
+    {activeWorkspace ? <WorkspaceView workspace={activeWorkspace} workspaces={boot.workspaces} agent={boot.agent} fixture={fixture} desktopAction={desktopAction} updateStatus={updateStatus} themePreference={themePreference} onThemePreferenceChange={setThemePreference} onUpdateAction={() => void runUpdateAction()} onSwitchWorkspace={(workspace) => setActiveWorkspaceId(workspace.id)} onRefreshBootstrap={refreshBootstrap} onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} onOpenSettings={openSettings} onOpenShortcuts={openKeyboardShortcuts} onError={setError} /> : <OnboardingFlow onCreateSpace={() => setCreateSpaceOpen(true)} onOpenFolder={() => void openFolder()} />}
     {error ? <div className="global-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss"><X size={15} /></button></div> : null}
     {createSpaceOpen ? <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} onCreate={createSpace} /> : null}
-    {settingsOpen ? <DesktopSettingsModal theme={theme} themePreference={themePreference} onThemePreferenceChange={setThemePreference} typography={typography} onTypographyChange={setTypography} updateStatus={updateStatus} onUpdateAction={() => void runUpdateAction()} onClose={() => setSettingsOpen(false)} /> : null}
+    {settingsOpen ? <DesktopSettingsModal theme={theme} themePreference={themePreference} onThemePreferenceChange={setThemePreference} typography={typography} onTypographyChange={setTypography} workspace={activeWorkspace} agentStatus={boot.agent} fixtureMode={Boolean(fixture)} initialPage={settingsInitialPage} onAgentConfigured={(agent) => setBoot((current) => current ? { ...current, agent } : current)} updateStatus={updateStatus} onUpdateAction={() => void runUpdateAction()} onClose={() => setSettingsOpen(false)} /> : null}
     {shortcutsOpen ? <KeyboardShortcutsModal onClose={closeKeyboardShortcuts} /> : null}
     <ConfirmDialogHost /><ToastHost />
   </div>;
 }
 
-function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, updateStatus, themePreference, onThemePreferenceChange, onUpdateAction, onAgentChanged, onSwitchWorkspace, onRefreshBootstrap, onCreateSpace, onOpenFolder, onOpenSettings, onOpenShortcuts, onError }: {
+function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, updateStatus, themePreference, onThemePreferenceChange, onUpdateAction, onSwitchWorkspace, onRefreshBootstrap, onCreateSpace, onOpenFolder, onOpenSettings, onOpenShortcuts, onError }: {
   workspace: WorkspaceSummary;
   workspaces: WorkspaceSummary[];
   agent: BootstrapResponse["agent"];
   fixture: WorkspaceUiFixture | null;
-  desktopAction: { id: number; command: "new-chat" | "open-setup" | "open-skills" | "open-extensions" | "open-command-palette" } | null;
+  desktopAction: { id: number; command: "new-chat" | "open-skills" | "open-extensions" | "open-command-palette" } | null;
   updateStatus: DesktopUpdateStatus | null;
   themePreference: AppThemePreference;
   onThemePreferenceChange: (theme: AppThemePreference) => void;
   onUpdateAction: () => void;
-  onAgentChanged: (status: BootstrapResponse["agent"]) => void;
   onSwitchWorkspace: (workspace: WorkspaceSummary) => void;
   onRefreshBootstrap: () => Promise<void>;
   onCreateSpace: () => void;
   onOpenFolder: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (page?: SettingsPage) => void;
   onOpenShortcuts: () => void;
   onError: (message: string | null) => void;
 }) {
@@ -247,7 +251,10 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
   useEffect(() => { setActiveMode((current) => current === "workspaces" ? "files" : current); }, [workspace.id]);
   useEffect(() => {
-    const next = normalizeWorkspaceCustomizations(customizationsRef.current, new Set(workspaces.map((item) => item.id)), supportedWorkspaceIconNames);
+    // A temporarily missing or moved folder is not the same thing as an
+    // explicit Space removal. Keep appearance keyed by the portable Space id
+    // so relinking that folder restores its identity on this computer.
+    const next = normalizeWorkspaceCustomizations(customizationsRef.current, undefined, supportedWorkspaceIconNames);
     if (JSON.stringify(next) !== JSON.stringify(customizationsRef.current)) persistWorkspaceCustomizations(next);
   }, [workspaces.map((item) => item.id).join("|")]);
   useEffect(() => { if (fixture) { setConversationGroups(fixtureConversationGroups(fixture)); return; } void loadConversationGroups(); }, [fixture, workspaces.map((item) => item.id).join("|")]);
@@ -259,7 +266,6 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   useEffect(() => {
     if (!desktopAction) return;
     if (desktopAction.command === "new-chat") openChat(workspace, null);
-    else if (desktopAction.command === "open-setup") setActiveMode("setup");
     else if (desktopAction.command === "open-skills") setActiveMode("skills");
     else if (desktopAction.command === "open-extensions") setActiveMode("extensions");
     else if (desktopAction.command === "open-command-palette") openCommandPalette();
@@ -526,7 +532,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   }
 
   const commands = useMemo<CommandPaletteCommand[]>(() => [
-    ...(["files", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
+    ...(["files", "skills", "extensions", "chats", "library", "history"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
     ...workspaces.map((item) => ({ id: `space:${item.id}`, groupId: "switch-workspace" as const, groupLabel: "Switch Space", label: item.name, detail: workspaceHeaderSourceBadgeLabel(item), matchTargets: [item.rootPath], run: () => onSwitchWorkspace(item) })),
     ...Object.entries(conversationGroups).flatMap(([workspaceId, conversations]) => conversations.map((conversation) => ({ id: `chat:${workspaceId}:${conversation.id}`, groupId: "chats" as const, groupLabel: "Chats", label: conversation.title, run: () => { const target = workspaces.find((item) => item.id === workspaceId); if (target) openChat(target, conversation); } }))),
     ...collectLoadedFileEntries(tree.tree).flatMap((entry) => {
@@ -548,7 +554,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   const layoutStyle = { ...(workspaceIdentityStyle(identity)), ...(paneResize.sidebarWidth ? { "--workspace-sidebar-width": `${paneResize.sidebarWidth}px` } : {}) } as CSSProperties;
 
   return <main className={paneResize.sidebarResizing ? "workspace-layout resizing" : "workspace-layout"} ref={paneResize.workspaceLayoutRef} style={layoutStyle}>
-    <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings"><Settings2 size={18} /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
+    <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={() => onOpenSettings()} aria-label="Settings" title="Settings"><Settings2 size={18} /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
     <section className={`workspace-mode-pane workspace-mode-pane-${activeMode} ${activeMode === "files" ? "file-panel local-files-panel" : ""}`} id="workspace-file-panel">
       <WorkspacePaneHeader workspace={workspace} identity={identity} workspaces={workspaces} workspaceCustomizations={customizations} onSwitchWorkspace={onSwitchWorkspace} switchable={activeMode !== "workspaces"} action={activeMode === "files" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><ArrowSync16Regular className={tree.status === "refreshing" ? "spin" : undefined} /></button> : undefined} />
       {activeMode === "workspaces" ? <SpacesPane workspace={workspace} workspaces={workspaces} identities={customizations} onSwitch={onSwitchWorkspace} onCreate={onCreateSpace} onOpenFolder={onOpenFolder} onCustomize={(target) => tabs.openAppearanceSurfaceTab(target)} onRename={renameSpace} onRemove={(target) => void removeSpace(target)} /> : null}
@@ -606,8 +612,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
       {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.conversationId} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
       {activeMode === "library" ? <LibraryPane workspace={workspace} fixtureTree={fixture?.library} onError={onError} /> : null}
       {activeMode === "history" ? <HistoryPane workspace={workspace} fixtureItems={fixture?.checkpoints[workspace.id]} refreshRequest={historyRefreshRequest} onOpen={(item) => tabs.openHistorySurfaceTab(workspace, item?.checkpointId, item?.label ?? "History")} onError={onError} /> : null}
-      {activeMode === "setup" ? <AssistantSetupPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} onConfigured={onAgentChanged} /> : null}
-      {activeMode === "skills" || activeMode === "extensions" ? <AssistantCapabilityPane workspace={workspace} mode={activeMode} status={agent} fixtureMode={Boolean(fixture)} onOpenSetup={() => setActiveMode("setup")} onError={onError} /> : null}
+      {activeMode === "skills" || activeMode === "extensions" ? <AssistantCapabilityPane workspace={workspace} mode={activeMode} status={agent} fixtureMode={Boolean(fixture)} onOpenSettings={() => onOpenSettings("assistant")} onError={onError} /> : null}
     </section>
     <button className="workspace-resizer" type="button" role="separator" aria-label="Resize the navigation pane and work area" aria-controls="workspace-file-panel workspace-chat-panel" aria-orientation="vertical" aria-valuemin={Math.round(paneResize.sidebarResizeBounds.min)} aria-valuemax={Math.round(paneResize.sidebarResizeBounds.max)} aria-valuenow={paneResize.sidebarResizeValue} title="Resize panes" onPointerDown={paneResize.startSidebarResize} onDoubleClick={paneResize.resetWorkspaceSidebarWidth} onKeyDown={paneResize.handleSidebarResizeKeyDown}><span className="sr-only">Resize panes</span></button>
     <aside className="right-rail" id="workspace-chat-panel">
@@ -748,7 +753,7 @@ function joinDropPath(...segments: string[]) {
 function fixtureConversationGroups(fixture: WorkspaceUiFixture): Record<string, ConversationSummary[]> { return Object.fromEntries(Object.entries(fixture.conversations).map(([id, conversations]) => [id, conversations.map(({ messages: _messages, ...summary }) => summary)])); }
 function normalizeMode(value: string | null): WorkspaceRailMode {
   if (value === "space" || value === "workspaces") return "files";
-  return (["files", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "files";
+  return (["files", "skills", "extensions", "chats", "library", "history"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "files";
 }
 function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {
   const [preference, setPreference] = useState<AppThemePreference>(() => { if (fixtureRequested) return "light"; const value = readStoredValue(themePreferenceKey); return value === "light" || value === "dark" || value === "system" ? value : "system"; });

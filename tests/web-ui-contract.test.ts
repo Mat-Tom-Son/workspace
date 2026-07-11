@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assistantNavigation, primaryNavigation, welcomeActions } from "../web-local/src/ui-contract.js";
+import { primaryNavigation, welcomeActions } from "../web-local/src/ui-contract.js";
 
 test("Workspace navigation separates the active Space from its surfaces", () => {
   assert.deepEqual(primaryNavigation.map(({ id, label }) => [id, label]), [
     ["files", "Files"],
+    ["skills", "Skills"],
+    ["extensions", "Extensions"],
     ["chats", "Chats"],
     ["library", "Library"],
     ["history", "History"],
-  ]);
-  assert.deepEqual(assistantNavigation.map(({ id, label }) => [id, label]), [
-    ["setup", "Setup"],
-    ["skills", "Skills"],
-    ["extensions", "Extensions"],
   ]);
   assert.deepEqual(welcomeActions, {
     create: "Create a Space",

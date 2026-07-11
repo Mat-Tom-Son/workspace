@@ -2,7 +2,7 @@
 
 Workspace is a local-first Electron app that gives every kind of computer work a place, with a native [Pi](https://pi.dev) assistant built in.
 
-In the product, that place is called a **Space**: an understandable working context backed by an ordinary folder. A person can create a new Space and let Workspace create its folder, or turn an existing folder on their computer into a Space without moving or converting its files. Provider credentials, conversations, and app preferences live in application or Pi storage outside Space folders unless the person intentionally adds portable `.pi` project configuration.
+In the product, that place is called a **Space**: an understandable working context backed by an ordinary folder. A person can create a new Space and let Workspace create its folder, or turn an existing folder on their computer into a Space without moving or converting its files. Each Space keeps its portable identity and Chats in a hidden `.workspace/` directory. Executable project capabilities remain separate under `.pi/`; provider credentials, trust, History objects, sessions, ignore rules, and app preferences stay in protected application or Pi storage outside the Space.
 
 The core idea is simple: the folder stays ordinary; Workspace makes it feel like a place you can understand, return to, and work in with an Assistant.
 
@@ -20,15 +20,17 @@ The core idea is simple: the folder stays ordinary; Workspace makes it feel like
 The Space switcher selects the root-folder entity a person is working in. The primary navigation then opens surfaces for that selected Space and the surrounding product:
 
 - **Files**
+- **Skills**
+- **Extensions**
 - **Chats**
 - **Library**
 - **History**
-- **Assistant**
-  - **Setup**
-  - **Skills**
-  - **Extensions**
+
+Provider, model, API-key, and OAuth setup lives under **Settings → Assistant**.
 
 The folder is an implementation detail, but never a proprietary boundary. Space files remain ordinary files that can be opened in other apps, synchronized by desktop storage tools, backed up, or revealed in the operating system.
+
+Workspace reserves two hidden support directories inside a Space: `.workspace/` for the portable `space.json` identity and append-only conversation logs, and `.pi/` for native Pi project configuration. Neither appears in the Files surface or History checkpoints. Removing a linked Space from the app leaves `.workspace/` with the folder; deleting a managed Space deletes its folder normally.
 
 ## What it supports
 

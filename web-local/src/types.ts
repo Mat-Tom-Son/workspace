@@ -1,4 +1,4 @@
-export type WorkspacePane = "files" | "chats" | "library" | "history" | "setup" | "skills" | "extensions";
+export type WorkspacePane = "files" | "skills" | "extensions" | "chats" | "library" | "history";
 export type WorkspaceRailMode = "workspaces" | WorkspacePane;
 export type AppTheme = "light" | "dark";
 export type AppThemePreference = AppTheme | "system";
@@ -260,8 +260,9 @@ export interface ExtensionUiRequest {
 }
 
 export interface ChatStreamEvent {
-  type: "status" | "assistant_delta" | "assistant_message" | "assistant_thinking" | "tool" | "resources_changed" | "error" | "done" | "extension_ui_request" | "editor";
+  type: "status" | "turn_state" | "assistant_delta" | "assistant_message" | "assistant_thinking" | "tool" | "resources_changed" | "error" | "done" | "extension_ui_request" | "editor";
   conversationId: string;
+  running?: boolean;
   message?: string;
   text?: string;
   toolName?: string;

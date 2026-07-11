@@ -24,6 +24,7 @@ import {
 
 import { isOfficeDocumentPath, isOfficeLockFileName, officeDocumentLockPresent } from "./office-lock-files.js";
 import {
+  legacyWorkspaceManifestFile,
   managedWorkspaceRoot,
   workspaceStateDir,
   workspaceStateRoot,
@@ -98,14 +99,31 @@ interface WorkspaceRegistry {
   workspaces: WorkspaceSummary[];
 }
 
+interface PortableSpaceManifest {
+  version: 1;
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const maxPreviewBytes = 2 * 1024 * 1024;
 
 export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   const registry = await readRegistry();
-  return registry.workspaces
+  const workspaces = registry.workspaces
     .filter((workspace) => existsSync(workspace.rootPath))
     .filter((workspace) => workspace.location.storage !== "linked" || linkedWorkspaceStateSeparated(workspace.rootPath))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  await Promise.all(workspaces.map(async (workspace) => {
+    try {
+      await writePortableManifest(workspace);
+    } catch {
+      // A previously linked folder can become read-only or temporarily unavailable.
+      // Registry-backed listing must remain usable; the next successful mutation retries.
+    }
+  }));
+  return workspaces;
 }
 
 export async function createManagedWorkspace(name: string, baseDir = managedWorkspaceRoot()): Promise<WorkspaceSummary> {
@@ -113,11 +131,16 @@ export async function createManagedWorkspace(name: string, baseDir = managedWork
   await mkdir(baseDir, { recursive: true });
   const rootPath = await nextAvailableDirectory(baseDir, safeSegment(normalizedName) || "workspace");
   await mkdir(rootPath, { recursive: false });
-  return registerWorkspace({
-    name: normalizedName,
-    rootPath,
-    location: { kind: "local", storage: "managed" },
-  });
+  try {
+    return await registerWorkspace({
+      name: normalizedName,
+      rootPath,
+      location: { kind: "local", storage: "managed" },
+    });
+  } catch (error) {
+    await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function registerLinkedWorkspace(rootPath: string, providerHint?: "google-drive"): Promise<WorkspaceSummary> {
@@ -152,8 +175,7 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
   if (!workspace || !existsSync(workspace.rootPath)) throw notFound("Space not found.");
   workspace.name = normalizedName;
   workspace.updatedAt = new Date().toISOString();
-  await writeRegistry(registry);
-  await writeExternalManifest(workspace);
+  await commitRegistryAndPortableManifest(registry, workspace);
   return workspace;
 }
 
@@ -450,18 +472,40 @@ async function registerWorkspace(input: Omit<WorkspaceSummary, "id" | "createdAt
   const registry = await readRegistry();
   const rootPath = resolve(input.rootPath);
   const existing = registry.workspaces.find((workspace) => samePath(workspace.rootPath, rootPath));
-  if (existing) return existing;
+  if (existing) {
+    await writePortableManifest(existing);
+    return existing;
+  }
+  const portableIdentity = await readExistingSpaceManifest(rootPath);
   const now = new Date().toISOString();
+  if (portableIdentity) {
+    const identityOwner = registry.workspaces.find((workspace) => workspace.id === portableIdentity.id);
+    if (identityOwner) {
+      if (existsSync(identityOwner.rootPath)) {
+        throw new Error("This Space identity is already linked to another folder.");
+      }
+      identityOwner.name = portableIdentity.name;
+      identityOwner.rootPath = rootPath;
+      identityOwner.location = input.location;
+      identityOwner.createdAt = portableIdentity.createdAt;
+      identityOwner.updatedAt = now;
+      await commitRegistryAndPortableManifest(registry, identityOwner);
+      return identityOwner;
+    }
+  }
+  const id = portableIdentity?.id ?? stableWorkspaceId(rootPath);
+  const identityCollision = registry.workspaces.find((workspace) => workspace.id === id);
+  if (identityCollision) throw new Error("This Space identity is already registered to another folder.");
   const workspace: WorkspaceSummary = {
     ...input,
-    id: stableWorkspaceId(rootPath),
+    id,
+    name: portableIdentity?.name ?? input.name,
     rootPath,
-    createdAt: now,
+    createdAt: portableIdentity?.createdAt ?? now,
     updatedAt: now,
   };
   registry.workspaces.push(workspace);
-  await writeRegistry(registry);
-  await writeExternalManifest(workspace);
+  await commitRegistryAndPortableManifest(registry, workspace);
   return workspace;
 }
 
@@ -470,8 +514,12 @@ async function touchWorkspace(rootPath: string): Promise<void> {
   const workspace = registry.workspaces.find((item) => samePath(item.rootPath, rootPath));
   if (!workspace) return;
   workspace.updatedAt = new Date().toISOString();
-  await writeRegistry(registry);
-  await writeExternalManifest(workspace);
+  try {
+    await commitRegistryAndPortableManifest(registry, workspace);
+  } catch {
+    // The content mutation already succeeded. Leave both metadata records at their
+    // previous values and retry maintenance on a later mutation or Space listing.
+  }
 }
 
 async function readRegistry(): Promise<WorkspaceRegistry> {
@@ -495,15 +543,96 @@ async function writeRegistry(registry: WorkspaceRegistry): Promise<void> {
   await atomicJsonWrite(file, registry);
 }
 
-async function writeExternalManifest(workspace: WorkspaceSummary): Promise<void> {
+async function writePortableManifest(workspace: WorkspaceSummary): Promise<void> {
   const file = workspaceManifestFile(workspace.rootPath);
   await mkdir(dirname(file), { recursive: true });
-  await atomicJsonWrite(file, workspace);
+  let existingFields: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    try {
+      const existing = JSON.parse(await readFile(file, "utf8")) as unknown;
+      if (existing && typeof existing === "object" && !Array.isArray(existing)) existingFields = existing as Record<string, unknown>;
+    } catch {
+      // Invalid fields are replaced by the canonical manifest below.
+    }
+  }
+  const manifest: PortableSpaceManifest & Record<string, unknown> = {
+    ...existingFields,
+    version: 1,
+    id: workspace.id,
+    name: workspace.name,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
+  };
+  await atomicJsonWrite(file, manifest);
+}
+
+async function commitRegistryAndPortableManifest(registry: WorkspaceRegistry, workspace: WorkspaceSummary): Promise<void> {
+  const manifestFile = workspaceManifestFile(workspace.rootPath);
+  const previousManifest = await snapshotFile(manifestFile);
+  await writePortableManifest(workspace);
+  try {
+    await writeRegistry(registry);
+  } catch (error) {
+    try {
+      await restoreFileSnapshot(manifestFile, previousManifest);
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], "Space metadata commit failed and its portable manifest could not be restored.");
+    }
+    throw error;
+  }
+}
+
+type FileSnapshot = { exists: false } | { exists: true; contents: string };
+
+async function snapshotFile(file: string): Promise<FileSnapshot> {
+  if (!existsSync(file)) return { exists: false };
+  return { exists: true, contents: await readFile(file, "utf8") };
+}
+
+async function restoreFileSnapshot(file: string, snapshot: FileSnapshot): Promise<void> {
+  if (!snapshot.exists) {
+    await rm(file, { force: true });
+    return;
+  }
+  await mkdir(dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${randomUUID()}.rollback.tmp`;
+  await writeFile(temp, snapshot.contents, "utf8");
+  await rename(temp, file);
+}
+
+async function readExistingSpaceManifest(workspaceRoot: string): Promise<PortableSpaceManifest | null> {
+  for (const file of [workspaceManifestFile(workspaceRoot), legacyWorkspaceManifestFile(workspaceRoot)]) {
+    if (!existsSync(file)) continue;
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as Partial<PortableSpaceManifest>;
+      if (!isWorkspaceId(parsed.id) || typeof parsed.name !== "string") continue;
+      if (typeof parsed.createdAt !== "string" || !isValidTimestamp(parsed.createdAt)) continue;
+      if (typeof parsed.updatedAt !== "string" || !isValidTimestamp(parsed.updatedAt)) continue;
+      return {
+        version: 1,
+        id: parsed.id,
+        name: normalizeWorkspaceName(parsed.name),
+        createdAt: parsed.createdAt,
+        updatedAt: parsed.updatedAt,
+      };
+    } catch {
+      // An invalid or partially written manifest must not make its folder unusable.
+    }
+  }
+  return null;
 }
 
 async function atomicJsonWrite(file: string, value: unknown): Promise<void> {
+  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  if (existsSync(file)) {
+    try {
+      if (await readFile(file, "utf8") === serialized) return;
+    } catch {
+      // Replace unreadable or concurrently changed metadata through the atomic path below.
+    }
+  }
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(temp, serialized, "utf8");
   await rename(temp, file);
 }
 
@@ -663,6 +792,14 @@ function stableWorkspaceId(rootPath: string): string {
   return `ws-${createHash("sha256").update(normalized).digest("hex").slice(0, 16)}`;
 }
 
+function isWorkspaceId(value: unknown): value is string {
+  return typeof value === "string" && /^ws-[a-f0-9]{16}$/.test(value);
+}
+
+function isValidTimestamp(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
 function samePath(left: string, right: string): boolean {
   return process.platform === "win32" ? resolve(left).toLocaleLowerCase() === resolve(right).toLocaleLowerCase() : resolve(left) === resolve(right);
 }
@@ -710,7 +847,7 @@ function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
 }
 
 function assertId(value: string): void {
-  if (!/^ws-[a-f0-9]{16}$/.test(value)) throw new Error("Invalid Space id.");
+  if (!isWorkspaceId(value)) throw new Error("Invalid Space id.");
 }
 
 function notFound(message: string): Error {

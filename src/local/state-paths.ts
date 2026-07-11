@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -35,6 +36,10 @@ export function workspaceStateDir(workspaceRoot: string): string {
   return join(workspaceStateRoot(), "state", "workspaces", key);
 }
 
+export function workspaceMetadataDir(workspaceRoot: string): string {
+  return portableMetadataPath(join(resolve(workspaceRoot), ".workspace"), "Space metadata directory");
+}
+
 export function workspaceStateKey(workspaceRoot: string): string {
   const resolved = resolve(workspaceRoot);
   const readable = safeSegment(basename(resolved)).slice(0, 40) || "workspace";
@@ -44,10 +49,20 @@ export function workspaceStateKey(workspaceRoot: string): string {
 }
 
 export function workspaceManifestFile(workspaceRoot: string): string {
-  return join(workspaceStateDir(workspaceRoot), "workspace.json");
+  return portableMetadataPath(join(workspaceMetadataDir(workspaceRoot), "space.json"), "Space manifest");
 }
 
 export function workspaceConversationDir(workspaceRoot: string): string {
+  return portableMetadataPath(join(workspaceMetadataDir(workspaceRoot), "conversations"), "Space conversation directory");
+}
+
+/** Previous releases stored these portable records in the app-data state tree. */
+export function legacyWorkspaceManifestFile(workspaceRoot: string): string {
+  return join(workspaceStateDir(workspaceRoot), "workspace.json");
+}
+
+/** Previous releases stored these portable records in the app-data state tree. */
+export function legacyWorkspaceConversationDir(workspaceRoot: string): string {
   return join(workspaceStateDir(workspaceRoot), "conversations");
 }
 
@@ -70,4 +85,11 @@ function platformAppDataBase(): string {
 
 function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function portableMetadataPath(path: string, label: string): string {
+  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+    throw new Error(`${label} cannot be a symbolic link or junction.`);
+  }
+  return path;
 }

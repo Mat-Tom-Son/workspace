@@ -6,6 +6,7 @@ import { AlertTriangle, CircleCheck, Loader2, Square, X } from "lucide-react";
 import { agentActivityLogLimit, assistantName, chatDraftDebounceMs, genericChatEmptyGreetings, workspacePathDragType } from "../../constants";
 import { createFixtureContextAttachment, fixtureAgentActivityEvents, fixtureConversationSummary } from "../../fixtures/shared";
 import { api, createEventSource, errorText } from "../../lib/api";
+import { createChatTurnStateGate, observeChatTurnState } from "../../lib/chat-turn-state";
 import { chatDisplayTitle, chatDraftStorageKey, clearStoredChatDraft, formatBytes, latestTranscriptTime, modelConversationTitle, readStoredChatDraft, writeStoredChatDraft } from "../../lib/format";
 import { resolveFixtureWorkspacePathCandidates } from "../../lib/workspace-path-links";
 import { workspaceIdentityFor, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
@@ -57,6 +58,7 @@ export function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
   const [streamingAssistant, setStreamingAssistant] = useState("");
   const [runtimePreviews, setRuntimePreviews] = useState<RuntimePreviewEntry[]>([]);
   const [events, setEvents] = useState<AgentActivityEvent[]>([]);
@@ -106,6 +108,7 @@ export function ChatPanel({
     () => runtimePreviews.map((entry) => `${entry.id}:${entry.phase ?? ""}:${entry.text.length}`).join("|"),
     [runtimePreviews],
   );
+  runningRef.current = running;
 
   function commitConversations(next: ConversationSummary[] | ((current: ConversationSummary[]) => ConversationSummary[])): void {
     const nextConversations = typeof next === "function" ? next(conversationsRef.current) : next;
@@ -254,14 +257,27 @@ export function ChatPanel({
     resizeComposerTextarea();
   }, [draft]);
 
+  const shouldKeepEventStreamOpen = !fixtureMode && Boolean(conversation) && (
+    active || running || Boolean(pendingSendRef.current)
+  );
+
   useEffect(() => {
-    const keepStreamOpen = active || running || Boolean(pendingSendRef.current);
-    if (fixtureMode || !conversation || !keepStreamOpen) return;
+    if (!conversation || !shouldKeepEventStreamOpen) return;
     const conversationId = conversation.id;
+    let openedOnce = false;
+    const turnStateGate = createChatTurnStateGate();
     eventStreamReadyConversationIdRef.current = null;
     const source = createEventSource(`/api/workspaces/${workspace.id}/conversations/${conversationId}/events`);
     source.onopen = () => {
       eventStreamReadyConversationIdRef.current = conversationId;
+      setError(null);
+      if (openedOnce && !pendingSendRef.current && !postingPendingSendRef.current) {
+        // Reconcile messages that may have landed while Windows was asleep or
+        // the renderer was disconnected. Runtime previews remain intact while
+        // a turn is still active.
+        void loadMessages(conversationId, false);
+      }
+      openedOnce = true;
       if (pendingSendRef.current?.conversation.id === conversationId) void postPendingMessage();
     };
     source.onerror = (streamError) => {
@@ -270,6 +286,7 @@ export function ChatPanel({
       if (pending?.conversation.id === conversationId) {
         pendingSendRef.current = null;
         postingPendingSendRef.current = false;
+        runningRef.current = false;
         setRunning(false);
         clearRuntimePreviews();
         setError(errorText(streamError));
@@ -280,12 +297,32 @@ export function ChatPanel({
           setConversation(null);
           commitConversations((current) => current.filter((item) => item.id !== conversationId));
         }
+      } else {
+        setError(errorText(streamError));
       }
     };
     source.onmessage = (event) => {
       const data = JSON.parse(event.data) as ChatStreamEvent;
       if (data.type === "status" && data.message) {
         addAgentEvent({ message: data.message, phase: "running" });
+      }
+      if (data.type === "turn_state") {
+        const sendTransitioning = pendingSendRef.current?.conversation.id === conversationId
+          || postingPendingSendRef.current;
+        const decision = observeChatTurnState(turnStateGate, data.running === true, sendTransitioning);
+        if (decision === "running") {
+          runningRef.current = true;
+          setRunning(true);
+        } else if (
+          decision === "settle"
+          && runningRef.current
+        ) {
+          // A reconnect can miss the terminal `done` frame. The server's
+          // snapshot is authoritative, so settle from the persisted transcript.
+          runningRef.current = false;
+          void loadMessages(conversationId, false, { settleStreamingTurn: true });
+          void onAgentFinished();
+        }
       }
       if (data.type === "tool") {
         addAgentEvent({
@@ -297,12 +334,14 @@ export function ChatPanel({
         });
       }
       if (data.type === "assistant_thinking") {
+        runningRef.current = true;
         setRunning(true);
         if (data.thinkingPhase === "start") startThinkingPreview();
         if (data.text) appendThinkingPreview(data.text);
         if (data.thinkingPhase === "end") finishThinkingPreview();
       }
       if (data.type === "assistant_delta" && data.text) {
+        runningRef.current = true;
         setRunning(true);
         queueStreamingText(data.text);
       }
@@ -326,10 +365,12 @@ export function ChatPanel({
         flushStreamingText();
         finishThinkingPreview();
         setError(data.message ?? "Agent error");
+        runningRef.current = false;
         setRunning(false);
         scheduleEventClear();
       }
       if (data.type === "done") {
+        runningRef.current = false;
         flushStreamingText();
         finishThinkingPreview();
         scheduleEventClear();
@@ -345,7 +386,7 @@ export function ChatPanel({
       cancelStreamingFlush();
       activeThinkingPreviewIdRef.current = null;
     };
-  }, [active, conversation?.id, running, workspace.id, fixtureMode]);
+  }, [conversation?.id, shouldKeepEventStreamOpen, workspace.id]);
 
   useEffect(() => {
     if (!contextPathRequest) return;

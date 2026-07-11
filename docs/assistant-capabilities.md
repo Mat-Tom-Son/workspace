@@ -99,7 +99,7 @@ In product language, lead with the outcome (“install this Skill” or “add t
 
 ## Authentication and external connections
 
-Provider credentials belong to Assistant Setup and application/Pi storage, never to a Space or Library. The current first-run desktop path supports API-key setup. Pi contains provider OAuth primitives, but Workspace should not claim general native OAuth support until the packaged desktop flow is wired and verified for the relevant provider.
+Provider credentials belong to **Settings → Assistant** and application/Pi storage, never to a Space or Library. The current first-run desktop path supports API-key setup. Pi contains provider OAuth primitives, but Workspace should not claim general native OAuth support until the packaged desktop flow is wired and verified for the relevant provider.
 
 Likewise, an Extension can implement an external connection, but that does not make the core app a native integration with that service. Google Drive currently works by registering a folder synchronized through Google Drive for desktop. Direct Drive API synchronization remains future provider-adapter work.
 

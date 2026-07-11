@@ -558,7 +558,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       await savePiApiKey(workspace.rootPath, body.provider!, body.apiKey, { runtimeProvider: state.runtimeProvider });
     }
     await setPiDefaultModel(workspace.rootPath, { provider: body.provider!, id: body.model! }, state.runtimeProvider);
-    await invalidateWorkspaceClients(state, workspace.id);
+    await invalidateAllClients(state);
     sendJson(res, { status: normalizeStatus(await getPiSetupStatus(workspace.rootPath, state.runtimeProvider)) });
     return;
   }
@@ -568,7 +568,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const workspace = await configuredWorkspace(body.workspaceId, body.provider, body.model);
     await loginPiOAuth(workspace.rootPath, body.provider!, state.piOAuthHooks, state.runtimeProvider);
     await setPiDefaultModel(workspace.rootPath, { provider: body.provider!, id: body.model! }, state.runtimeProvider);
-    await invalidateWorkspaceClients(state, workspace.id);
+    await invalidateAllClients(state);
     sendJson(res, { status: normalizeStatus(await getPiSetupStatus(workspace.rootPath, state.runtimeProvider)) });
     return;
   }
@@ -580,7 +580,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       scope: body.scope === "project" ? "project" : "user",
       runtimeProvider: state.runtimeProvider,
     });
-    await invalidateWorkspaceClients(state, workspace.id);
+    if (body.scope === "project") await invalidateWorkspaceClients(state, workspace.id);
+    else await invalidateAllClients(state);
     sendJson(res, { installed: true }, 201);
     return;
   }
@@ -594,7 +595,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     for (const file of multipart.files) {
       imported.push(await importPiSkillBundle(workspace.rootPath, { fileName: file.fileName, bytes: file.data, scope }, state.runtimeProvider));
     }
-    await invalidateWorkspaceClients(state, workspace.id);
+    if (scope === "project") await invalidateWorkspaceClients(state, workspace.id);
+    else await invalidateAllClients(state);
     sendJson(res, { imported }, 201);
     return;
   }
@@ -658,7 +660,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   const eventsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/events$/);
   if (method === "GET" && eventsMatch) {
     await getWorkspace(eventsMatch[1]);
-    openChatStream(state, req, res, streamKey(eventsMatch[1], eventsMatch[2]));
+    openChatStream(state, req, res, streamKey(eventsMatch[1], eventsMatch[2]), eventsMatch[2]);
     return;
   }
   const messagesPostMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/messages$/);
@@ -675,11 +677,13 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     if (!existing.length) throw notFound("Conversation not found.");
     if (state.runningTurns.has(turnKey)) throw httpError(409, "Wait for the current agent turn to finish.");
     state.runningTurns.add(turnKey);
+    broadcast(state, turnKey, turnStateEvent(conversationId, true));
     const message = { id: randomUUID(), role: "user" as const, content, createdAt: new Date().toISOString() };
     try {
       await appendMessage(workspace.rootPath, conversationId, message);
     } catch (error) {
       state.runningTurns.delete(turnKey);
+      broadcast(state, turnKey, turnStateEvent(conversationId, false));
       throw error;
     }
     void runAgentTurn(state, workspace.id, workspace.rootPath, conversationId, content, contextPaths, selectedPath);
@@ -766,6 +770,7 @@ async function runAgentTurn(
   } finally {
     if (promptStarted) await captureTurnCheckpointSafe(state, workspaceId, workspaceRoot, conversationId, "post_turn");
     state.runningTurns.delete(key);
+    broadcast(state, key, turnStateEvent(conversationId, false));
     changeTurnCount(state, -1);
   }
 }
@@ -791,6 +796,13 @@ async function getClient(
 async function invalidateWorkspaceClients(state: LocalApiState, workspaceId: string): Promise<void> {
   for (const [key, client] of [...state.clients]) {
     if (!key.startsWith(`${workspaceId}:`)) continue;
+    await client.stop().catch(() => undefined);
+    state.clients.delete(key);
+  }
+}
+
+async function invalidateAllClients(state: LocalApiState): Promise<void> {
+  for (const [key, client] of [...state.clients]) {
     await client.stop().catch(() => undefined);
     state.clients.delete(key);
   }
@@ -948,18 +960,27 @@ async function configuredWorkspace(workspaceId?: string, provider?: string, mode
   return getWorkspace(workspaceId);
 }
 
-function openChatStream(state: LocalApiState, req: IncomingMessage, res: ServerResponse, key: string): void {
+function openChatStream(
+  state: LocalApiState,
+  req: IncomingMessage,
+  res: ServerResponse,
+  key: string,
+  conversationId: string,
+): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
     "x-accel-buffering": "no",
   });
-  res.write(`data: ${JSON.stringify({ type: "status", message: "Connected." })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: "status", conversationId, message: "Connected." })}\n\n`);
+  res.write(`data: ${JSON.stringify(turnStateEvent(conversationId, state.runningTurns.has(key)))}\n\n`);
   const streams = state.chatStreams.get(key) ?? new Set<ServerResponse>();
   streams.add(res);
   state.chatStreams.set(key, streams);
-  const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+  const heartbeat = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch { /* disconnected */ }
+  }, 15_000);
   req.on("close", () => {
     clearInterval(heartbeat);
     streams.delete(res);
@@ -1253,7 +1274,16 @@ function workspaceIdForRootSync(rootPath: string): string | null {
 
 function changeTurnCount(state: LocalApiState, delta: number): void {
   state.activeTurns = Math.max(0, state.activeTurns + delta);
-  state.onAgentTurnActivity?.(state.activeTurns);
+  try {
+    state.onAgentTurnActivity?.(state.activeTurns);
+  } catch {
+    // Desktop power/tray integration must never be able to strand a turn in
+    // the server's running set if its observer fails.
+  }
+}
+
+function turnStateEvent(conversationId: string, running: boolean): { type: "turn_state"; conversationId: string; running: boolean } {
+  return { type: "turn_state", conversationId, running };
 }
 
 function numberFromEnv(name: string, fallback: number): number {

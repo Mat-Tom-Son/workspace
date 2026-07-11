@@ -33,7 +33,7 @@ test("Files is the first primary surface and Space remains the root selector", (
   const primaryItems = constArrayBody(workspaceChromeSource, "primaryItems");
   const primaryModes = [...primaryItems.matchAll(/mode:\s*"([^"]+)"/g)].map((match) => match[1]);
 
-  assert.deepEqual(primaryModes, ["files", "chats", "library", "history"]);
+  assert.deepEqual(primaryModes, ["files", "skills", "extensions", "chats", "library", "history"]);
   assert.doesNotMatch(primaryItems, /mode:\s*"workspaces"/);
 
   const selectorIndex = workspaceChromeSource.indexOf("workspace-rail-space-selector");
@@ -58,7 +58,6 @@ test("pane navigation uses one Fluent icon contract", () => {
     "ChatMultiple20",
     "Library20",
     "History20",
-    "Settings20",
     "BookToolbox20",
     "PlugConnected20",
   ];
@@ -68,7 +67,17 @@ test("pane navigation uses one Fluent icon contract", () => {
   }
 
   assert.match(workspaceChromeSource, /professional-workspace-rail/);
+  assert.doesNotMatch(workspaceChromeSource, /aria-label="Assistant"/);
+  assert.doesNotMatch(workspaceChromeSource, /mode:\s*"setup"/);
   assert.doesNotMatch(workspaceChromeSource, /<Bot\w*[^>]*>.*Assistant/s);
+});
+
+test("Assistant configuration lives in Settings instead of the rail", () => {
+  assert.match(desktopSettingsSource, /id:\s*"assistant"[\s\S]*?label:\s*"Assistant"/);
+  assert.match(desktopSettingsSource, /<AssistantSetupPane[\s\S]*?embedded/);
+  assert.match(appSource, /openSettings\("assistant"\)/);
+  assert.doesNotMatch(appSource, /activeMode\s*===\s*"setup"/);
+  assert.doesNotMatch(workspaceChromeSource, /Assistant ·/);
 });
 
 test("Space identity and typography keep the restrained defaults", () => {
@@ -171,6 +180,11 @@ test("Space customization is visible, compact, and separate from structural chro
   assert.match(customizationCss, /\.professional-workspace-rail \.workspace-rail-button\.active[\s\S]*?box-shadow:\s*inset 3px 0 0 var\(--workspace-custom-color\)/);
   assert.match(customizationCss, /\.professional-spaces \.workspace-card-shell\.active[\s\S]*?background:\s*var\(--workspace-custom-color-soft\)/);
   assert.match(customizationCss, /\.professional-chats \.chat-workspace-heading > span:first-child[\s\S]*?color:\s*var\(--workspace-custom-color\)/);
+  assert.doesNotMatch(
+    appSource,
+    /normalizeWorkspaceCustomizations\(customizationsRef\.current,\s*new Set\(workspaces/,
+    "temporarily missing or moved Spaces must keep their identity until an explicit removal",
+  );
 
   assert.match(foundationCss, /--workspace-ui-font:\s*var\(--workspace-font-family/);
   assert.doesNotMatch(foundationCss, /--workspace-font-size:/, "the professional layer must not override the user's text-size preference");

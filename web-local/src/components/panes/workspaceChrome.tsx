@@ -22,7 +22,6 @@ import {
   PlugConnected20Filled,
   PlugConnected20Regular,
   Search20Regular,
-  Settings20Filled,
   Settings20Regular,
 } from "@fluentui/react-icons";
 import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspace-icons";
@@ -51,20 +50,19 @@ function WorkspaceModeRail({
   updateControl?: ReactNode;
 }) {
   const FilesIcon = activeMode === "files" ? DocumentFolder20Filled : DocumentFolder20Regular;
+  const SkillsIcon = activeMode === "skills" ? BookToolbox20Filled : BookToolbox20Regular;
+  const ExtensionsIcon = activeMode === "extensions" ? PlugConnected20Filled : PlugConnected20Regular;
   const ChatsIcon = activeMode === "chats" ? ChatMultiple20Filled : ChatMultiple20Regular;
   const LibraryIcon = activeMode === "library" ? Library20Filled : Library20Regular;
   const HistoryIcon = activeMode === "history" ? History20Filled : History20Regular;
   const workspaceLabel = workspace.name.trim() || "Space";
   const primaryItems: Array<{ mode: WorkspaceRailMode; label: string; ariaLabel: string; title: string; icon: ReactNode }> = [
     { mode: "files", label: "Files", ariaLabel: "Files", title: "Files in this Space", icon: <FilesIcon className="fluent-rail-icon" /> },
+    { mode: "skills", label: "Skills", ariaLabel: "Skills", title: "Reusable instructions and workflows", icon: <SkillsIcon className="fluent-rail-icon" /> },
+    { mode: "extensions", label: "Extensions", ariaLabel: "Extensions", title: "Tools and connections", icon: <ExtensionsIcon className="fluent-rail-icon" /> },
     { mode: "chats", label: "Chats", ariaLabel: "Chats", title: "Chats", icon: <ChatsIcon className="fluent-rail-icon" /> },
     { mode: "library", label: "Library", ariaLabel: "Library", title: "Reusable files for any Space", icon: <LibraryIcon className="fluent-rail-icon" /> },
     { mode: "history", label: "History", ariaLabel: "History", title: "Restore points and recent activity", icon: <HistoryIcon className="fluent-rail-icon" /> },
-  ];
-  const assistantItems = [
-    { mode: "setup" as const, label: "Setup", RegularIcon: Settings20Regular, FilledIcon: Settings20Filled },
-    { mode: "skills" as const, label: "Skills", RegularIcon: BookToolbox20Regular, FilledIcon: BookToolbox20Filled },
-    { mode: "extensions" as const, label: "Extensions", RegularIcon: PlugConnected20Regular, FilledIcon: PlugConnected20Filled },
   ];
   return (
     <nav className="workspace-mode-rail professional-workspace-rail" aria-label="Workspace navigation">
@@ -97,14 +95,6 @@ function WorkspaceModeRail({
             <span className="workspace-rail-label">{item.label}</span>
           </button>
         ))}
-        <div className="workspace-rail-group" role="group" aria-label="Assistant">
-          <span className="workspace-rail-group-label"><span>Assistant</span></span>
-          {assistantItems.map((item) => {
-            const active = activeMode === item.mode;
-            const Icon = active ? item.FilledIcon : item.RegularIcon;
-            return <button className={["workspace-rail-button", "workspace-rail-assistant", active ? "active" : ""].filter(Boolean).join(" ")} type="button" key={item.mode} onClick={() => onModeChange(item.mode)} aria-label={`Assistant ${item.label}`} title={`Assistant · ${item.label}`}><span className="workspace-rail-icon" aria-hidden="true"><Icon /></span><span className="workspace-rail-label">{item.label}</span></button>;
-          })}
-        </div>
       </div>
       <div className="workspace-rail-account">
         <div className="workspace-rail-tools">

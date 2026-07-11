@@ -20,20 +20,22 @@ Workspace is for general computer work. Coding is one valid use, not the organiz
 | **Chats** | Conversations grounded in the selected Space. | A chat does not automatically receive every file in the Space. |
 | **Library** | Personal materials worth reusing across Spaces. | Items are passive and are copied explicitly; they are not prompt context. |
 | **History** | Checkpoints and recoverable changes associated with a Space. | It should remain distinct from chat history. |
-| **Assistant** | Pi setup and capability management. | It is configured independently from Space content. |
+| **Assistant** | The Pi-powered helper. | Its provider and model are configured in Settings, independently from Space content. |
 | **Skill** | A reusable way of working that helps the Assistant approach a task. | A Skill may contain executable scripts and is not merely a document. |
 | **Extension** | An executable capability or connection available to the Assistant. | It has a stronger trust implication than a Library item. |
 
 The Space switcher chooses the active root-folder entity. The stable primary navigation then follows these surface nouns:
 
 - **Files**
+- **Skills**
+- **Extensions**
 - **Chats**
 - **Library**
 - **History**
-- **Assistant**
-  - **Setup**
-  - **Skills**
-  - **Extensions**
+
+The Assistant's provider, model, API key, and OAuth connection live in **Settings → Assistant**, rather than adding a setup destination to the primary rail.
+
+Each open tab belongs to one Space. Selecting a tab takes the user back to that Space and its identity; selecting a Space restores its most recent tab. A Chat that is working remains alive when another tab is selected, when Workspace is minimized, and when the window is hidden to the tray.
 
 ## A Space is a view of a folder, not a new file format
 
@@ -42,9 +44,9 @@ There are two honest ways to create a Space:
 1. **Create a Space:** Workspace creates a normal folder under its managed local content location.
 2. **Turn an existing folder into a Space:** Workspace registers the folder in place.
 
-Both routes should lead to the same product experience. Registration must not move, duplicate, rename, or add metadata to the folder. App state, conversations, trust decisions, and provider credentials stay in application storage unless the user intentionally places portable Pi configuration in `.pi/`.
+Both routes should lead to the same product experience. Registration must not move, duplicate, or rename user files. Workspace adds one intentionally narrow, hidden metadata layer: `.workspace/space.json` preserves the Space identity when its folder moves, and `.workspace/conversations/` keeps that Space's Chats with it. The Files and History surfaces hide this directory. Trust decisions, provider credentials, History objects, Pi sessions, ignore rules, and other machine-specific app state remain in application storage. Portable executable Pi configuration remains separate under `.pi/` and requires trust.
 
-A Space may also have a personal visual identity: accent colors, a compact banner, and a Fluent icon. Those preferences help distinguish Spaces inside Workspace, but they remain application state on this computer. They do not recolor the entire product and are never written into the underlying folder.
+A Space may also have a personal visual identity: accent colors, a compact banner, and a Fluent icon. Those preferences help distinguish Spaces inside Workspace, but they currently remain application state on this computer. The versioned `space.json` schema can grow deliberately if portable appearance is introduced later; current code must not smuggle machine-specific state into it.
 
 The user should always be able to reveal a Space in the operating system, open its files with other applications, back it up normally, or synchronize it with a desktop sync tool. A Google Drive for desktop folder works because it is a local folder; that is not the same as direct Google Drive API integration.
 

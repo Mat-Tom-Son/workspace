@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, readdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync, lstatSync } from "node:fs";
+import { appendFile, copyFile, mkdir, open, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
-import { workspaceConversationDir } from "../state-paths.js";
+import { legacyWorkspaceConversationDir, workspaceConversationDir } from "../state-paths.js";
 
 export interface ChatMessage {
   id: string;
@@ -32,16 +32,19 @@ export interface ChatMessageLanding {
 }
 
 export async function listConversations(workspaceRoot: string): Promise<ConversationSummary[]> {
-  const dir = conversationsDir(workspaceRoot);
-  if (!existsSync(dir)) return [];
-  const files = (await readdir(dir)).filter((file) => file.endsWith(".jsonl"));
+  await prepareConversationRead(workspaceRoot);
+  const files = new Set<string>();
+  for (const dir of conversationReadDirs(workspaceRoot)) {
+    if (!existsSync(dir)) continue;
+    for (const file of await readdir(dir)) if (file.endsWith(".jsonl")) files.add(file);
+  }
   const summaries: ConversationSummary[] = [];
   for (const file of files) {
     const conversationId = file.replace(/\.jsonl$/, "");
     if (!isValidConversationId(conversationId)) continue;
     const { messages, malformedLineCount } = await readConversationFile(workspaceRoot, conversationId);
     if (!messages.some((message) => message.role !== "system")) {
-      if (malformedLineCount === 0) await unlink(conversationPath(workspaceRoot, conversationId));
+      if (malformedLineCount === 0) await unlink(existingConversationPath(workspaceRoot, conversationId));
       continue;
     }
     summaries.push(conversationSummary(conversationId, messages));
@@ -77,7 +80,8 @@ export async function readConversation(workspaceRoot: string, conversationId: st
 }
 
 async function readConversationFile(workspaceRoot: string, conversationId: string): Promise<{ messages: ChatMessage[]; malformedLineCount: number }> {
-  const path = conversationPath(workspaceRoot, conversationId);
+  await prepareConversationRead(workspaceRoot);
+  const path = existingConversationPath(workspaceRoot, conversationId);
   if (!existsSync(path)) return { messages: [], malformedLineCount: 0 };
   const messages: ChatMessage[] = [];
   let malformedLineCount = 0;
@@ -92,6 +96,7 @@ async function readConversationFile(workspaceRoot: string, conversationId: strin
 }
 
 export async function appendMessage(workspaceRoot: string, conversationId: string, message: ChatMessage): Promise<void> {
+  await ensurePortableConversationStorage(workspaceRoot);
   const path = conversationPath(workspaceRoot, conversationId);
   await mkdir(conversationsDir(workspaceRoot), { recursive: true });
   const prefix = await needsLineBreakBeforeAppend(path) ? "\n" : "";
@@ -104,7 +109,72 @@ export function conversationsDir(workspaceRoot: string): string {
 
 function conversationPath(workspaceRoot: string, conversationId: string): string {
   assertValidConversationId(conversationId);
-  return join(conversationsDir(workspaceRoot), `${conversationId}.jsonl`);
+  const path = join(conversationsDir(workspaceRoot), `${conversationId}.jsonl`);
+  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+    throw new Error("Conversation logs cannot be symbolic links or junctions.");
+  }
+  return path;
+}
+
+function existingConversationPath(workspaceRoot: string, conversationId: string): string {
+  const portablePath = conversationPath(workspaceRoot, conversationId);
+  if (existsSync(portablePath) || existsSync(conversationMigrationMarker(workspaceRoot))) return portablePath;
+  return join(legacyWorkspaceConversationDir(workspaceRoot), `${conversationId}.jsonl`);
+}
+
+function conversationReadDirs(workspaceRoot: string): string[] {
+  const portableDir = conversationsDir(workspaceRoot);
+  const legacyDir = legacyWorkspaceConversationDir(workspaceRoot);
+  return existsSync(conversationMigrationMarker(workspaceRoot)) || !existsSync(legacyDir)
+    ? [portableDir]
+    : [portableDir, legacyDir];
+}
+
+const conversationMigrationByRoot = new Map<string, Promise<void>>();
+
+async function ensurePortableConversationStorage(workspaceRoot: string): Promise<void> {
+  const key = resolve(workspaceRoot);
+  const inFlight = conversationMigrationByRoot.get(key);
+  if (inFlight) return inFlight;
+  const migration = migrateLegacyConversations(workspaceRoot).finally(() => {
+    if (conversationMigrationByRoot.get(key) === migration) conversationMigrationByRoot.delete(key);
+  });
+  conversationMigrationByRoot.set(key, migration);
+  return migration;
+}
+
+async function prepareConversationRead(workspaceRoot: string): Promise<void> {
+  try {
+    await ensurePortableConversationStorage(workspaceRoot);
+  } catch (error) {
+    if (!existsSync(legacyWorkspaceConversationDir(workspaceRoot))) throw error;
+  }
+}
+
+async function migrateLegacyConversations(workspaceRoot: string): Promise<void> {
+  const legacyDir = legacyWorkspaceConversationDir(workspaceRoot);
+  if (!existsSync(legacyDir)) return;
+  const portableDir = conversationsDir(workspaceRoot);
+  const marker = conversationMigrationMarker(workspaceRoot);
+  if (existsSync(marker)) return;
+  await mkdir(portableDir, { recursive: true });
+  for (const file of await readdir(legacyDir)) {
+    if (!file.endsWith(".jsonl")) continue;
+    const destination = join(portableDir, file);
+    if (existsSync(destination)) continue;
+    try {
+      await copyFile(join(legacyDir, file), destination);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    }
+  }
+  await writeFile(marker, "Legacy app-data conversations copied non-destructively.\n", { encoding: "utf8", flag: "wx" }).catch((error: unknown) => {
+    if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+  });
+}
+
+function conversationMigrationMarker(workspaceRoot: string): string {
+  return join(conversationsDir(workspaceRoot), ".external-migration-v1");
 }
 
 function parseChatMessage(line: string): ChatMessage | null {

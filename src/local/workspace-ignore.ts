@@ -16,7 +16,7 @@ export interface WorkspaceIgnoreUpdate {
   patterns: string[];
 }
 
-const builtInPatterns = [".DS_Store", "Thumbs.db", "~$*", ".~lock.*#"];
+const builtInPatterns = [".workspace", ".pi", ".DS_Store", "Thumbs.db", "~$*", ".~lock.*#"];
 
 export async function readWorkspaceIgnoreState(workspaceRoot: string): Promise<WorkspaceIgnoreState> {
   const root = ensureSafeWorkspaceRoot(workspaceRoot);

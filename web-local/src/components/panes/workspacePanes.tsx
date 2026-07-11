@@ -347,7 +347,7 @@ export function HistoryPane({ workspace, fixtureItems, refreshRequest = 0, onOpe
   );
 }
 
-export function AssistantSetupPane({ workspace, status, fixtureMode = false, onConfigured }: { workspace: WorkspaceSummary; status: AgentStatus; fixtureMode?: boolean; onConfigured: (status: AgentStatus) => void }) {
+export function AssistantSetupPane({ workspace, status, fixtureMode = false, embedded = false, onConfigured }: { workspace: WorkspaceSummary; status: AgentStatus; fixtureMode?: boolean; embedded?: boolean; onConfigured: (status: AgentStatus) => void }) {
   const [models, setModels] = useState<AgentModel[]>([]);
   const [provider, setProvider] = useState(status.provider ?? "openrouter");
   const [model, setModel] = useState(status.model ?? "");
@@ -405,7 +405,7 @@ export function AssistantSetupPane({ workspace, status, fixtureMode = false, onC
   }
 
   return (
-    <div className="workspace-pane-content assistant-pane professional-surface professional-assistant">
+    <div className={embedded ? "assistant-settings-panel professional-assistant" : "workspace-pane-content assistant-pane professional-surface professional-assistant"}>
       <section className="assistant-setup-card professional-card" aria-labelledby="assistant-setup-title">
         <div className="setup-intro">
           <span className="professional-icon-tile" aria-hidden="true"><Bot20Regular /></span>
@@ -441,7 +441,7 @@ export function AssistantSetupPane({ workspace, status, fixtureMode = false, onC
   );
 }
 
-export function AssistantCapabilityPane({ workspace, mode, status, fixtureMode = false, onOpenSetup, onError }: { workspace: WorkspaceSummary; mode: "skills" | "extensions"; status: AgentStatus; fixtureMode?: boolean; onOpenSetup: () => void; onError: (message: string | null) => void }) {
+export function AssistantCapabilityPane({ workspace, mode, status, fixtureMode = false, onOpenSettings, onError }: { workspace: WorkspaceSummary; mode: "skills" | "extensions"; status: AgentStatus; fixtureMode?: boolean; onOpenSettings: () => void; onError: (message: string | null) => void }) {
   const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
   const [source, setSource] = useState("");
   const [scope, setScope] = useState<"global" | "project">("global");
@@ -497,7 +497,7 @@ export function AssistantCapabilityPane({ workspace, mode, status, fixtureMode =
           icon={<Bot20Regular />}
           title="Assistant not set up yet"
           detail="You can organize capabilities now and choose a provider when you are ready."
-          action={<button className="professional-button professional-button-secondary" type="button" onClick={onOpenSetup}>Open Setup</button>}
+          action={<button className="professional-button professional-button-secondary" type="button" onClick={onOpenSettings}>Open Settings</button>}
         />
       ) : null}
       {catalog ? (

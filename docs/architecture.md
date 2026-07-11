@@ -2,7 +2,7 @@
 
 Workspace has three runtime layers:
 
-1. The React renderer presents a Space selector plus Files, Chats, Library, History, and Assistant surfaces.
+1. The React renderer presents a Space selector plus Files, Skills, Extensions, Chats, Library, and History surfaces, with Assistant configuration in Settings.
 2. The local Node API owns filesystem access, conversations, resource import, and Pi sessions.
 3. Electron supplies native windows, menus, dialogs, secure storage, and packaging.
 
@@ -15,21 +15,25 @@ The renderer never receives provider secrets or unrestricted filesystem access. 
 The Space selector establishes the active root-folder entity; a Space is not itself a peer navigation surface. The primary information architecture is:
 
 - **Files** — the ordinary folder contents of the selected Space.
+- **Skills** — reusable ways of working, available personally or from a trusted Space.
+- **Extensions** — executable capabilities and external connections, available personally or from a trusted Space.
 - **Chats** — conversations associated with the selected Space.
 - **Library** — reusable personal materials available across Spaces.
 - **History** — checkpoints and recoverable changes for the selected Space.
-- **Assistant** — configuration for the Pi-powered helper.
-  - **Setup** — provider, model, and authentication.
-  - **Skills** — reusable ways of working.
-  - **Extensions** — executable capabilities and external connections.
+
+Provider, model, and authentication configuration for the Pi-powered Assistant lives under **Settings → Assistant**.
 
 The concepts have deliberately different scopes and trust levels. Library materials are passive and personal. Skills influence how the Assistant works. Extensions can execute code or reach other systems and therefore require stronger, explicit trust. Making something available does not silently activate it or add it to a chat's context.
+
+Surface tabs are Space-bound rather than global views of the currently selected folder. Activating a tab activates its owning Space, and switching Spaces restores that Space's most recent tab. All open Chat panels remain mounted; an accepted Pi turn continues in the local API while its tab is inactive, the window is minimized, or the window is hidden to the system tray. Event-stream reconnects use server turn-state snapshots and persisted transcript rehydration so renderer sleep or wake does not lose the result.
 
 Technical types, routes, and storage paths may continue to use `workspace`, `project`, or `resource` for API stability and compatibility with Pi. User-facing copy should use **Space** for the working context and **Library** for reusable personal materials. Pi's own “resource” terminology remains appropriate when describing Pi runtime discovery rather than the Library.
 
 ## Storage
 
-Every Space is backed by an ordinary content folder. Application state belongs in the Electron user-data directory, and Pi state belongs in the configured Pi agent directory. A Space folder may contain `.pi/` only when the user intentionally wants portable project skills, extensions, prompts, settings, or context.
+Every Space is backed by an ordinary content folder. Its small portable data layer lives under `.workspace/`: `space.json` carries a stable, versioned identity and `conversations/` carries append-only Chat logs. Workspace reuses a valid manifest id when a moved folder is relinked. Both `.workspace/` and `.pi/` are hidden from the Files surface and excluded from History capture.
+
+Operational state remains outside the folder. Electron user data holds content-addressed History objects, ignore rules, provider credentials, and application preferences. The configured Pi agent directory holds Pi sessions, trust decisions, personal capabilities, and Pi settings. Native Pi project skills, extensions, prompts, settings, and context stay separately under the Space's `.pi/` directory and load according to Pi's trust rules. Removing a linked Space deletes its external Workspace operational state but preserves `.workspace/`; deleting a managed Space removes the whole managed folder.
 
 The Library is application-scoped, reusable across Spaces, and separate from chat context. Copying a Library item into a Space is an explicit action and produces an ordinary file in that Space; Library contents are not automatically attached to conversations or synchronized into every Space.
 

@@ -1794,7 +1794,7 @@ textarea,
 .settings-tabs {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
   padding: 0 18px;
   border-bottom: 1px solid #dde3ea;
@@ -14587,25 +14587,6 @@ body.scrollbars-active .app-shell[data-theme="dark"] .publish-panel .change-list
 
 /* Workspace product shell additions. These extend the transplanted desktop
    system without changing its established pane, tab, tree, and chat geometry. */
-.workspace-rail-group {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #d8e0e8;
-}
-.workspace-rail-group-label {
-  min-height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: #5d6978;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.workspace-rail-group-label > span { display: inline; }
-.workspace-rail-button.workspace-rail-assistant { min-height: 42px; }
 .workspace-rail-account-button {
   width: 34px;
   height: 34px;
@@ -14649,6 +14630,7 @@ body.scrollbars-active .app-shell[data-theme="dark"] .publish-panel .change-list
 .history-pane .history-list { padding: 12px 16px 24px; }
 .assistant-pane { padding: 16px; }
 .assistant-pane .assistant-setup-card { margin: 0 auto; }
+.assistant-settings-panel .assistant-setup-card { width: 100%; margin: 0; }
 .assistant-pane > .trust-banner + .trust-banner { margin-top: 10px; }
 .workspace-surface-empty {
   width: 100%;
@@ -14693,8 +14675,6 @@ body.scrollbars-active .app-shell[data-theme="dark"] .publish-panel .change-list
 }
 
 .app-shell[data-theme="dark"] .library-tree { border-right-color: #343b47; }
-.app-shell[data-theme="dark"] .workspace-rail-group { border-top-color: rgba(255, 255, 255, 0.14); }
-.app-shell[data-theme="dark"] .workspace-rail-group-label { color: rgba(255, 255, 255, 0.72); }
 .app-shell[data-theme="dark"] .workspace-rail-account-button { color: rgba(255, 255, 255, 0.72); }
 .app-shell[data-theme="dark"] .workspace-rail-account-button:hover,
 .app-shell[data-theme="dark"] .workspace-rail-account-button:focus-visible { color: #fff; background: rgba(255, 255, 255, 0.12); }

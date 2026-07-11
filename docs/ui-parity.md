@@ -45,13 +45,13 @@ The translation is intentionally narrow. It does not justify replacing the shell
 - Supported actions include open, reveal in Explorer/Finder, copy path, attach to chat, rename, move, create folder/file, upload/import, delete, and version history.
 - Desktop drag-out, file opening, and reveal operations use safe workspace-relative paths and never escape the Space root.
 - Destructive actions require clear confirmation and preserve recovery/history behavior where supported.
-- Registering an existing folder as a Space never moves, converts, or injects Workspace metadata into that folder.
+- Registering an existing folder as a Space never moves or converts user files. It maintains only the documented hidden `.workspace/` identity and conversation layer; that layer and native `.pi/` configuration never appear as ordinary Files.
 
 ### Chat and navigation
 
 - Preserve conversation history, rename, drafts, streaming activity, tool/runtime detail, stop behavior, context attachments, copy actions, suggested prompts, and extension UI requests.
 - Preserve the command palette, keyboard shortcuts, toast/confirm feedback, onboarding, Space creation/linking, themes, typography, and resizable layout.
-- A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Chats`, `Library`, `History`, and `Assistant`, with `Setup`, `Skills`, and `Extensions` beneath Assistant.
+- A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Skills`, `Extensions`, `Chats`, `Library`, and `History`. Provider, model, API-key, and OAuth setup lives in `Settings → Assistant`.
 
 ## Deliberately removed or replaced
 

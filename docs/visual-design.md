@@ -6,8 +6,8 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 - A **Space** is a root folder. It is selected or switched; it is not a peer navigation surface.
 - **Files** is the first working surface inside the selected Space.
-- Primary surfaces are Files, Chats, Library, and History.
-- Assistant surfaces are Setup, Skills, and Extensions.
+- Primary surfaces are Files, Skills, Extensions, Chats, Library, and History.
+- Provider, model, and authentication controls live in Settings under Assistant; Assistant is not a rail group.
 - The first rail item opens the Space manager and identifies the selected root folder. The persistent header above the left pane repeats that Space identity; the selected rail item identifies the current surface.
 
 ## Iconography
@@ -30,7 +30,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 ## Layout
 
 - Navigation uses compact, aligned rows with text labels and one subtle selected state.
-- A 90px identity header sits above every left-pane surface. Its centered icon-over-name lockup represents the selected Space, not the active page. Files, Chats, Library, History, Setup, Skills, and Extensions keep the quick Space switcher; the Spaces-management surface omits that redundant switcher.
+- A 90px identity header sits above every left-pane surface. Its centered icon-over-name lockup represents the selected Space, not the active page. Files, Skills, Extensions, Chats, Library, and History keep the quick Space switcher; the Spaces-management surface omits that redundant switcher.
 - Space banners stay inside the identity header and appearance previews. They do not wallpaper the right work surface or recolor structural borders; interaction color and shell structure remain part of the global application system.
 - Color and icon identity inherit through Space-bound cards, chat groups, tabs, surfaces, and chat empty states. Content belonging to another Space carries that Space's own identity rather than the currently selected one.
 - Forms use stacked labels and hints with an explicit action row.
@@ -40,7 +40,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 ## Visual acceptance
 
-Before a handoff, exercise every primary and Assistant surface in light and dark themes at 1440×900, 1280×800, and a tall/narrow desktop window. Reject the candidate for:
+Before a handoff, exercise every primary surface and every Settings section in light and dark themes at 1440×900, 1280×800, and a tall/narrow desktop window. Reject the candidate for:
 
 - overlapping or concatenated copy;
 - clipped labels or controls;

@@ -12,7 +12,7 @@ import {
   renameConversation,
   type ChatMessage,
 } from "../src/local/agent/chat-store.js";
-import { configureWorkspaceStateRoot } from "../src/local/state-paths.js";
+import { configureWorkspaceStateRoot, legacyWorkspaceConversationDir } from "../src/local/state-paths.js";
 
 const chatStateRoot = await mkdtemp(join(tmpdir(), "workspace-chat-state-"));
 configureWorkspaceStateRoot(chatStateRoot);
@@ -55,6 +55,20 @@ test("chat store rejects unsafe conversation ids", async (t) => {
     () => readConversation(workspaceRoot, "nested/chat"),
     /Invalid conversation id/,
   );
+});
+
+test("chat store migrates external conversations into .workspace without deleting the legacy copy", async (t) => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "workspace-chat-store-migration-"));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+  const legacyDir = legacyWorkspaceConversationDir(workspaceRoot);
+  await mkdir(legacyDir, { recursive: true });
+  const legacyPath = join(legacyDir, "chat-legacy.jsonl");
+  await writeFile(legacyPath, `${JSON.stringify(message("1", "legacy conversation"))}\n`, "utf8");
+
+  assert.equal((await listConversations(workspaceRoot))[0]?.id, "chat-legacy");
+  const portablePath = join(conversationsDir(workspaceRoot), "chat-legacy.jsonl");
+  assert.equal(await readFile(portablePath, "utf8"), await readFile(legacyPath, "utf8"));
+  assert.deepEqual(await readConversation(workspaceRoot, "chat-legacy"), [message("1", "legacy conversation")]);
 });
 
 test("chat store skips malformed JSONL lines without deleting the transcript", async (t) => {

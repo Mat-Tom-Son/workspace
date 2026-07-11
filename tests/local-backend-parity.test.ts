@@ -10,11 +10,11 @@ import JSZip from "jszip";
 import { loadConversationContextAttachmentsForTurn, previewConversationContextAttachment } from "../src/local/conversation-context.js";
 import { createWorkspaceCheckpoint, listFileVersions, restoreFileVersion } from "../src/local/history.js";
 import { startLocalApi } from "../src/local/server.js";
-import { configureWorkspaceStateRoot, workspaceStateDir } from "../src/local/state-paths.js";
+import { configureWorkspaceStateRoot, workspaceConversationDir, workspaceManifestFile, workspaceStateDir } from "../src/local/state-paths.js";
 import { readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "../src/local/workspace-ignore.js";
 import { getWorkspaceEntryInfo, registerLinkedWorkspace, scanWorkspaceTree } from "../src/local/workspace.js";
 
-test("linked Spaces keep ignore, history, and Office context state outside the folder", async (t) => {
+test("linked Spaces keep portable identity in .workspace while operational state remains external", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-parity-linked-"));
   const root = join(sandbox, "ordinary-folder");
   const state = join(sandbox, "state");
@@ -61,11 +61,12 @@ test("linked Spaces keep ignore, history, and Office context state outside the f
   const info = await getWorkspaceEntryInfo(root, "Plan.docx");
   assert.equal(info.officeDocument, true);
   assert.equal(info.hashSha256?.length, 64);
-  assert.equal(existsSync(join(root, ".workspace")), false);
+  assert.equal(existsSync(workspaceManifestFile(root)), true);
   assert.equal(existsSync(join(root, ".kai")), false);
   assert.equal(existsSync(join(root, ".kaiignore")), false);
   assert.equal(existsSync(workspaceStateDir(root)), true);
-  assert.deepEqual((await readdir(root)).sort(), ["Drafts", "Plan.docx"]);
+  assert.deepEqual((await readdir(root)).sort(), [".workspace", "Drafts", "Plan.docx"]);
+  assert.deepEqual((await scanWorkspaceTree(root)).map((entry) => entry.name), ["Drafts", "Plan.docx"]);
   assert.equal(space.location.storage, "linked");
 });
 
@@ -173,6 +174,7 @@ test("local API exposes path-safe file operations, undo checkpoints, chat rename
     body: JSON.stringify({ title: "Planning notes" }),
   }) as { conversation: { title: string } };
   assert.equal(renamed.conversation.title, "Planning notes");
+  assert.equal(existsSync(join(workspaceConversationDir(rootPath), `${conversation.conversation.id}.jsonl`)), true);
 
   const rejectedTurn = await fetch(`${api.origin}/api/workspaces/${id}/conversations/${conversation.conversation.id}/messages`, {
     method: "POST",
@@ -265,9 +267,11 @@ test("Space lifecycle renames external metadata and removes linked versus manage
   assert.equal(renamedLinked.workspace.name, "Renamed linked Space");
   assert.equal(renamedLinked.workspace.rootPath, linkedRoot);
   assert.equal(await readFile(join(linkedRoot, "keep.txt"), "utf8"), "keep");
+  assert.equal(existsSync(workspaceManifestFile(linkedRoot)), true);
   const removedLinked = await json(`${api.origin}/api/workspaces/${linked.workspace.id}`, { method: "DELETE" }) as { removed: true; deleted: boolean };
   assert.deepEqual(removedLinked, { removed: true, deleted: false, rootPath: linkedRoot });
   assert.equal(existsSync(linkedRoot), true);
+  assert.equal(existsSync(workspaceManifestFile(linkedRoot)), true);
   assert.equal(existsSync(workspaceStateDir(linkedRoot)), false);
 
   const managed = await json(`${api.origin}/api/workspaces`, {

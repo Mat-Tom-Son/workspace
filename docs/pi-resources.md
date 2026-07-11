@@ -4,7 +4,7 @@ Workspace exposes Pi resources directly instead of maintaining a parallel Assist
 
 Start with [Assistant capabilities](assistant-capabilities.md) for the product concepts, safety model, scopes, and package boundary. This page is the compact compatibility reference for implementation and verification.
 
-In the product navigation, **Skills** and **Extensions** live under **Assistant** alongside **Setup**. A Skill describes a reusable way of working; an Extension adds an executable capability or connection.
+In the product navigation, **Skills** and **Extensions** are top-level Space-aware surfaces. A Skill describes a reusable way of working; an Extension adds an executable capability or connection. Provider and model setup lives under **Settings → Assistant**.
 
 ## Extensions
 

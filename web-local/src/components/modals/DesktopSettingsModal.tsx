@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowClockwise20Regular,
+  Bot20Regular,
   Color20Regular,
   Desktop20Regular,
   Dismiss20Regular,
@@ -15,27 +16,34 @@ import {
 import { textSizeOptions, typographyFontOptions } from "../../constants";
 import { useEscapeKeyDismiss } from "../../hooks/useEscapeKeyDismiss";
 import { errorText } from "../../lib/api";
-import type { AppTheme, AppThemePreference, AppTypographyPreference, DesktopUpdateStatus } from "../../types";
+import type { AgentStatus, AppTheme, AppThemePreference, AppTypographyPreference, DesktopUpdateStatus, WorkspaceSummary } from "../../types";
+import { AssistantSetupPane } from "../panes/workspacePanes";
 
-type SettingsPage = "appearance" | "desktop" | "about";
+export type SettingsPage = "appearance" | "assistant" | "desktop" | "about";
 
-export function DesktopSettingsModal({ theme, themePreference, onThemePreferenceChange, typography, onTypographyChange, onClose, updateStatus, onUpdateAction }: {
+export function DesktopSettingsModal({ theme, themePreference, onThemePreferenceChange, typography, onTypographyChange, workspace, agentStatus, fixtureMode = false, initialPage = "appearance", onAgentConfigured, onClose, updateStatus, onUpdateAction }: {
   theme: AppTheme;
   themePreference: AppThemePreference;
   onThemePreferenceChange: (theme: AppThemePreference) => void;
   typography: AppTypographyPreference;
   onTypographyChange: (update: Partial<AppTypographyPreference>) => void;
+  workspace: WorkspaceSummary | null;
+  agentStatus: AgentStatus;
+  fixtureMode?: boolean;
+  initialPage?: SettingsPage;
+  onAgentConfigured: (status: AgentStatus) => void;
   onClose: () => void;
   updateStatus: DesktopUpdateStatus | null;
   onUpdateAction?: () => void;
 }) {
-  const [page, setPage] = useState<SettingsPage>("appearance");
+  const [page, setPage] = useState<SettingsPage>(initialPage);
   const [closeToTray, setCloseToTray] = useState<{ supported: boolean; enabled: boolean } | null>(null);
   const [closeToTrayBusy, setCloseToTrayBusy] = useState(false);
   const [closeToTrayError, setCloseToTrayError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { closeRef.current?.focus(); }, []);
+  useEffect(() => { setPage(initialPage); }, [initialPage]);
   useEffect(() => {
     let cancelled = false;
     const desktopWindow = window.workspaceDesktop?.window;
@@ -66,6 +74,7 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
 
   const tabs: Array<{ id: SettingsPage; label: string; detail: string; icon: ReactNode }> = [
     { id: "appearance", label: "Appearance", detail: "Theme and type", icon: <Color20Regular /> },
+    { id: "assistant", label: "Assistant", detail: "Provider and model", icon: <Bot20Regular /> },
     { id: "desktop", label: "Desktop", detail: "Window and updates", icon: <Desktop20Regular /> },
     { id: "about", label: "About", detail: "Workspace details", icon: <Info20Regular /> },
   ];
@@ -140,6 +149,18 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
                     </div>
                   </section>
                 </div>
+              </div>
+            ) : null}
+            {page === "assistant" ? (
+              <div className="settings-tab-panel" id="settings-panel-assistant" role="tabpanel" aria-labelledby="settings-tab-assistant">
+                {workspace ? (
+                  <AssistantSetupPane workspace={workspace} status={agentStatus} fixtureMode={fixtureMode} embedded onConfigured={onAgentConfigured} />
+                ) : (
+                  <section className="settings-section" aria-labelledby="assistant-settings-title">
+                    <div className="settings-section-heading"><h3 id="assistant-settings-title">Assistant</h3></div>
+                    <p>Create a Space or turn a folder into one before choosing a provider and model.</p>
+                  </section>
+                )}
               </div>
             ) : null}
             {page === "desktop" ? (
