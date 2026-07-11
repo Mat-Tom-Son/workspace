@@ -44,6 +44,8 @@ There are two honest ways to create a Space:
 
 Both routes should lead to the same product experience. Registration must not move, duplicate, rename, or add metadata to the folder. App state, conversations, trust decisions, and provider credentials stay in application storage unless the user intentionally places portable Pi configuration in `.pi/`.
 
+A Space may also have a personal visual identity: accent colors, a compact banner, and a Fluent icon. Those preferences help distinguish Spaces inside Workspace, but they remain application state on this computer. They do not recolor the entire product and are never written into the underlying folder.
+
 The user should always be able to reveal a Space in the operating system, open its files with other applications, back it up normally, or synchronize it with a desktop sync tool. A Google Drive for desktop folder works because it is a local folder; that is not the same as direct Google Drive API integration.
 
 ## Context is explicit
@@ -95,6 +97,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Configure a Pi provider/model with an API key and use Pi's built-in tools.
 - Discover personal and trusted-Space Skills and Extensions.
 - Import standard Skills and compatible skill bundles while preserving their supporting files.
+- Customize each Space with a compact banner, paired accent colors, and a searchable Fluent icon catalog without changing its folder.
 - Build a Windows installer and deliver updates through GitHub Releases.
 
 ### Next product layer

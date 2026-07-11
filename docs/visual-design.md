@@ -21,16 +21,18 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 ## Typography and spacing
 
-- The shell uses Segoe UI Variable Text with 14px body copy and weights 400, 600, and 700.
-- Alternative reading fonts may affect document or chat content, but must not change shell geometry.
+- The default is Segoe UI Variable Text with 15px body copy and weights 400, 600, and 700.
+- User-selected fonts and text sizes may change type, but must not change shell geometry or push controls out of bounds.
 - Use the 4, 8, 12, 16, 24, and 32px spacing scale.
 - Controls are 36–40px tall with 6–8px radii.
-- Avoid all-caps labels, weight 800+, text shadows, ornamental gradients, and oversized hero headers.
+- Avoid all-caps labels, weight 800+, text shadows, ornamental whole-app gradients, and oversized hero headers.
 
 ## Layout
 
 - Navigation uses compact, aligned rows with text labels and one subtle selected state.
-- Page headers are 48–56px horizontal rows, not cards or banners.
+- Page headers are 48–56px horizontal rows. Files and History may use the selected Space's compact identity banner, but it never becomes a hero card or changes header height.
+- Space banners are decorative only. Interaction color and structural borders remain part of the global application system.
+- Library, Spaces, Chats, and Assistant surfaces stay visually neutral because they can span or configure more than one Space.
 - Forms use stacked labels and hints with an explicit action row.
 - Notices use `icon | copy | action` and stack only when their own pane becomes narrow.
 - Empty states are centered, restrained, and no wider than 440px.
@@ -48,3 +50,11 @@ Before a handoff, exercise every primary and Assistant surface in light and dark
 - repeated decorative identity graphics;
 - empty states that leave unexplained split-pane chrome;
 - focus, hover, active, and disabled states that are not visually distinct.
+
+## Appearance scopes
+
+- **Settings → Appearance** controls the application theme, font, and text size.
+- **Customize Space** controls one Space's accent, compact banner, and Fluent identity icon.
+- Per-Space appearance is personal application state. It is not written into the user's ordinary folder and does not travel with shared files.
+- A custom image is resized and compressed before local storage. Unsafe image formats and malformed stored values are rejected.
+- Every Space appearance control updates a live preview, saves immediately, and offers a single Reset action.

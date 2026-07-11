@@ -31,12 +31,14 @@ export interface WorkspaceCustomization {
   iconName?: string;
   bannerName?: string;
   bannerImage?: string | null;
+  bannerImagePosition?: WorkspaceBannerImagePosition;
 }
 
 export type WorkspaceCustomizationMap = Record<string, WorkspaceCustomization>;
 export type WorkspaceCustomizationPatch = WorkspaceCustomization;
 export interface WorkspaceColorOption { label: string; color: string; soft: string; border: string }
 export interface WorkspaceBannerOption { name: string; label: string }
+export type WorkspaceBannerImagePosition = "top" | "center" | "bottom";
 export interface WorkspacePaneBounds { min: number; max: number; fallback: number }
 
 export interface TreeEntry {

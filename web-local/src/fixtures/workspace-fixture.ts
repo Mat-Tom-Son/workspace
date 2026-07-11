@@ -1,8 +1,9 @@
-import type { AgentStatus, ConversationSummary, TreeEntry, WorkspaceCheckpoint, WorkspaceFixtureConversation, WorkspaceSummary } from "../types";
+import type { AgentStatus, ConversationSummary, TreeEntry, WorkspaceCheckpoint, WorkspaceCustomizationMap, WorkspaceFixtureConversation, WorkspaceSummary } from "../types";
 
 export interface WorkspaceUiFixture {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
+  customizations: WorkspaceCustomizationMap;
   trees: Record<string, TreeEntry[]>;
   conversations: Record<string, WorkspaceFixtureConversation[]>;
   checkpoints: Record<string, WorkspaceCheckpoint[]>;
@@ -16,6 +17,10 @@ export function buildWorkspaceFixture(): WorkspaceUiFixture {
   const trip: WorkspaceSummary = { id: "fixture-trip", name: "Japan trip", rootPath: "G:\\My Drive\\Japan trip", location: { kind: "local", storage: "linked", providerHint: "google-drive" }, createdAt: now, updatedAt: now };
   return {
     workspaces: [home, trip], activeWorkspaceId: home.id,
+    customizations: {
+      [home.id]: { color: "#0d74ce", color2: "#5c7c2e", iconName: "home", bannerName: "horizon" },
+      [trip.id]: { color: "#6550b9", color2: "#c2298a", iconName: "airplane", bannerName: "aurora" },
+    },
     agent: { ready: true, configured: true, provider: "openrouter", model: "anthropic/claude-sonnet-4", piVersion: "0.80.3", projectTrusted: true, error: null },
     trees: {
       [home.id]: [

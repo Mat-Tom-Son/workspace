@@ -1,6 +1,6 @@
 // Local-storage access can fail outside the browser or when storage is blocked
-// (privacy modes, quota); preference reads fall back and writes become no-ops so
-// the UI keeps working from in-memory state.
+// (privacy modes, quota); preference reads fall back and writes return false so
+// callers can keep the in-memory state while surfacing durability failures.
 
 export function readStoredValue(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -11,13 +11,14 @@ export function readStoredValue(key: string): string | null {
   }
 }
 
-export function writeStoredValue(key: string, value: string | null): void {
-  if (typeof window === "undefined") return;
+export function writeStoredValue(key: string, value: string | null): boolean {
+  if (typeof window === "undefined") return false;
   try {
     if (value === null) window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);
+    return true;
   } catch {
-    // Ignore blocked storage; the in-memory value still applies for this session.
+    return false;
   }
 }
 
@@ -32,6 +33,6 @@ export function readStoredJsonValue<T>(key: string, normalize: (parsed: unknown)
   }
 }
 
-export function writeStoredJsonValue(key: string, value: unknown): void {
-  writeStoredValue(key, JSON.stringify(value));
+export function writeStoredJsonValue(key: string, value: unknown): boolean {
+  return writeStoredValue(key, JSON.stringify(value));
 }

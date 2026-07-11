@@ -13,6 +13,8 @@ const [
   shellCss,
   legacyCss,
   surfacesCss,
+  customizationCss,
+  desktopSettingsSource,
 ] = await Promise.all([
   readRenderer("components/panes/workspaceChrome.tsx"),
   readRenderer("components/panes/workspacePanes.tsx"),
@@ -21,6 +23,8 @@ const [
   readRenderer("professional-shell.css"),
   readRenderer("styles.css"),
   readRenderer("professional-surfaces.css"),
+  readRenderer("professional-customization.css"),
+  readRenderer("components/modals/DesktopSettingsModal.tsx"),
 ]);
 
 test("Files is the first primary surface and Space remains the root selector", () => {
@@ -145,6 +149,28 @@ test("professional shell keeps compact neutral structure", () => {
   assert.ok(pxDeclaration(navButtonRule, "min-height") <= 40, "primary navigation rows must remain compact");
   assert.ok(pxDeclaration(spaceSelectorRule, "min-height") <= 48, "Space selector must remain compact");
   assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-button svg,[\s\S]*?\{[\s\S]*?width:\s*20px;[\s\S]*?height:\s*20px;/);
+});
+
+test("Space customization is visible, compact, and separate from structural chrome", () => {
+  assert.match(workspaceChromeSource, /workspace-banner-surface space-identity-header/);
+  assert.match(workspaceChromeSource, /workspace-pane-banner-image/);
+  assert.match(workspaceChromeSource, /workspaceIdentityStyle\(workspaceIdentity\)/);
+  assert.match(workspaceChromeSource, /<WorkspaceIconGlyph icon=\{workspaceIdentity\.Icon\}/);
+  assert.match(workspaceChromeSource, /data-space-icon=\{workspaceIdentity\.iconName\}/);
+  assert.match(workspaceChromeSource, /workspace-appearance-preview/);
+  assert.match(workspaceChromeSource, /onResetWorkspace/);
+  assert.match(customizationCss, /\.workspace-banner-surface\.banner-none/);
+
+  const bannerHeaderRule = cssRuleBody(customizationCss, ".app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header");
+  assert.match(bannerHeaderRule, /border-bottom:\s*1px\s+solid\s+var\(--ui-border\)/);
+  assert.doesNotMatch(bannerHeaderRule, /height:\s*(?:[6-9]\d|\d{3,})px/);
+  assert.match(customizationCss, /\.professional-appearance-surface/);
+  assert.match(customizationCss, /\.workspace-banner-position-control/);
+
+  assert.match(foundationCss, /--workspace-ui-font:\s*var\(--workspace-font-family/);
+  assert.doesNotMatch(foundationCss, /--workspace-font-size:/, "the professional layer must not override the user's text-size preference");
+  assert.doesNotMatch(desktopSettingsSource, /from\s+["']lucide-react["']/);
+  assert.match(desktopSettingsSource, /from\s+["']@fluentui\/react-icons["']/);
 });
 
 async function readRenderer(relativePath: string): Promise<string> {

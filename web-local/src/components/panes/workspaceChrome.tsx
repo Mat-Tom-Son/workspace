@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   ArrowClockwise20Regular,
+  ArrowReset20Regular,
   BookToolbox20Filled,
   BookToolbox20Regular,
   ChatMultiple20Filled,
   ChatMultiple20Regular,
   Checkmark20Regular,
   ChevronRight20Regular,
+  Color20Regular,
   Dismiss20Regular,
   DocumentFolder20Filled,
   DocumentFolder20Regular,
-  Folder20Filled,
   History20Filled,
   History20Regular,
   ImageAdd20Regular,
@@ -27,13 +28,13 @@ import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspac
 import { workspaceBannerOptions } from "../../constants";
 import { errorText } from "../../lib/api";
 import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
-import type { WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
+import type { WorkspaceCustomization, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
 import { WorkspaceIconGlyph } from "../chrome/common";
 
 function WorkspaceModeRail({
   activeMode,
   workspace,
-  workspaceIdentity: _workspaceIdentity,
+  workspaceIdentity,
   onModeChange,
   accountControl,
   onOpenKeyboardShortcuts,
@@ -74,7 +75,7 @@ function WorkspaceModeRail({
           aria-current={activeMode === "workspaces" ? "page" : undefined}
           title={`Select or manage Space: ${workspaceLabel}`}
         >
-          <span className="workspace-rail-icon workspace-rail-space-avatar" aria-hidden="true"><Folder20Filled /></span>
+          <span className="workspace-rail-icon workspace-rail-space-avatar" aria-hidden="true" data-space-icon={workspaceIdentity.iconName} style={workspaceIdentityStyle(workspaceIdentity)}><WorkspaceIconGlyph icon={workspaceIdentity.Icon} size={18} filled /></span>
           <span className="workspace-rail-space-copy"><span>Space</span><strong>{workspaceLabel}</strong></span>
           <ChevronRight20Regular className="workspace-rail-space-caret" aria-hidden="true" />
         </button>
@@ -131,26 +132,44 @@ function WorkspacePaneHeader({
   title,
   detail,
   action,
+  identity,
+  onCustomize,
 }: {
   title: string;
   detail?: string;
   action?: ReactNode;
+  identity?: WorkspaceIdentity;
+  onCustomize?: () => void;
 }) {
   const headerClassName = [
     "workspace-pane-current",
     "workspace-pane-header",
     "professional-pane-header",
-    action ? "has-action" : "",
+    identity ? "workspace-banner-surface space-identity-header" : "",
+    identity ? `banner-${identity.bannerName}` : "",
+    identity?.bannerImage ? "has-banner-image" : "",
+    action || onCustomize ? "has-action" : "",
   ].filter(Boolean).join(" ");
 
   return (
     <div className="workspace-pane-header-wrap">
-      <div className={headerClassName}>
+      <div className={headerClassName} style={identity ? workspaceIdentityStyle(identity) : undefined}>
+        {identity?.bannerImage ? (
+          <span className="workspace-pane-banner-image" aria-hidden="true">
+            <img src={identity.bannerImage} alt="" draggable={false} style={{ objectPosition: `center ${identity.bannerImagePosition}` }} />
+            <span className="workspace-pane-banner-scrim" />
+          </span>
+        ) : null}
         <span className="workspace-pane-page-copy">
           <strong className="workspace-pane-page-title">{title}</strong>
           {detail ? <span className="workspace-pane-page-detail">{detail}</span> : null}
         </span>
-        {action ? <span className="workspace-pane-header-action professional-header-action">{action}</span> : null}
+        {action || onCustomize ? (
+          <span className="workspace-pane-header-action professional-header-action workspace-pane-action-group">
+            {onCustomize ? <button className="minimal-icon-button" type="button" onClick={onCustomize} aria-label="Customize Space" title="Customize Space"><Color20Regular /></button> : null}
+            {action}
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -242,23 +261,37 @@ function WorkspaceRenameEditor({
   );
 }
 
+const recommendedWorkspaceIconNames = new Set(["folder", "home", "briefcase", "files", "messages", "notebook", "calendar", "target", "people-team", "airplane", "star", "rocket"]);
+
 function WorkspaceAppearancePanel({
-  workspaceId,
+  workspace,
   identity,
+  customization,
   onCustomizeWorkspace,
+  onResetWorkspace,
 }: {
-  workspaceId: string;
+  workspace: WorkspaceSummary;
   identity: WorkspaceIdentity;
+  customization?: WorkspaceCustomization;
   onCustomizeWorkspace: (workspaceId: string, patch: WorkspaceCustomizationPatch) => void;
+  onResetWorkspace: (workspaceId: string) => void;
 }) {
   const [iconSearchQuery, setIconSearchQuery] = useState("");
+  const [showAllIcons, setShowAllIcons] = useState(false);
   const [bannerUploadBusy, setBannerUploadBusy] = useState(false);
   const [bannerUploadError, setBannerUploadError] = useState<string | null>(null);
   const bannerFileInputRef = useRef<HTMLInputElement>(null);
-  const filteredWorkspaceIconOptions = useMemo(() => filterWorkspaceIconOptions(iconSearchQuery), [iconSearchQuery]);
+  const workspaceId = workspace.id;
+  const filteredWorkspaceIconOptions = useMemo(() => {
+    const matches = filterWorkspaceIconOptions(iconSearchQuery);
+    if (iconSearchQuery.trim() || showAllIcons) return matches;
+    return matches.filter((option) => recommendedWorkspaceIconNames.has(option.name));
+  }, [iconSearchQuery, showAllIcons]);
+  const customized = Boolean(customization && Object.values(customization).some((value) => value !== undefined && value !== null && value !== ""));
 
   useEffect(() => {
     setIconSearchQuery("");
+    setShowAllIcons(false);
     setBannerUploadBusy(false);
     setBannerUploadError(null);
   }, [workspaceId]);
@@ -281,8 +314,24 @@ function WorkspaceAppearancePanel({
 
   return (
     <div className="workspace-appearance-inner">
+      <div className="workspace-appearance-toolbar">
+        <div>
+          <strong>Space appearance</strong>
+          <span>Saved on this computer and applied anywhere this Space appears.</span>
+        </div>
+        <button className="workspace-appearance-reset" type="button" disabled={!customized} onClick={() => onResetWorkspace(workspaceId)}>
+          <ArrowReset20Regular />
+          Reset
+        </button>
+      </div>
+      <div className={["workspace-appearance-preview", "workspace-banner-surface", `banner-${identity.bannerName}`, identity.bannerImage ? "has-banner-image" : ""].filter(Boolean).join(" ")} style={workspaceIdentityStyle(identity)} aria-label="Live Space banner preview">
+        {identity.bannerImage ? <span className="workspace-appearance-preview-image" aria-hidden="true"><img src={identity.bannerImage} alt="" draggable={false} style={{ objectPosition: `center ${identity.bannerImagePosition}` }} /><span /></span> : null}
+        <span className="workspace-appearance-preview-icon" aria-hidden="true" data-space-icon={identity.iconName}><WorkspaceIconGlyph icon={identity.Icon} size={20} filled /></span>
+        <span className="workspace-appearance-preview-copy"><strong>Files</strong><small>{workspace.name} · Linked folder</small></span>
+        <span className="workspace-appearance-preview-label">Live preview</span>
+      </div>
       <div className="workspace-appearance-row colors">
-        <span className="workspace-appearance-label">Color</span>
+        <span className="workspace-appearance-label"><strong>Accent</strong><small>Identify this Space without recoloring the app.</small></span>
         <div className="workspace-color-controls">
           <div className="workspace-color-swatches" role="group" aria-label="Space color presets">
             {workspaceColorOptions.map((option) => (
@@ -344,7 +393,7 @@ function WorkspaceAppearancePanel({
         </div>
       </div>
       <div className="workspace-appearance-row banners">
-        <span className="workspace-appearance-label">Banner</span>
+        <span className="workspace-appearance-label"><strong>Banner</strong><small>Choose a restrained pattern or your own image.</small></span>
         <div className="workspace-banner-picker" style={workspaceIdentityStyle(identity)}>
           <div className="workspace-banner-gallery" role="group" aria-label="Space banner styles">
             {workspaceBannerOptions.map((option) => {
@@ -394,24 +443,30 @@ function WorkspaceAppearancePanel({
             aria-hidden="true"
           />
           {identity.bannerImage ? (
-            <button
-              className="workspace-banner-remove"
-              type="button"
-              onClick={() => {
-                setBannerUploadError(null);
-                onCustomizeWorkspace(workspaceId, { bannerImage: undefined });
-              }}
-              disabled={bannerUploadBusy}
-            >
-              <Dismiss20Regular />
-              Remove custom image
-            </button>
+            <div className="workspace-banner-image-controls">
+              <span>Image position</span>
+              <div className="workspace-banner-position-control" role="radiogroup" aria-label="Banner image position">
+                {(["top", "center", "bottom"] as const).map((position) => <button className={identity.bannerImagePosition === position ? "active" : ""} type="button" role="radio" aria-checked={identity.bannerImagePosition === position} key={position} onClick={() => onCustomizeWorkspace(workspaceId, { bannerImagePosition: position })}>{position[0]!.toUpperCase() + position.slice(1)}</button>)}
+              </div>
+              <button
+                className="workspace-banner-remove"
+                type="button"
+                onClick={() => {
+                  setBannerUploadError(null);
+                  onCustomizeWorkspace(workspaceId, { bannerImage: undefined, bannerImagePosition: undefined });
+                }}
+                disabled={bannerUploadBusy}
+              >
+                <Dismiss20Regular />
+                Remove image
+              </button>
+            </div>
           ) : null}
           {bannerUploadError ? <span className="workspace-banner-upload-error">{bannerUploadError}</span> : null}
         </div>
       </div>
       <div className="workspace-appearance-row icons">
-        <span className="workspace-appearance-label">Icon</span>
+        <span className="workspace-appearance-label"><strong>Icon</strong><small>Shown in the Space selector and tabs.</small></span>
         <div className="workspace-icon-picker">
           <label className="workspace-icon-search">
             <Search20Regular aria-hidden="true" />
@@ -433,6 +488,7 @@ function WorkspaceAppearancePanel({
                   type="button"
                   onClick={() => onCustomizeWorkspace(workspaceId, { iconName: option.name })}
                   aria-label={`Use ${option.label} icon`}
+                  aria-pressed={identity.iconName === option.name}
                   title={option.label}
                 >
                   <WorkspaceIconGlyph icon={Icon} size={18} filled={identity.iconName === option.name} />
@@ -443,6 +499,7 @@ function WorkspaceAppearancePanel({
           <span className="workspace-icon-result-count">
             {filteredWorkspaceIconOptions.length ? `${filteredWorkspaceIconOptions.length} icons` : "No icons found"}
           </span>
+          {!iconSearchQuery.trim() ? <button className="workspace-icon-browse" type="button" onClick={() => setShowAllIcons((current) => !current)}>{showAllIcons ? "Show recommended" : `Browse all ${workspaceIconOptions.length}`}</button> : null}
         </div>
       </div>
     </div>

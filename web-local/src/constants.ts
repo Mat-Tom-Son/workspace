@@ -59,6 +59,7 @@ export const defaultWorkspaceBannerName = "classic";
 export const maxWorkspaceBannerImageDataUrlLength = 700_000;
 export const maxWorkspaceBannerImageFileBytes = 12 * 1024 * 1024;
 export const workspaceBannerOptions: WorkspaceBannerOption[] = [
+  { name: "none", label: "None" },
   { name: "classic", label: "Classic" },
   { name: "mist", label: "Mist" },
   { name: "horizon", label: "Horizon" },

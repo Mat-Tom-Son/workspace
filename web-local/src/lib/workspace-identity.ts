@@ -1,7 +1,8 @@
 import type { CSSProperties } from "react";
-import { maxWorkspaceBannerImageDataUrlLength, maxWorkspaceBannerImageFileBytes, workspaceBannerOptions } from "../constants";
+import { maxWorkspaceBannerImageDataUrlLength, maxWorkspaceBannerImageFileBytes } from "../constants";
 import { workspaceIconOptionFor, type WorkspaceIconOption } from "../workspace-icons";
-import type { WorkspaceBannerOption, WorkspaceColorOption, WorkspaceCustomizationMap, WorkspaceSummary } from "../types";
+import type { WorkspaceBannerImagePosition, WorkspaceColorOption, WorkspaceCustomizationMap, WorkspaceSummary } from "../types";
+import { normalizeWorkspaceBannerImage, normalizeWorkspaceBannerImagePosition, workspaceBannerOptionFor } from "./workspace-customization";
 
 export const workspaceColorOptions: WorkspaceColorOption[] = [
   workspaceColor("Slate", "#60646c"),
@@ -17,11 +18,6 @@ export const workspaceColorOptions: WorkspaceColorOption[] = [
   workspaceColor("Pink", "#c2298a"),
   workspaceColor("Brown", "#815e46"),
 ];
-
-export function workspaceBannerOptionFor(bannerName: string | null | undefined): WorkspaceBannerOption {
-  const normalized = bannerName?.trim().toLowerCase();
-  return workspaceBannerOptions.find((option) => option.name === normalized) ?? workspaceBannerOptions[0];
-}
 
 export function defaultWorkspaceColor(workspaceId: string): WorkspaceColorOption {
   let hash = 0;
@@ -73,13 +69,6 @@ export function readableTextColorOn(color: string): string {
   return luminance > 0.42 ? "#182846" : "#ffffff";
 }
 
-export function normalizeWorkspaceBannerImage(value: string | null | undefined): string | null {
-  if (typeof value !== "string") return null;
-  if (!value.startsWith("data:image/")) return null;
-  if (value.length > maxWorkspaceBannerImageDataUrlLength) return null;
-  return value;
-}
-
 interface WorkspaceIdentity {
   color: string;
   softColor: string;
@@ -91,6 +80,7 @@ interface WorkspaceIdentity {
   onAccentColor: string;
   bannerName: string;
   bannerImage: string | null;
+  bannerImagePosition: WorkspaceBannerImagePosition;
   iconName: string;
   iconLabel: string;
   Icon: WorkspaceIconOption["Icon"];
@@ -115,6 +105,7 @@ function workspaceIdentityFor(workspace: WorkspaceSummary, customizations: Works
     onAccentColor: readableTextColorOn(blendHexColors(colorOption.color, secondaryColor)),
     bannerName: workspaceBannerOptionFor(custom.bannerName).name,
     bannerImage,
+    bannerImagePosition: normalizeWorkspaceBannerImagePosition(custom.bannerImagePosition),
     iconName: iconOption.name,
     iconLabel: iconOption.label,
     Icon: iconOption.Icon,

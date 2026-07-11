@@ -5,6 +5,7 @@ import "./styles.css";
 import "./professional-foundation.css";
 import "./professional-shell.css";
 import "./professional-surfaces.css";
+import "./professional-customization.css";
 import { App } from "./App";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowSync16Regular } from "@fluentui/react-icons";
-import { AlertTriangle, CirclePlus, Download, FilePlus2, FolderOpen, FolderPlus, History, Loader2, Palette, Search, Settings2, Upload, X } from "lucide-react";
+import { ArrowSync16Regular, Color20Regular } from "@fluentui/react-icons";
+import { AlertTriangle, CirclePlus, Download, FilePlus2, FolderOpen, FolderPlus, History, Loader2, Search, Settings2, Upload, X } from "lucide-react";
 
 import { defaultTypographyPreference, productName, textSizeValues, themePreferenceKey, typographyFontValues, typographyPreferenceKey, workspaceCustomizationStorageKey, workspacePathDragType } from "./constants";
 import { ChatPanel } from "./components/chat/ChatPanel";
@@ -28,12 +28,15 @@ import { hasNativeFiles, hasWorkspacePathDrag } from "./lib/file-actions";
 import { formatItemCount } from "./lib/format";
 import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
 import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry, removeTreeEntries } from "./lib/tree";
+import { normalizeWorkspaceCustomizations } from "./lib/workspace-customization";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "./lib/workspace-identity";
 import { removeWorkspaceConfirmText, surfacePanelDomId, surfaceTabDomId, workspaceHeaderSourceBadgeLabel } from "./lib/workspace-ui";
 import type { AppTheme, AppThemePreference, AppTypographyFont, AppTypographyPreference, BootstrapResponse, ChatContextPathRequest, ChatRenameState, ConversationSummary, DesktopUpdateStatus, FileContextMenuState, TreeEntry, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspacePane, WorkspaceRailMode, WorkspaceSummary } from "./types";
 import { ConfirmDialogHost, requestConfirm, showToast, ToastHost } from "./ui/feedback";
+import { workspaceIconOptions } from "./workspace-icons";
 
 const fixtureRequested = new URLSearchParams(window.location.search).get("fixture") === "workspace";
+const supportedWorkspaceIconNames = new Set(workspaceIconOptions.flatMap((option) => [option.name, ...(option.aliases ?? [])]));
 
 interface DroppedUploadFile { file: File; relativePath: string }
 interface PendingDelete {
@@ -201,7 +204,10 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   onError: (message: string | null) => void;
 }) {
   const [activeMode, setActiveMode] = useState<WorkspaceRailMode>(() => fixture ? "files" : normalizeMode(localStorage.getItem("workspace.mode")));
-  const [customizations, setCustomizations] = useState<WorkspaceCustomizationMap>(() => fixture ? {} : readStoredJsonValue(workspaceCustomizationStorageKey, normalizeCustomizations, {}));
+  const [customizations, setCustomizations] = useState<WorkspaceCustomizationMap>(() => fixture ? fixture.customizations : readStoredJsonValue(workspaceCustomizationStorageKey, (value) => normalizeWorkspaceCustomizations(value, undefined, supportedWorkspaceIconNames), {}));
+  const customizationsRef = useRef(customizations);
+  const appearanceStorageWarningShownRef = useRef(false);
+  customizationsRef.current = customizations;
   const [conversationGroups, setConversationGroups] = useState<Record<string, ConversationSummary[]>>(() => fixture ? fixtureConversationGroups(fixture) : {});
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const [chatRename, setChatRename] = useState<ChatRenameState | null>(null);
@@ -240,6 +246,10 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
 
   useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
   useEffect(() => { setActiveMode((current) => current === "workspaces" ? "files" : current); }, [workspace.id]);
+  useEffect(() => {
+    const next = normalizeWorkspaceCustomizations(customizationsRef.current, new Set(workspaces.map((item) => item.id)), supportedWorkspaceIconNames);
+    if (JSON.stringify(next) !== JSON.stringify(customizationsRef.current)) persistWorkspaceCustomizations(next);
+  }, [workspaces.map((item) => item.id).join("|")]);
   useEffect(() => { if (fixture) { setConversationGroups(fixtureConversationGroups(fixture)); return; } void loadConversationGroups(); }, [fixture, workspaces.map((item) => item.id).join("|")]);
   useEffect(() => { tabs.syncSurfaceTabConversationTitles(conversationGroups); }, [conversationGroups]);
   useEffect(() => {
@@ -288,8 +298,28 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     setConversationGroups(Object.fromEntries(pairs));
   }
 
+  function persistWorkspaceCustomizations(next: WorkspaceCustomizationMap) {
+    customizationsRef.current = next;
+    setCustomizations(next);
+    if (fixture || writeStoredJsonValue(workspaceCustomizationStorageKey, next) || appearanceStorageWarningShownRef.current) return;
+    appearanceStorageWarningShownRef.current = true;
+    showToast({ text: "This appearance change works for this session, but Workspace could not save it on this computer.", tone: "info" });
+  }
+
   function customizeWorkspace(workspaceId: string, patch: WorkspaceCustomizationPatch) {
-    setCustomizations((current) => { const next = { ...current, [workspaceId]: { ...(current[workspaceId] ?? {}), ...patch } }; if (!fixture) writeStoredJsonValue(workspaceCustomizationStorageKey, next); return next; });
+    const next = normalizeWorkspaceCustomizations(
+      { ...customizationsRef.current, [workspaceId]: { ...(customizationsRef.current[workspaceId] ?? {}), ...patch } },
+      new Set(workspaces.map((item) => item.id)),
+      supportedWorkspaceIconNames,
+    );
+    persistWorkspaceCustomizations(next);
+  }
+
+  function resetWorkspaceCustomization(workspaceId: string) {
+    const next = { ...customizationsRef.current };
+    delete next[workspaceId];
+    persistWorkspaceCustomizations(next);
+    showToast({ text: "Space appearance reset to defaults.", tone: "success" });
   }
 
   async function renameSpace(target: WorkspaceSummary, name: string) {
@@ -304,6 +334,9 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     if (!confirmed) return;
     try {
       await api(`/api/workspaces/${target.id}`, { method: "DELETE" });
+      const nextCustomizations = { ...customizationsRef.current };
+      delete nextCustomizations[target.id];
+      persistWorkspaceCustomizations(nextCustomizations);
       tabs.removeWorkspaceSurfaceTabs(target.id);
       await onRefreshBootstrap();
       showToast({ text: target.location.storage === "linked" ? `${target.name} removed. The folder and its files remain on your computer.` : `${target.name} and its managed folder were deleted.`, tone: "success" });
@@ -513,13 +546,14 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   ], [conversationGroups, fixture, themePreference, tree.selectedPath, tree.tree, workspaces, workspace.id]);
 
   const paneTitle = activeMode === "workspaces" ? "Spaces" : activeMode[0]!.toUpperCase() + activeMode.slice(1);
-  const paneDetail = activeMode === "files" ? `${workspace.name} · ${workspaceHeaderSourceBadgeLabel(workspace)}` : activeMode === "library" ? "Reusable files for every Space" : activeMode === "history" ? "Restore points and recent activity" : activeMode === "setup" || activeMode === "skills" || activeMode === "extensions" ? "Assistant" : `${workspace.name}`;
+  const paneDetail = activeMode === "files" ? `${workspace.name} · ${workspaceHeaderSourceBadgeLabel(workspace)}` : activeMode === "library" ? "Reusable files for every Space" : activeMode === "history" ? `${workspace.name} · Restore points and recent activity` : activeMode === "setup" || activeMode === "skills" || activeMode === "extensions" ? "Assistant" : `${workspace.name}`;
+  const headerUsesSpaceIdentity = activeMode === "files" || activeMode === "history";
   const layoutStyle = { ...(workspaceIdentityStyle(identity)), ...(paneResize.sidebarWidth ? { "--workspace-sidebar-width": `${paneResize.sidebarWidth}px` } : {}) } as CSSProperties;
 
   return <main className={paneResize.sidebarResizing ? "workspace-layout resizing" : "workspace-layout"} ref={paneResize.workspaceLayoutRef} style={layoutStyle}>
     <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings"><Settings2 size={18} /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
     <section className={`workspace-mode-pane workspace-mode-pane-${activeMode} ${activeMode === "files" ? "file-panel local-files-panel" : ""}`} id="workspace-file-panel">
-      <WorkspacePaneHeader title={paneTitle} detail={paneDetail} action={activeMode === "files" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><ArrowSync16Regular className={tree.status === "refreshing" ? "spin" : undefined} /></button> : undefined} />
+      <WorkspacePaneHeader title={paneTitle} detail={paneDetail} identity={headerUsesSpaceIdentity ? identity : undefined} onCustomize={headerUsesSpaceIdentity ? () => tabs.openAppearanceSurfaceTab(workspace) : undefined} action={activeMode === "files" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><ArrowSync16Regular className={tree.status === "refreshing" ? "spin" : undefined} /></button> : undefined} />
       {activeMode === "workspaces" ? <SpacesPane workspace={workspace} workspaces={workspaces} identities={customizations} onSwitch={onSwitchWorkspace} onCreate={onCreateSpace} onOpenFolder={onOpenFolder} onCustomize={(target) => tabs.openAppearanceSurfaceTab(target)} onRename={renameSpace} onRemove={(target) => void removeSpace(target)} /> : null}
       {activeMode === "files" ? <>
         <input
@@ -581,7 +615,31 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     <button className="workspace-resizer" type="button" role="separator" aria-label="Resize the navigation pane and work area" aria-controls="workspace-file-panel workspace-chat-panel" aria-orientation="vertical" aria-valuemin={Math.round(paneResize.sidebarResizeBounds.min)} aria-valuemax={Math.round(paneResize.sidebarResizeBounds.max)} aria-valuenow={paneResize.sidebarResizeValue} title="Resize panes" onPointerDown={paneResize.startSidebarResize} onDoubleClick={paneResize.resetWorkspaceSidebarWidth} onKeyDown={paneResize.handleSidebarResizeKeyDown}><span className="sr-only">Resize panes</span></button>
     <aside className="right-rail" id="workspace-chat-panel">
       <WorkspaceSurfaceTabBar tabs={tabs.surfaceTabs} workspaces={workspaces} workspaceCustomizations={customizations} activeTabId={tabs.activeSurfaceTabId} newChatWorkspaceId={workspace.id} newChatWorkspaceName={workspace.name} onActivate={tabs.setActiveSurfaceTabId} onClose={tabs.closeSurfaceTab} onNewChat={() => openChat(workspace, null)} onNewChatInWorkspace={(target) => openChat(target, null)} onRenameChat={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} />
-      {tabs.surfaceTabs.length ? tabs.surfaceTabs.map((tab) => { const targetWorkspace = workspaces.find((item) => item.id === tab.workspaceId); if (!targetWorkspace) return null; const active = tab.id === tabs.activeSurfaceTabId; const targetIdentity = workspaceIdentityFor(targetWorkspace, customizations); return <div className="workspace-surface-body" role="tabpanel" id={surfacePanelDomId(tab.id)} aria-labelledby={surfaceTabDomId(tab.id)} hidden={!active} key={tab.id} style={workspaceIdentityStyle(targetIdentity)}>{tab.kind === "file" && tab.path ? <FileDetailsPane workspace={targetWorkspace} path={tab.path} entry={targetWorkspace.id === workspace.id ? findTreeEntry(tree.tree, tab.path) : null} fixtureMode={Boolean(fixture)} onOpenLocal={(path, action) => openLocalPath(path, action, targetWorkspace)} onAddToChatContext={attachToChat} onShowVersionHistory={(path) => openVersionHistory(targetWorkspace, path)} onRename={targetWorkspace.id === workspace.id ? renameEntry : undefined} /> : tab.kind === "appearance" ? <div className="workspace-appearance-surface"><div className="workspace-appearance-surface-heading"><span className="workspace-appearance-surface-icon"><Palette size={18} /></span><h2>Customize {targetWorkspace.name}</h2></div><WorkspaceAppearancePanel workspaceId={targetWorkspace.id} identity={targetIdentity} onCustomizeWorkspace={customizeWorkspace} /></div> : tab.kind === "history" ? <div className="workspace-surface-empty"><History size={30} /><h2>{tab.title}</h2><p>Open History in the left pane to inspect or restore this point.</p><button className="secondary-button" type="button" onClick={() => { onSwitchWorkspace(targetWorkspace); setActiveMode("history"); }}>Open History</button></div> : <ChatPanel workspace={targetWorkspace} workspaceCustomizations={customizations} active={active} targetConversationId={tab.conversationId ?? null} targetConversationTitle={tab.conversationId ? tab.title : null} contextPathRequest={active && targetWorkspace.id === workspace.id ? contextRequest : null} onAddPathToChatContext={active && targetWorkspace.id === workspace.id ? attachToChat : undefined} onOpenWorkspaceFile={active && targetWorkspace.id === workspace.id ? (path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); } : undefined} selectedPath={active && targetWorkspace.id === workspace.id ? tree.selectedPath : null} onConversationActivated={(conversation) => tabs.handleTabConversationActivated(tab.id, targetWorkspace, conversation)} onConversationsChanged={(conversations) => setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: conversations }))} onAgentFinished={() => targetWorkspace.id === workspace.id ? tree.refresh() : undefined} fixtureMode={Boolean(fixture)} fixtureConversations={fixture ? (tab.conversationId || tab.id === `chat:${targetWorkspace.id}:new` ? fixture.conversations[targetWorkspace.id] : []) : undefined} fixtureTreeEntries={fixture?.trees[targetWorkspace.id]} />}</div>; }) : <WorkspaceSurfaceEmptyState workspace={workspace} identity={identity} onNewChat={() => openChat(workspace, null)} />}
+      {tabs.surfaceTabs.length ? tabs.surfaceTabs.map((tab) => {
+        const targetWorkspace = workspaces.find((item) => item.id === tab.workspaceId);
+        if (!targetWorkspace) return null;
+        const active = tab.id === tabs.activeSurfaceTabId;
+        const targetIdentity = workspaceIdentityFor(targetWorkspace, customizations);
+        return (
+          <div className="workspace-surface-body" role="tabpanel" id={surfacePanelDomId(tab.id)} aria-labelledby={surfaceTabDomId(tab.id)} hidden={!active} key={tab.id} style={workspaceIdentityStyle(targetIdentity)}>
+            {tab.kind === "file" && tab.path ? (
+              <FileDetailsPane workspace={targetWorkspace} path={tab.path} entry={targetWorkspace.id === workspace.id ? findTreeEntry(tree.tree, tab.path) : null} fixtureMode={Boolean(fixture)} onOpenLocal={(path, action) => openLocalPath(path, action, targetWorkspace)} onAddToChatContext={attachToChat} onShowVersionHistory={(path) => openVersionHistory(targetWorkspace, path)} onRename={targetWorkspace.id === workspace.id ? renameEntry : undefined} />
+            ) : tab.kind === "appearance" ? (
+              <div className="workspace-appearance-surface professional-appearance-surface">
+                <div className="workspace-appearance-surface-heading">
+                  <span className="workspace-appearance-surface-icon" aria-hidden="true"><Color20Regular /></span>
+                  <div><h2>Customize {targetWorkspace.name}</h2><p>Give this Space a recognizable identity without changing the rest of Workspace.</p></div>
+                </div>
+                <WorkspaceAppearancePanel workspace={targetWorkspace} identity={targetIdentity} customization={customizations[targetWorkspace.id]} onCustomizeWorkspace={customizeWorkspace} onResetWorkspace={resetWorkspaceCustomization} />
+              </div>
+            ) : tab.kind === "history" ? (
+              <div className="workspace-surface-empty"><History size={30} /><h2>{tab.title}</h2><p>Open History in the left pane to inspect or restore this point.</p><button className="secondary-button" type="button" onClick={() => { onSwitchWorkspace(targetWorkspace); setActiveMode("history"); }}>Open History</button></div>
+            ) : (
+              <ChatPanel workspace={targetWorkspace} workspaceCustomizations={customizations} active={active} targetConversationId={tab.conversationId ?? null} targetConversationTitle={tab.conversationId ? tab.title : null} contextPathRequest={active && targetWorkspace.id === workspace.id ? contextRequest : null} onAddPathToChatContext={active && targetWorkspace.id === workspace.id ? attachToChat : undefined} onOpenWorkspaceFile={active && targetWorkspace.id === workspace.id ? (path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); } : undefined} selectedPath={active && targetWorkspace.id === workspace.id ? tree.selectedPath : null} onConversationActivated={(conversation) => tabs.handleTabConversationActivated(tab.id, targetWorkspace, conversation)} onConversationsChanged={(conversations) => setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: conversations }))} onAgentFinished={() => targetWorkspace.id === workspace.id ? tree.refresh() : undefined} fixtureMode={Boolean(fixture)} fixtureConversations={fixture ? (tab.conversationId || tab.id === `chat:${targetWorkspace.id}:new` ? fixture.conversations[targetWorkspace.id] : []) : undefined} fixtureTreeEntries={fixture?.trees[targetWorkspace.id]} />
+            )}
+          </div>
+        );
+      }) : <WorkspaceSurfaceEmptyState workspace={workspace} identity={identity} onNewChat={() => openChat(workspace, null)} />}
     </aside>
     {fileContextMenu ? <FileContextMenu state={fileContextMenu} onSelect={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onOpenLocal={openLocalPath} onAddToChatContext={attachToChat} onCopyPath={copyPath} onShowVersionHistory={(path) => openVersionHistory(workspace, path)} onRename={fileContextMenu.entry.path ? renameEntry : undefined} onNewFolder={createFolder} onNewFile={createFile} onUploadHere={chooseUpload} onDelete={deleteEntry} onClose={() => setFileContextMenu(null)} /> : null}
     {chatRename ? <ChatRenamePopover state={chatRename} onRename={renameChat} onClose={() => setChatRename(null)} /> : null}
@@ -695,8 +753,6 @@ function normalizeMode(value: string | null): WorkspaceRailMode {
   if (value === "space" || value === "workspaces") return "files";
   return (["files", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "files";
 }
-function normalizeCustomizations(value: unknown): WorkspaceCustomizationMap { return value && typeof value === "object" && !Array.isArray(value) ? value as WorkspaceCustomizationMap : {}; }
-
 function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {
   const [preference, setPreference] = useState<AppThemePreference>(() => { if (fixtureRequested) return "light"; const value = readStoredValue(themePreferenceKey); return value === "light" || value === "dark" || value === "system" ? value : "system"; });
   const [system, setSystem] = useState<AppTheme>(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
@@ -775,8 +831,17 @@ function useDesktopAccentColor() {
     if (!desktopWindow) return;
     let cancelled = false;
     const apply = (color: string | null) => {
-      if (!color) document.documentElement.style.removeProperty("--workspace-accent");
-      else if (/^#[0-9a-f]{6}$/i.test(color)) document.documentElement.style.setProperty("--workspace-accent", color);
+      if (!color) {
+        document.documentElement.style.removeProperty("--workspace-accent");
+        document.documentElement.style.removeProperty("--ui-accent");
+        document.documentElement.style.removeProperty("--ui-accent-hover");
+        document.documentElement.style.removeProperty("--ui-accent-soft");
+      } else if (/^#[0-9a-f]{6}$/i.test(color)) {
+        document.documentElement.style.setProperty("--workspace-accent", color);
+        document.documentElement.style.setProperty("--ui-accent", color);
+        document.documentElement.style.setProperty("--ui-accent-hover", `color-mix(in srgb, ${color} 86%, black)`);
+        document.documentElement.style.setProperty("--ui-accent-soft", `color-mix(in srgb, ${color} 12%, transparent)`);
+      }
     };
     void desktopWindow.getAccentColor().then((color) => { if (!cancelled) apply(color); }).catch(() => {});
     const unsubscribe = desktopWindow.onAccentColorChanged(apply);

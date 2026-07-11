@@ -1,7 +1,5 @@
 :root {
-  --workspace-ui-font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --workspace-font-family-default: var(--workspace-ui-font);
-  --workspace-font-size: 14px;
+  --workspace-ui-font: var(--workspace-font-family, "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif);
   --workspace-font-weight-heavy: 700;
   --ui-canvas: #f5f6f8;
   --ui-surface: #ffffff;
@@ -49,6 +47,7 @@ body {
   color: var(--ui-text);
   background: var(--ui-canvas);
   font-family: var(--workspace-ui-font);
+  font-size: var(--workspace-font-size);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }

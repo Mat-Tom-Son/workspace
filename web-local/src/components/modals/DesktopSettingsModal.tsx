@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Info, Laptop, Loader2, Minimize2, MonitorCog, Moon, Palette, Power, RefreshCw, Settings2, Sun, X } from "lucide-react";
+import {
+  ArrowClockwise20Regular,
+  Color20Regular,
+  Desktop20Regular,
+  Dismiss20Regular,
+  Info20Regular,
+  Laptop20Regular,
+  Power20Regular,
+  Settings20Regular,
+  Subtract20Regular,
+  WeatherMoon20Regular,
+  WeatherSunny20Regular,
+} from "@fluentui/react-icons";
 import { textSizeOptions, typographyFontOptions } from "../../constants";
 import { useEscapeKeyDismiss } from "../../hooks/useEscapeKeyDismiss";
 import { errorText } from "../../lib/api";
@@ -53,9 +65,9 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
   }
 
   const tabs: Array<{ id: SettingsPage; label: string; detail: string; icon: ReactNode }> = [
-    { id: "appearance", label: "Appearance", detail: "Theme and type", icon: <Palette size={15} /> },
-    { id: "desktop", label: "Desktop", detail: "Window and updates", icon: <MonitorCog size={15} /> },
-    { id: "about", label: "About", detail: "Workspace details", icon: <Info size={15} /> },
+    { id: "appearance", label: "Appearance", detail: "Theme and type", icon: <Color20Regular /> },
+    { id: "desktop", label: "Desktop", detail: "Window and updates", icon: <Desktop20Regular /> },
+    { id: "about", label: "About", detail: "Workspace details", icon: <Info20Regular /> },
   ];
 
   return (
@@ -63,10 +75,10 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
       <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title settings-title">
           <div className="settings-title-copy">
-            <span className="settings-title-mark" aria-hidden="true"><Settings2 size={18} /></span>
+            <span className="settings-title-mark" aria-hidden="true"><Settings20Regular /></span>
             <div><h2 id="settings-title">Settings</h2></div>
           </div>
-          <button ref={closeRef} className="minimal-icon-button" type="button" onClick={onClose} aria-label="Close settings"><X size={16} /></button>
+          <button ref={closeRef} className="minimal-icon-button" type="button" onClick={onClose} aria-label="Close settings"><Dismiss20Regular /></button>
         </div>
         <div className="settings-form">
           <div className="settings-tabs" role="tablist" aria-label="Settings sections">
@@ -94,13 +106,13 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
                     <div className="settings-section-heading"><h3 id="appearance-theme-title">Theme</h3></div>
                     <div className="theme-segmented-control" role="radiogroup" aria-label="Color mode">
                       <button className={themePreference === "system" ? "active" : ""} type="button" role="radio" aria-checked={themePreference === "system"} aria-label={`Device setting, currently ${theme}`} onClick={() => onThemePreferenceChange("system")}>
-                        <Laptop size={15} /><span className="theme-choice-copy"><span>Device setting</span><small>Match Windows light or dark mode</small></span>
+                        <Laptop20Regular /><span className="theme-choice-copy"><span>Device setting</span><small>Match Windows light or dark mode</small></span>
                       </button>
                       <button className={themePreference === "light" ? "active" : ""} type="button" role="radio" aria-checked={themePreference === "light"} onClick={() => onThemePreferenceChange("light")}>
-                        <Sun size={15} /><span className="theme-choice-copy"><span>Light</span></span>
+                        <WeatherSunny20Regular /><span className="theme-choice-copy"><span>Light</span></span>
                       </button>
                       <button className={themePreference === "dark" ? "active" : ""} type="button" role="radio" aria-checked={themePreference === "dark"} onClick={() => onThemePreferenceChange("dark")}>
-                        <Moon size={15} /><span className="theme-choice-copy"><span>Dark</span></span>
+                        <WeatherMoon20Regular /><span className="theme-choice-copy"><span>Dark</span></span>
                       </button>
                     </div>
                   </section>
@@ -134,13 +146,13 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
               <div className="settings-tab-panel" id="settings-panel-desktop" role="tabpanel" aria-labelledby="settings-tab-desktop">
                 {closeToTray?.supported ? (
                   <section className="settings-section" aria-labelledby="window-close-settings-title">
-                    <div className="settings-section-heading"><h3 id="window-close-settings-title">Closing the window</h3>{closeToTrayBusy ? <span><Loader2 className="spin" size={13} /> Updating</span> : null}</div>
+                    <div className="settings-section-heading"><h3 id="window-close-settings-title">Closing the window</h3>{closeToTrayBusy ? <span><ArrowClockwise20Regular className="spin" /> Updating</span> : null}</div>
                     <div className="theme-segmented-control two-options" role="radiogroup" aria-label="Close button behavior">
                       <button className={closeToTray.enabled ? "active" : ""} type="button" role="radio" aria-checked={closeToTray.enabled} disabled={closeToTrayBusy} onClick={() => void updateCloseToTray(true)}>
-                        <Minimize2 size={15} /><span className="theme-choice-copy"><span>Keep Workspace running</span><small>Hide to the system tray so active work can continue</small></span>
+                        <Subtract20Regular /><span className="theme-choice-copy"><span>Keep Workspace running</span><small>Hide to the system tray so active work can continue</small></span>
                       </button>
                       <button className={!closeToTray.enabled ? "active" : ""} type="button" role="radio" aria-checked={!closeToTray.enabled} disabled={closeToTrayBusy} onClick={() => void updateCloseToTray(false)}>
-                        <Power size={15} /><span className="theme-choice-copy"><span>Quit Workspace</span><small>Stop the app when its window closes</small></span>
+                        <Power20Regular /><span className="theme-choice-copy"><span>Quit Workspace</span><small>Stop the app when its window closes</small></span>
                       </button>
                     </div>
                     {closeToTrayError ? <span className="settings-inline-error" role="alert">{closeToTrayError}</span> : null}
@@ -148,7 +160,7 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
                 ) : null}
                 <section className="settings-section update-settings-section" aria-labelledby="desktop-update-settings-title">
                   <div><div className="settings-section-heading"><h3 id="desktop-update-settings-title">Updates</h3></div><p>{updateStatus?.message ?? "Update status is available in the installed desktop app."}</p>{updateStatus?.error ? <span className="settings-inline-error" role="alert">{updateStatus.error}</span> : null}{updateStatus?.phase === "downloading" && updateStatus.progressPercent !== null ? <progress max={100} value={updateStatus.progressPercent}>{Math.round(updateStatus.progressPercent)}%</progress> : null}</div>
-                  {onUpdateAction && updateStatus?.supported ? <button className="secondary-button" type="button" disabled={updateStatus.phase === "checking" || updateStatus.phase === "downloading" || updateStatus.phase === "installing"} onClick={onUpdateAction}><RefreshCw className={updateStatus.phase === "checking" || updateStatus.phase === "downloading" ? "spin" : undefined} size={15} />{settingsUpdateActionLabel(updateStatus)}</button> : null}
+                  {onUpdateAction && updateStatus?.supported ? <button className="secondary-button" type="button" disabled={updateStatus.phase === "checking" || updateStatus.phase === "downloading" || updateStatus.phase === "installing"} onClick={onUpdateAction}><ArrowClockwise20Regular className={updateStatus.phase === "checking" || updateStatus.phase === "downloading" ? "spin" : undefined} />{settingsUpdateActionLabel(updateStatus)}</button> : null}
                 </section>
               </div>
             ) : null}
