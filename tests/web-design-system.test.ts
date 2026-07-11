@@ -6,6 +6,7 @@ import test from "node:test";
 const rendererRoot = join(process.cwd(), "web-local", "src");
 
 const [
+  appSource,
   workspaceChromeSource,
   workspacePanesSource,
   workspaceIdentitySource,
@@ -16,6 +17,7 @@ const [
   customizationCss,
   desktopSettingsSource,
 ] = await Promise.all([
+  readRenderer("App.tsx"),
   readRenderer("components/panes/workspaceChrome.tsx"),
   readRenderer("components/panes/workspacePanes.tsx"),
   readRenderer("lib/workspace-identity.ts"),
@@ -128,7 +130,7 @@ test("every used P0 pane class has a CSS selector", () => {
   assert.deepEqual(missingSelectors, [], `P0 classes without CSS selectors: ${missingSelectors.join(", ")}`);
 });
 
-test("professional shell keeps compact neutral structure", () => {
+test("professional shell keeps compact navigation and the persistent Space identity header", () => {
   const layoutRule = cssRuleBody(shellCss, ".app-shell .workspace-layout");
   const modePaneRule = cssRuleBody(shellCss, ".app-shell .workspace-layout .workspace-mode-pane");
   const railRule = cssRuleBody(shellCss, ".app-shell .professional-workspace-rail");
@@ -138,21 +140,22 @@ test("professional shell keeps compact neutral structure", () => {
 
   assert.match(modePaneRule, /border-color:\s*var\(--ui-border\)/);
   assert.match(railRule, /border-color:\s*var\(--ui-border\)/);
-  assert.match(paneHeaderRule, /border-bottom:\s*1px\s+solid\s+var\(--ui-border\)/);
+  assert.match(paneHeaderRule, /border:\s*1px\s+solid\s+var\(--ui-border\)/);
   assert.match(paneHeaderRule, /background:\s*var\(--ui-surface\)/);
   for (const structuralRule of [modePaneRule, railRule, paneHeaderRule]) {
     assert.doesNotMatch(structuralRule, /--workspace-(?:selection|custom)-/, "structural borders must stay independent of Space accent colors");
   }
 
   assert.ok(maxPxValue(customPropertyValue(layoutRule, "--workspace-rail-width")) <= 180, "desktop rail must remain compact");
-  assert.ok(maxPxValue(customPropertyValue(layoutRule, "--workspace-identity-header-height")) <= 56, "pane header must remain compact");
+  assert.equal(maxPxValue(customPropertyValue(layoutRule, "--workspace-identity-header-height")), 90, "the Space identity header must retain its established 90px geometry");
   assert.ok(pxDeclaration(navButtonRule, "min-height") <= 40, "primary navigation rows must remain compact");
   assert.ok(pxDeclaration(spaceSelectorRule, "min-height") <= 48, "Space selector must remain compact");
   assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-button svg,[\s\S]*?\{[\s\S]*?width:\s*20px;[\s\S]*?height:\s*20px;/);
 });
 
 test("Space customization is visible, compact, and separate from structural chrome", () => {
-  assert.match(workspaceChromeSource, /workspace-banner-surface space-identity-header/);
+  assert.match(workspaceChromeSource, /"workspace-banner-surface"/);
+  assert.match(workspaceChromeSource, /"space-identity-header"/);
   assert.match(workspaceChromeSource, /workspace-pane-banner-image/);
   assert.match(workspaceChromeSource, /workspaceIdentityStyle\(workspaceIdentity\)/);
   assert.match(workspaceChromeSource, /<WorkspaceIconGlyph icon=\{workspaceIdentity\.Icon\}/);
@@ -162,15 +165,45 @@ test("Space customization is visible, compact, and separate from structural chro
   assert.match(customizationCss, /\.workspace-banner-surface\.banner-none/);
 
   const bannerHeaderRule = cssRuleBody(customizationCss, ".app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header");
-  assert.match(bannerHeaderRule, /border-bottom:\s*1px\s+solid\s+var\(--ui-border\)/);
-  assert.doesNotMatch(bannerHeaderRule, /height:\s*(?:[6-9]\d|\d{3,})px/);
+  assert.match(bannerHeaderRule, /border:\s*1px\s+solid\s+var\(--ui-border\)/);
   assert.match(customizationCss, /\.professional-appearance-surface/);
   assert.match(customizationCss, /\.workspace-banner-position-control/);
+  assert.match(customizationCss, /\.professional-workspace-rail \.workspace-rail-button\.active[\s\S]*?box-shadow:\s*inset 3px 0 0 var\(--workspace-custom-color\)/);
+  assert.match(customizationCss, /\.professional-spaces \.workspace-card-shell\.active[\s\S]*?background:\s*var\(--workspace-custom-color-soft\)/);
+  assert.match(customizationCss, /\.professional-chats \.chat-workspace-heading > span:first-child[\s\S]*?color:\s*var\(--workspace-custom-color\)/);
 
   assert.match(foundationCss, /--workspace-ui-font:\s*var\(--workspace-font-family/);
   assert.doesNotMatch(foundationCss, /--workspace-font-size:/, "the professional layer must not override the user's text-size preference");
   assert.doesNotMatch(desktopSettingsSource, /from\s+["']lucide-react["']/);
   assert.match(desktopSettingsSource, /from\s+["']@fluentui\/react-icons["']/);
+});
+
+test("the left header is inherited Space identity on every mode, not a surface title", () => {
+  const headerCall = appSource.match(/<WorkspacePaneHeader[\s\S]*?\/>/)?.[0];
+  assert.ok(headerCall, "App must render the shared Space identity header");
+  const headerIdentityProps = headerCall.split(" action=")[0]!;
+  assert.match(headerIdentityProps, /workspace=\{workspace\}/);
+  assert.match(headerIdentityProps, /identity=\{identity\}/);
+  assert.match(headerIdentityProps, /switchable=\{activeMode !== "workspaces"\}/);
+  assert.doesNotMatch(headerIdentityProps, /title=|paneTitle|onCustomize/);
+
+  assert.match(workspaceChromeSource, /<strong>\{workspace\.name\}<\/strong>/);
+  assert.match(workspaceChromeSource, /<span className="sr-only">\{detail\}<\/span>/);
+  assert.match(workspaceChromeSource, /className="workspace-pane-switch-trigger"/);
+  assert.match(workspaceChromeSource, /aria-haspopup="menu"/);
+  assert.match(workspaceChromeSource, /role="menu" aria-label="Switch Space"/);
+  assert.match(workspaceChromeSource, /role="menuitem"/);
+  assert.match(workspaceChromeSource, /querySelector<HTMLButtonElement>\('\[role="menuitem"\]:not\(:disabled\)'\)\?\.focus\(\)/);
+  assert.doesNotMatch(workspaceChromeSource, /role=\{switcherEnabled \? "button" : undefined\}/);
+  assert.doesNotMatch(workspaceChromeSource, /onClick=\{toggleSwitcher\}[\s\S]{0,180}<WorkspaceIconGlyph/);
+  assert.doesNotMatch(workspaceChromeSource, /space-identity-header-text/);
+  assert.doesNotMatch(workspaceChromeSource, /Customize Space.*professional-header-action/s);
+});
+
+test("the appearance preview mirrors the Space header rather than the active surface", () => {
+  assert.match(workspaceChromeSource, /workspace-appearance-preview-copy"><strong>\{workspace\.name\}<\/strong>/);
+  assert.doesNotMatch(workspaceChromeSource, /workspace-appearance-preview-copy"><strong>Files<\/strong>/);
+  assert.match(customizationCss, /\.workspace-appearance-preview\s*\{[\s\S]*?min-height:\s*90px;/);
 });
 
 async function readRenderer(relativePath: string): Promise<string> {

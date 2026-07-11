@@ -3,8 +3,8 @@
 
 .app-shell .workspace-layout {
   --workspace-rail-width: clamp(148px, 12vw, 176px);
-  --workspace-identity-header-height: 54px;
-  --workspace-identity-radius: 0;
+  --workspace-identity-header-height: 90px;
+  --workspace-identity-radius: 18px;
   --workspace-pane-edge-fill: var(--ui-surface);
   background: var(--ui-canvas);
 }
@@ -339,8 +339,9 @@
 }
 
 .app-shell .workspace-layout .workspace-pane-header-wrap {
-  height: 54px;
-  flex: 0 0 54px;
+  height: 98px;
+  flex: 0 0 98px;
+  padding: 8px 8px 0;
 }
 
 .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header,
@@ -348,19 +349,19 @@
 .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header:focus-visible,
 .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.switcher-open {
   width: 100%;
-  height: 54px;
-  min-height: 54px;
-  display: flex;
+  height: var(--workspace-identity-header-height);
+  min-height: var(--workspace-identity-header-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
+  justify-items: center;
   gap: 10px;
-  padding: 0 10px 0 12px;
-  overflow: visible;
+  padding: 16px var(--workspace-pane-inline-reserve, 38px);
+  overflow: hidden;
   color: var(--ui-text);
   background: var(--ui-surface);
-  border: 0;
-  border-bottom: 1px solid var(--ui-border);
-  border-radius: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--workspace-identity-radius);
   box-shadow: none;
   cursor: default;
   outline: 0;
@@ -407,13 +408,13 @@
 }
 
 .app-shell .professional-pane-header .workspace-pane-header-action.professional-header-action {
-  position: relative;
-  top: auto;
-  left: auto;
+  position: absolute;
+  top: 50%;
+  left: 20px;
   width: 32px;
   height: 32px;
-  flex: 0 0 32px;
-  transform: none;
+  z-index: 2;
+  transform: translateY(-50%);
 }
 
 .app-shell .professional-pane-header .professional-header-action > .minimal-icon-button {
@@ -600,7 +601,7 @@
   }
 
   .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header {
-    border-radius: 0;
+    border-radius: var(--workspace-identity-radius);
   }
 }
 

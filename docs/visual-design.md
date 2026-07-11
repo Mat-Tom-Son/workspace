@@ -8,7 +8,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - **Files** is the first working surface inside the selected Space.
 - Primary surfaces are Files, Chats, Library, and History.
 - Assistant surfaces are Setup, Skills, and Extensions.
-- The current Space appears once as an explicit root selector. Page headers identify the current surface and may show the Space name as secondary context.
+- The first rail item opens the Space manager and identifies the selected root folder. The persistent header above the left pane repeats that Space identity; the selected rail item identifies the current surface.
 
 ## Iconography
 
@@ -16,7 +16,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - Use regular icons at rest and the matching filled icon for a selected navigation item.
 - Use 16px icons for inline actions, 20px for navigation and section markers, and no more than 24px for empty states.
 - Material file-type icons are the one deliberate exception because file recognition benefits from familiar type colors.
-- Do not mix icon libraries within one control group. Do not repeat the Space glyph as a page icon.
+- Do not mix icon libraries within one control group. The Space glyph may repeat only where it communicates inherited root context: the root selector, Space identity header, switcher, cards, and Space-bound tabs.
 - Space color may appear as a small avatar accent or active indicator, never as a frame around the application.
 
 ## Typography and spacing
@@ -30,9 +30,9 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 ## Layout
 
 - Navigation uses compact, aligned rows with text labels and one subtle selected state.
-- Page headers are 48–56px horizontal rows. Files and History may use the selected Space's compact identity banner, but it never becomes a hero card or changes header height.
-- Space banners are decorative only. Interaction color and structural borders remain part of the global application system.
-- Library, Spaces, Chats, and Assistant surfaces stay visually neutral because they can span or configure more than one Space.
+- A 90px identity header sits above every left-pane surface. Its centered icon-over-name lockup represents the selected Space, not the active page. Files, Chats, Library, History, Setup, Skills, and Extensions keep the quick Space switcher; the Spaces-management surface omits that redundant switcher.
+- Space banners stay inside the identity header and appearance previews. They do not wallpaper the right work surface or recolor structural borders; interaction color and shell structure remain part of the global application system.
+- Color and icon identity inherit through Space-bound cards, chat groups, tabs, surfaces, and chat empty states. Content belonging to another Space carries that Space's own identity rather than the currently selected one.
 - Forms use stacked labels and hints with an explicit action row.
 - Notices use `icon | copy | action` and stack only when their own pane becomes narrow.
 - Empty states are centered, restrained, and no wider than 440px.
@@ -55,6 +55,7 @@ Before a handoff, exercise every primary and Assistant surface in light and dark
 
 - **Settings → Appearance** controls the application theme, font, and text size.
 - **Customize Space** controls one Space's accent, compact banner, and Fluent identity icon.
+- Customize Space is opened from the Space card and lives in one right-side appearance tab per Space. Changes repaint every identity consumer immediately.
 - Per-Space appearance is personal application state. It is not written into the user's ordinary folder and does not travel with shared files.
 - A custom image is resized and compressed before local storage. Unsafe image formats and malformed stored values are rejected.
 - Every Space appearance control updates a live preview, saves immediately, and offers a single Reset action.

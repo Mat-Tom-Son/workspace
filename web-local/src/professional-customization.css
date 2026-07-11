@@ -1,5 +1,5 @@
-/* Space identity is decorative and local to a Space. It never controls shell geometry
-   or structural borders, and the compact header remains exactly 54px tall. */
+/* The banner is the persistent identity of the selected Space. Color and icon inherit
+   through the shell; the image and preset stay contained to this left-pane header. */
 .workspace-banner-surface.banner-none {
   --workspace-banner-layers: none;
 }
@@ -54,45 +54,126 @@
 
 .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header,
 .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header:hover,
-.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header:focus-visible {
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header:focus-visible,
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.space-identity-header.switcher-open {
   position: relative;
   isolation: isolate;
   overflow: hidden;
   background: var(--workspace-banner-layers, none), rgb(var(--workspace-banner-base-rgb));
   background-size: var(--workspace-banner-size, auto);
-  border-bottom: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-border);
 }
 
-.app-shell .professional-pane-header.space-identity-header > .workspace-pane-page-copy,
+.app-shell .professional-pane-header.space-identity-header > .workspace-pane-current-copy,
+.app-shell .professional-pane-header.space-identity-header > .workspace-pane-switch-trigger,
 .app-shell .professional-pane-header.space-identity-header > .workspace-pane-header-action {
   position: relative;
   z-index: 2;
 }
 
-.app-shell .professional-pane-header.space-identity-header.banner-bold .workspace-pane-page-title,
-.app-shell .professional-pane-header.space-identity-header.banner-bold .workspace-pane-page-detail,
-.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-page-title,
-.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-page-detail {
+.app-shell .professional-pane-header.space-identity-header > .workspace-pane-switch-trigger,
+.app-shell .professional-pane-header.space-identity-header > .workspace-pane-header-action {
+  position: absolute;
+}
+
+.app-shell .professional-pane-header.space-identity-header > .workspace-pane-switch-trigger {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 16px var(--workspace-pane-inline-reserve, 56px);
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  text-align: center;
+}
+
+.app-shell .professional-pane-header.space-identity-header .workspace-pane-current-copy {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.app-shell .professional-pane-header.space-identity-header .workspace-pane-current-lockup {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.app-shell .professional-pane-header.space-identity-header .workspace-pane-current-lockup strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  text-shadow: none;
+  white-space: nowrap;
+}
+
+.app-shell .professional-pane-header.space-identity-header .space-identity-header-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  color: var(--workspace-custom-color);
+  background: rgba(var(--workspace-banner-base-rgb), 0.72);
+  border: 1px solid rgba(var(--workspace-selection-accent-rgb), 0.24);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.app-shell .professional-pane-header.space-identity-header.banner-bold .workspace-pane-current-lockup strong,
+.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-current-lockup strong {
   color: var(--workspace-on-accent, #ffffff);
   text-shadow: none;
 }
 
-.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-page-title,
-.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-page-detail {
+.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-current-lockup strong {
   color: #ffffff;
+  text-shadow: 0 1px 2px rgba(9, 14, 24, 0.58), 0 8px 22px rgba(9, 14, 24, 0.32);
+}
+
+.app-shell .professional-pane-header.space-identity-header.banner-bold .space-identity-header-icon,
+.app-shell .professional-pane-header.space-identity-header.has-banner-image .space-identity-header-icon {
+  color: #ffffff;
+  background: rgba(9, 14, 24, 0.3);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.app-shell .professional-pane-header.space-identity-header:has(.workspace-pane-switch-trigger:focus-visible),
+.app-shell .professional-pane-header.space-identity-header.switcher-open,
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:hover) .professional-pane-header.space-identity-header,
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:focus-visible) .professional-pane-header.space-identity-header {
+  border-color: var(--workspace-custom-color);
+  box-shadow: 0 0 0 3px var(--workspace-custom-color-soft);
+  outline: 0;
+}
+
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:hover) .professional-pane-header.space-identity-header,
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:focus-visible) .professional-pane-header.space-identity-header {
+  transform: translateY(-1px);
 }
 
 .app-shell .professional-pane-header .workspace-pane-action-group {
-  position: relative;
-  top: auto;
-  left: auto;
+  position: absolute;
+  top: 50%;
+  left: 20px;
   width: auto;
   height: 32px;
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
-  transform: none;
+  transform: translateY(-50%);
 }
 
 .app-shell .professional-pane-header .workspace-pane-action-group > .minimal-icon-button {
@@ -138,7 +219,82 @@
 .workspace-appearance-preview-image > span {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(9, 14, 24, 0.62), rgba(9, 14, 24, 0.24) 62%, rgba(9, 14, 24, 0.38));
+  background: linear-gradient(180deg, rgba(9, 14, 24, 0.16), rgba(9, 14, 24, 0.52));
+}
+
+.app-shell .professional-pane-header.space-identity-header .workspace-pane-switch-caret {
+  top: 50%;
+  right: 20px;
+  width: 28px;
+  height: 28px;
+  color: var(--workspace-custom-color);
+  opacity: 0.7;
+  transform: translateY(-50%);
+}
+
+.app-shell .professional-pane-header.space-identity-header.switcher-open .workspace-pane-switch-caret {
+  opacity: 1;
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.app-shell .professional-pane-header.space-identity-header.banner-bold .workspace-pane-switch-caret,
+.app-shell .professional-pane-header.space-identity-header.has-banner-image .workspace-pane-switch-caret {
+  color: #ffffff;
+}
+
+.app-shell .professional-space-switcher {
+  top: calc(100% + 8px);
+  left: 8px;
+  right: 8px;
+  padding: 6px;
+  color: var(--ui-text);
+  background: color-mix(in srgb, var(--ui-surface) 97%, transparent);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-menu);
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-list {
+  max-height: min(360px, calc(100vh - 218px));
+  gap: 2px;
+  padding: 0;
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-row {
+  min-height: 46px;
+  gap: 9px;
+  padding: 7px 9px;
+  color: var(--ui-text);
+  border-radius: var(--ui-radius-sm);
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-row:hover,
+.app-shell .professional-space-switcher .workspace-header-switcher-row:focus-visible,
+.app-shell .professional-space-switcher .workspace-header-switcher-row.active {
+  background: var(--workspace-custom-color-soft);
+  border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-icon {
+  color: var(--workspace-custom-color);
+  background: var(--workspace-custom-color-soft);
+  border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-copy strong {
+  color: var(--ui-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-shell .professional-space-switcher .workspace-header-switcher-badge {
+  max-width: 86px;
+  color: var(--ui-text-muted);
+  background: var(--ui-surface-subtle);
+  border-color: var(--ui-border);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .app-shell .professional-workspace-rail .workspace-rail-space-avatar,
@@ -148,6 +304,38 @@
   color: var(--workspace-custom-color);
   background: var(--workspace-custom-color-soft);
   border-color: var(--ui-border);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button.active,
+.app-shell .professional-workspace-rail .workspace-rail-button.active:hover,
+.app-shell .professional-workspace-rail .workspace-rail-button.active:focus-visible,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active:hover,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active:focus-visible {
+  background: var(--workspace-custom-color-soft);
+  border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
+  box-shadow: inset 3px 0 0 var(--workspace-custom-color);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button.active .workspace-rail-icon {
+  color: var(--workspace-custom-color);
+}
+
+.app-shell .professional-spaces .workspace-card-shell.active {
+  background: var(--workspace-custom-color-soft);
+  border-color: rgba(var(--workspace-selection-accent-rgb), 0.42);
+  box-shadow: inset 3px 0 0 var(--workspace-custom-color);
+}
+
+.app-shell .professional-spaces .workspace-tab-icon,
+.app-shell .professional-spaces .active-dot,
+.app-shell .professional-chats .chat-workspace-heading > span:first-child {
+  color: var(--workspace-custom-color);
+}
+
+.app-shell .professional-chats .chat-workspace-heading > span:first-child {
+  background: var(--workspace-custom-color-soft);
+  border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
 }
 
 /* Per-Space appearance editor */
@@ -275,14 +463,16 @@
 .workspace-appearance-preview {
   position: relative;
   isolation: isolate;
-  min-height: 72px;
+  min-height: 90px;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 34px auto;
   align-items: center;
-  gap: 10px;
+  justify-items: center;
+  gap: 6px;
   overflow: hidden;
   margin-bottom: 4px;
-  padding: 0 14px;
+  padding: 12px 48px;
   color: var(--ui-text);
   background: var(--workspace-banner-layers, none), rgb(var(--workspace-banner-base-rgb));
   background-size: var(--workspace-banner-size, auto);
@@ -308,8 +498,10 @@
 
 .workspace-appearance-preview-copy {
   min-width: 0;
+  max-width: 100%;
   display: grid;
-  gap: 2px;
+  justify-items: center;
+  text-align: center;
 }
 
 .workspace-appearance-preview-copy strong,
@@ -320,7 +512,8 @@
 }
 
 .workspace-appearance-preview-copy strong {
-  font-size: 14px;
+  max-width: 100%;
+  font-size: 16px;
   font-weight: 650;
 }
 
@@ -330,6 +523,9 @@
 }
 
 .workspace-appearance-preview-label {
+  position: absolute !important;
+  top: 8px;
+  right: 8px;
   padding: 3px 7px;
   color: var(--ui-text-muted);
   background: rgba(var(--workspace-banner-base-rgb), 0.74);
@@ -635,7 +831,7 @@
   }
 
   .workspace-appearance-preview {
-    grid-template-columns: 34px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .app-shell .professional-appearance-surface .workspace-banner-gallery {

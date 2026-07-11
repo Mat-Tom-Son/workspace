@@ -6,9 +6,10 @@ import {
   BookToolbox20Regular,
   ChatMultiple20Filled,
   ChatMultiple20Regular,
+  Checkmark16Regular,
   Checkmark20Regular,
+  ChevronDown20Regular,
   ChevronRight20Regular,
-  Color20Regular,
   Dismiss20Regular,
   DocumentFolder20Filled,
   DocumentFolder20Regular,
@@ -27,8 +28,9 @@ import {
 import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspace-icons";
 import { workspaceBannerOptions } from "../../constants";
 import { errorText } from "../../lib/api";
-import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
-import type { WorkspaceCustomization, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
+import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityFor, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
+import { surfaceDomIdSuffix, workspaceHeaderSourceBadgeLabel } from "../../lib/workspace-ui";
+import type { WorkspaceCustomization, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
 import { WorkspaceIconGlyph } from "../chrome/common";
 
 function WorkspaceModeRail({
@@ -129,47 +131,175 @@ function WorkspaceModeRail({
 }
 
 function WorkspacePaneHeader({
-  title,
-  detail,
-  action,
+  workspace,
   identity,
-  onCustomize,
+  workspaces,
+  workspaceCustomizations,
+  onSwitchWorkspace,
+  switchable = true,
+  action,
 }: {
-  title: string;
-  detail?: string;
+  workspace: WorkspaceSummary;
+  identity: WorkspaceIdentity;
+  workspaces: WorkspaceSummary[];
+  workspaceCustomizations: WorkspaceCustomizationMap;
+  onSwitchWorkspace: (workspace: WorkspaceSummary) => void;
+  switchable?: boolean;
   action?: ReactNode;
-  identity?: WorkspaceIdentity;
-  onCustomize?: () => void;
 }) {
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const switchTriggerRef = useRef<HTMLButtonElement>(null);
+  const switcherEnabled = switchable && Boolean(workspaces.length && workspaceCustomizations && onSwitchWorkspace);
+  const switcherId = `space-header-switcher-${surfaceDomIdSuffix(workspace.id)}`;
+  const detail = workspaceHeaderSourceBadgeLabel(workspace);
   const headerClassName = [
     "workspace-pane-current",
     "workspace-pane-header",
     "professional-pane-header",
-    identity ? "workspace-banner-surface space-identity-header" : "",
-    identity ? `banner-${identity.bannerName}` : "",
-    identity?.bannerImage ? "has-banner-image" : "",
-    action || onCustomize ? "has-action" : "",
+    "workspace-banner-surface",
+    "space-identity-header",
+    `banner-${identity.bannerName}`,
+    identity.bannerImage ? "has-banner-image" : "",
+    switcherEnabled ? "has-switcher" : "",
+    switcherOpen ? "switcher-open" : "",
+    action ? "has-action" : "",
   ].filter(Boolean).join(" ");
 
+  useEffect(() => {
+    if (!switcherEnabled) setSwitcherOpen(false);
+  }, [switcherEnabled]);
+
+  useEffect(() => {
+    if (!switcherOpen) return;
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (headerRef.current?.contains(event.target as Node)) return;
+      setSwitcherOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setSwitcherOpen(false);
+      window.requestAnimationFrame(() => switchTriggerRef.current?.focus());
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [switcherOpen]);
+
+  function toggleSwitcher() {
+    if (!switcherEnabled) return;
+    setSwitcherOpen((current) => !current);
+  }
+
+  const identityLockup = (
+    <span className="workspace-pane-current-copy space-identity-header-copy">
+      <span className="workspace-pane-current-lockup">
+        <span className="workspace-pane-current-icon space-identity-header-icon" aria-hidden="true" data-space-icon={identity.iconName}>
+          <WorkspaceIconGlyph icon={identity.Icon} size={20} filled />
+        </span>
+        <strong>{workspace.name}</strong>
+      </span>
+      <span className="sr-only">{detail}</span>
+    </span>
+  );
+
   return (
-    <div className="workspace-pane-header-wrap">
-      <div className={headerClassName} style={identity ? workspaceIdentityStyle(identity) : undefined}>
-        {identity?.bannerImage ? (
+    <div
+      className="workspace-pane-header-wrap space-identity-header-wrap"
+      ref={headerRef}
+      onBlurCapture={(event) => {
+        if (switcherOpen && !event.currentTarget.contains(event.relatedTarget as Node | null)) setSwitcherOpen(false);
+      }}
+    >
+      <div
+        className={headerClassName}
+        style={workspaceIdentityStyle(identity)}
+        aria-label={switcherEnabled ? undefined : `Current Space: ${workspace.name}. ${detail}`}
+      >
+        {identity.bannerImage ? (
           <span className="workspace-pane-banner-image" aria-hidden="true">
             <img src={identity.bannerImage} alt="" draggable={false} style={{ objectPosition: `center ${identity.bannerImagePosition}` }} />
             <span className="workspace-pane-banner-scrim" />
           </span>
         ) : null}
-        <span className="workspace-pane-page-copy">
-          <strong className="workspace-pane-page-title">{title}</strong>
-          {detail ? <span className="workspace-pane-page-detail">{detail}</span> : null}
-        </span>
-        {action || onCustomize ? (
+        {switcherEnabled ? (
+          <button
+            ref={switchTriggerRef}
+            className="workspace-pane-switch-trigger"
+            type="button"
+            aria-label={`Current Space: ${workspace.name}. ${detail}. Switch Space`}
+            aria-haspopup="menu"
+            aria-expanded={switcherOpen}
+            aria-controls={switcherId}
+            onClick={toggleSwitcher}
+            title="Switch Space"
+          >
+            {identityLockup}
+            <ChevronDown20Regular className="workspace-pane-switch-caret" aria-hidden="true" />
+          </button>
+        ) : identityLockup}
+        {action ? (
           <span className="workspace-pane-header-action professional-header-action workspace-pane-action-group">
-            {onCustomize ? <button className="minimal-icon-button" type="button" onClick={onCustomize} aria-label="Customize Space" title="Customize Space"><Color20Regular /></button> : null}
             {action}
           </span>
         ) : null}
+      </div>
+      {switcherEnabled && switcherOpen ? <WorkspaceHeaderSwitcher id={switcherId} currentWorkspace={workspace} workspaces={workspaces} workspaceCustomizations={workspaceCustomizations} onSwitchWorkspace={onSwitchWorkspace} onClose={() => setSwitcherOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function WorkspaceHeaderSwitcher({
+  id,
+  currentWorkspace,
+  workspaces,
+  workspaceCustomizations,
+  onSwitchWorkspace,
+  onClose,
+}: {
+  id: string;
+  currentWorkspace: WorkspaceSummary;
+  workspaces: WorkspaceSummary[];
+  workspaceCustomizations: WorkspaceCustomizationMap;
+  onSwitchWorkspace: (workspace: WorkspaceSummary) => void;
+  onClose: () => void;
+}) {
+  const switcherRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    switcherRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+  }, []);
+
+  return (
+    <div className="workspace-header-switcher professional-space-switcher" id={id} role="menu" aria-label="Switch Space" ref={switcherRef}>
+      <div className="workspace-header-switcher-list">
+        {workspaces.map((item) => {
+          const active = item.id === currentWorkspace.id;
+          const itemIdentity = workspaceIdentityFor(item, workspaceCustomizations);
+          return (
+            <button
+              className={active ? "workspace-header-switcher-row active" : "workspace-header-switcher-row"}
+              type="button"
+              role="menuitem"
+              key={item.id}
+              disabled={active}
+              aria-current={active ? "page" : undefined}
+              style={workspaceIdentityStyle(itemIdentity)}
+              onClick={() => {
+                onClose();
+                onSwitchWorkspace(item);
+              }}
+            >
+              <span className="workspace-header-switcher-icon" aria-hidden="true" data-space-icon={itemIdentity.iconName}><WorkspaceIconGlyph icon={itemIdentity.Icon} size={17} filled /></span>
+              <span className="workspace-header-switcher-copy"><strong>{item.name}</strong></span>
+              <span className="workspace-header-switcher-badge">{workspaceHeaderSourceBadgeLabel(item)}</span>
+              {active ? <Checkmark16Regular className="workspace-header-switcher-check" aria-hidden="true" /> : null}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -327,7 +457,7 @@ function WorkspaceAppearancePanel({
       <div className={["workspace-appearance-preview", "workspace-banner-surface", `banner-${identity.bannerName}`, identity.bannerImage ? "has-banner-image" : ""].filter(Boolean).join(" ")} style={workspaceIdentityStyle(identity)} aria-label="Live Space banner preview">
         {identity.bannerImage ? <span className="workspace-appearance-preview-image" aria-hidden="true"><img src={identity.bannerImage} alt="" draggable={false} style={{ objectPosition: `center ${identity.bannerImagePosition}` }} /><span /></span> : null}
         <span className="workspace-appearance-preview-icon" aria-hidden="true" data-space-icon={identity.iconName}><WorkspaceIconGlyph icon={identity.Icon} size={20} filled /></span>
-        <span className="workspace-appearance-preview-copy"><strong>Files</strong><small>{workspace.name} · Linked folder</small></span>
+        <span className="workspace-appearance-preview-copy"><strong>{workspace.name}</strong><small className="sr-only">{workspaceHeaderSourceBadgeLabel(workspace)}</small></span>
         <span className="workspace-appearance-preview-label">Live preview</span>
       </div>
       <div className="workspace-appearance-row colors">
@@ -506,4 +636,4 @@ function WorkspaceAppearancePanel({
   );
 }
 
-export { WorkspaceAppearancePanel, WorkspaceModeRail, WorkspacePaneHeader, WorkspaceRenameEditor };
+export { WorkspaceAppearancePanel, WorkspaceHeaderSwitcher, WorkspaceModeRail, WorkspacePaneHeader, WorkspaceRenameEditor };
