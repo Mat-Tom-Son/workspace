@@ -40,7 +40,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 ### Files and folders
 
-- The Space rail, resizable file pane, search, expandable tree, file-type icons, details pane, and file history remain first-class.
+- The Files rail item, resizable file pane, search, expandable tree, file-type icons, details pane, and file history remain first-class for the selected Space.
 - Right-click actions are available throughout the file tree and use native desktop context behavior where appropriate.
 - Supported actions include open, reveal in Explorer/Finder, copy path, attach to chat, rename, move, create folder/file, upload/import, delete, and version history.
 - Desktop drag-out, file opening, and reveal operations use safe workspace-relative paths and never escape the Space root.
@@ -51,7 +51,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 - Preserve conversation history, rename, drafts, streaming activity, tool/runtime detail, stop behavior, context attachments, copy actions, suggested prompts, and extension UI requests.
 - Preserve the command palette, keyboard shortcuts, toast/confirm feedback, onboarding, Space creation/linking, themes, typography, and resizable layout.
-- Navigation uses the product nouns `Space`, `Chats`, `Library`, `History`, and `Assistant` with `Setup`, `Skills`, and `Extensions` beneath Assistant.
+- A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Chats`, `Library`, `History`, and `Assistant`, with `Setup`, `Skills`, and `Extensions` beneath Assistant.
 
 ## Deliberately removed or replaced
 
@@ -74,14 +74,10 @@ A corrective port is ready for release only when all of the following are true:
 6. The app contains no user-facing Kai, Kymanox, Kits, Sources, SharePoint, or Microsoft-login copy except in migration or historical documentation.
 7. No public release is published until the side-by-side product review is accepted.
 
-## 0.2.0 local candidate evidence
+## Corrective candidate status
 
-The July 10, 2026 local candidate has completed the implementation and engineering checks above:
+The first July 10, 2026 local candidate at commit `71e5fa4` was rejected after real screenshots exposed two release-blocking defects: it called the Files surface “Space,” and several newly written pane structures had no matching styles. That build must not be shipped or treated as visual-parity evidence.
 
-- Side-by-side browser review covered the original shell and the Workspace port at the same viewport, including tabs, file surfaces, command palette, settings, and Assistant navigation.
-- Automated tab coverage exercises persistence, multiple drafts, cross-Space activation, conversation title updates, file retarget/delete behavior, close fallback, and keyboard navigation.
-- Packaged Electron review exercised the custom menus, file-tree context menu, close-to-tray, second-instance Show behavior, explicit Exit, updater status, and the final settings layout.
-- The supported Node runtime passed type checks, 46 automated tests, production renderer/desktop preparation, packaged smoke verification, signed installer creation, and Windows release-asset verification.
-- The personal certificate signs the local installer, but remains self-signed and therefore is not a public trust solution.
+The corrective candidate must retain the verified desktop behaviors above while also satisfying [the Workspace visual system](visual-design.md). In particular, browser review must cover every primary and Assistant surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must guard the Files/Space distinction, the single Fluent shell-icon contract, compact neutral chrome, and the JSX-to-CSS contracts that were previously missing.
 
-Acceptance item 7 remains intentionally open: version 0.2.0 is a local review candidate and has not been pushed, tagged, published, or installed over the existing application.
+Acceptance item 7 remains intentionally open. The corrected version 0.2.1 candidate has not been pushed, tagged, published, or installed over the existing application.

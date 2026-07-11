@@ -137,9 +137,8 @@ function workspaceIdentityStyle(identity: WorkspaceIdentity): CSSProperties {
   } as CSSProperties;
 }
 
-function defaultWorkspaceIconName(workspace: WorkspaceSummary): string {
-  if (workspace.location.storage === "linked") return "folder";
-  return "notebook";
+function defaultWorkspaceIconName(_workspace: WorkspaceSummary): string {
+  return "folder";
 }
 
 async function processWorkspaceBannerImageFile(file: File): Promise<string> {

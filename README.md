@@ -12,13 +12,14 @@ The core idea is simple: the folder stays ordinary; Workspace makes it feel like
 |---|---|
 | **Workspace** | The product: an environment for general computer work. |
 | **Space** | Everything associated with one activity, backed by an ordinary folder. |
+| **Files** | The ordinary folder contents of the selected Space. |
 | **Library** | Reusable personal materials that can be brought into any Space. |
 | **Skill** | A reusable way of working that guides the Assistant. |
 | **Extension** | A capability or connection the Assistant can use. |
 
-The primary navigation follows the same model:
+The Space switcher selects the root-folder entity a person is working in. The primary navigation then opens surfaces for that selected Space and the surrounding product:
 
-- **Space**
+- **Files**
 - **Chats**
 - **Library**
 - **History**
@@ -43,7 +44,7 @@ Workspace does not bundle organization-specific tools, instructions, document li
 
 Current desktop boundaries: Google Drive works through a Drive-for-desktop folder rather than native cloud mirroring, and first-run provider setup uses API keys. Native OAuth setup and direct Drive API sync are intentionally left for a later provider-adapter release.
 
-For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature Kai Workspace interactions that this extraction must preserve while replacing company-specific seams.
+For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature interactions this extraction must preserve, while the [visual system](docs/visual-design.md) defines the restrained shell, typography, icon, and layout rules.
 
 ## Development
 

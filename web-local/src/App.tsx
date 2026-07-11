@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { AlertTriangle, CirclePlus, Download, FilePlus2, FolderOpen, FolderPlus, History, Loader2, Palette, RefreshCw, Search, Settings2, Upload, X } from "lucide-react";
+import { ArrowSync16Regular } from "@fluentui/react-icons";
+import { AlertTriangle, CirclePlus, Download, FilePlus2, FolderOpen, FolderPlus, History, Loader2, Palette, Search, Settings2, Upload, X } from "lucide-react";
 
 import { defaultTypographyPreference, productName, textSizeValues, themePreferenceKey, typographyFontValues, typographyPreferenceKey, workspaceCustomizationStorageKey, workspacePathDragType } from "./constants";
 import { ChatPanel } from "./components/chat/ChatPanel";
@@ -199,7 +200,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   onOpenShortcuts: () => void;
   onError: (message: string | null) => void;
 }) {
-  const [activeMode, setActiveMode] = useState<WorkspaceRailMode>(() => fixture ? "space" : normalizeMode(localStorage.getItem("workspace.mode")));
+  const [activeMode, setActiveMode] = useState<WorkspaceRailMode>(() => fixture ? "files" : normalizeMode(localStorage.getItem("workspace.mode")));
   const [customizations, setCustomizations] = useState<WorkspaceCustomizationMap>(() => fixture ? {} : readStoredJsonValue(workspaceCustomizationStorageKey, normalizeCustomizations, {}));
   const [conversationGroups, setConversationGroups] = useState<Record<string, ConversationSummary[]>>(() => fixture ? fixtureConversationGroups(fixture) : {});
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
@@ -238,6 +239,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
 
 
   useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
+  useEffect(() => { setActiveMode((current) => current === "workspaces" ? "files" : current); }, [workspace.id]);
   useEffect(() => { if (fixture) { setConversationGroups(fixtureConversationGroups(fixture)); return; } void loadConversationGroups(); }, [fixture, workspaces.map((item) => item.id).join("|")]);
   useEffect(() => { tabs.syncSurfaceTabConversationTitles(conversationGroups); }, [conversationGroups]);
   useEffect(() => {
@@ -491,13 +493,13 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   }
 
   const commands = useMemo<CommandPaletteCommand[]>(() => [
-    ...(["space", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode === "space" ? "Space" : mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
+    ...(["files", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
     ...workspaces.map((item) => ({ id: `space:${item.id}`, groupId: "switch-workspace" as const, groupLabel: "Switch Space", label: item.name, detail: workspaceHeaderSourceBadgeLabel(item), matchTargets: [item.rootPath], run: () => onSwitchWorkspace(item) })),
     ...Object.entries(conversationGroups).flatMap(([workspaceId, conversations]) => conversations.map((conversation) => ({ id: `chat:${workspaceId}:${conversation.id}`, groupId: "chats" as const, groupLabel: "Chats", label: conversation.title, run: () => { const target = workspaces.find((item) => item.id === workspaceId); if (target) openChat(target, conversation); } }))),
     ...collectLoadedFileEntries(tree.tree).flatMap((entry) => {
       const matchTargets = [entry.name, entry.path];
       return [
-        { id: `reveal-file:${workspace.id}:${entry.path}`, groupId: "files" as const, groupLabel: "Files", label: `Reveal in Files: ${entry.name}`, detail: entry.path, matchTargets, minQueryLength: 2, run: () => { setActiveMode("space"); tree.setSelectedPath(entry.path); tabs.openFileSurfaceTab(workspace, entry.path); } },
+        { id: `reveal-file:${workspace.id}:${entry.path}`, groupId: "files" as const, groupLabel: "Files", label: `Reveal in Files: ${entry.name}`, detail: entry.path, matchTargets, minQueryLength: 2, run: () => { setActiveMode("files"); tree.setSelectedPath(entry.path); tabs.openFileSurfaceTab(workspace, entry.path); } },
         { id: `attach-file:${workspace.id}:${entry.path}`, groupId: "files" as const, groupLabel: "Files", label: `Attach to Chat: ${entry.name}`, detail: entry.path, matchTargets, minQueryLength: 2, run: () => attachToChat(entry.path) },
       ];
     }),
@@ -510,16 +512,16 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     ...(["light", "dark", "system"] as AppThemePreference[]).map((preference) => ({ id: `theme:${preference}`, groupId: "actions" as const, groupLabel: "Actions", label: preference === "system" ? "Use device theme" : `Use ${preference} theme`, detail: themePreference === preference ? "Current" : undefined, keywords: ["appearance", "color", "mode"], run: () => onThemePreferenceChange(preference) })),
   ], [conversationGroups, fixture, themePreference, tree.selectedPath, tree.tree, workspaces, workspace.id]);
 
-  const paneTitle = activeMode === "workspaces" ? "Spaces" : activeMode === "space" ? workspace.name : activeMode[0]!.toUpperCase() + activeMode.slice(1);
-  const paneDetail = activeMode === "space" ? workspaceHeaderSourceBadgeLabel(workspace) : activeMode === "library" ? "Reusable files for every Space" : activeMode === "history" ? "Restore points and recent activity" : activeMode === "setup" || activeMode === "skills" || activeMode === "extensions" ? "Assistant" : `${workspace.name}`;
+  const paneTitle = activeMode === "workspaces" ? "Spaces" : activeMode[0]!.toUpperCase() + activeMode.slice(1);
+  const paneDetail = activeMode === "files" ? `${workspace.name} · ${workspaceHeaderSourceBadgeLabel(workspace)}` : activeMode === "library" ? "Reusable files for every Space" : activeMode === "history" ? "Restore points and recent activity" : activeMode === "setup" || activeMode === "skills" || activeMode === "extensions" ? "Assistant" : `${workspace.name}`;
   const layoutStyle = { ...(workspaceIdentityStyle(identity)), ...(paneResize.sidebarWidth ? { "--workspace-sidebar-width": `${paneResize.sidebarWidth}px` } : {}) } as CSSProperties;
 
   return <main className={paneResize.sidebarResizing ? "workspace-layout resizing" : "workspace-layout"} ref={paneResize.workspaceLayoutRef} style={layoutStyle}>
     <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={onOpenSettings} aria-label="Settings" title="Settings"><Settings2 size={18} /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
-    <section className={`workspace-mode-pane workspace-mode-pane-${activeMode} ${activeMode === "space" ? "file-panel local-files-panel" : ""}`} id="workspace-file-panel">
-      <WorkspacePaneHeader workspace={workspace} title={paneTitle} detail={paneDetail} identity={identity} workspaces={workspaces} workspaceCustomizations={customizations} onSwitchWorkspace={onSwitchWorkspace} action={activeMode === "space" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><RefreshCw className={tree.status === "refreshing" ? "spin" : undefined} size={16} /></button> : undefined} />
+    <section className={`workspace-mode-pane workspace-mode-pane-${activeMode} ${activeMode === "files" ? "file-panel local-files-panel" : ""}`} id="workspace-file-panel">
+      <WorkspacePaneHeader title={paneTitle} detail={paneDetail} action={activeMode === "files" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><ArrowSync16Regular className={tree.status === "refreshing" ? "spin" : undefined} /></button> : undefined} />
       {activeMode === "workspaces" ? <SpacesPane workspace={workspace} workspaces={workspaces} identities={customizations} onSwitch={onSwitchWorkspace} onCreate={onCreateSpace} onOpenFolder={onOpenFolder} onCustomize={(target) => tabs.openAppearanceSurfaceTab(target)} onRename={renameSpace} onRemove={(target) => void removeSpace(target)} /> : null}
-      {activeMode === "space" ? <>
+      {activeMode === "files" ? <>
         <input
           ref={uploadRef}
           className="hidden-file-input"
@@ -689,7 +691,10 @@ function joinDropPath(...segments: string[]) {
 }
 
 function fixtureConversationGroups(fixture: WorkspaceUiFixture): Record<string, ConversationSummary[]> { return Object.fromEntries(Object.entries(fixture.conversations).map(([id, conversations]) => [id, conversations.map(({ messages: _messages, ...summary }) => summary)])); }
-function normalizeMode(value: string | null): WorkspaceRailMode { return (["workspaces", "space", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "space"; }
+function normalizeMode(value: string | null): WorkspaceRailMode {
+  if (value === "space" || value === "workspaces") return "files";
+  return (["files", "chats", "library", "history", "setup", "skills", "extensions"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "files";
+}
 function normalizeCustomizations(value: unknown): WorkspaceCustomizationMap { return value && typeof value === "object" && !Array.isArray(value) ? value as WorkspaceCustomizationMap : {}; }
 
 function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {

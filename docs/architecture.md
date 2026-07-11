@@ -2,7 +2,7 @@
 
 Workspace has three runtime layers:
 
-1. The React renderer presents Spaces, files, Chats, the Library, History, and the Assistant surfaces.
+1. The React renderer presents a Space selector plus Files, Chats, Library, History, and Assistant surfaces.
 2. The local Node API owns filesystem access, conversations, resource import, and Pi sessions.
 3. Electron supplies native windows, menus, dialogs, secure storage, and packaging.
 
@@ -12,9 +12,9 @@ The renderer never receives provider secrets or unrestricted filesystem access. 
 
 **Workspace** is the product. A **Space** is its unit of work: an understandable context for an activity, backed by one ordinary folder. Creating a Space creates a managed folder; turning an existing folder into a Space registers that folder in place. Neither path converts the user's files to an application-specific format.
 
-The primary information architecture is:
+The Space selector establishes the active root-folder entity; a Space is not itself a peer navigation surface. The primary information architecture is:
 
-- **Space** — the files and current working context.
+- **Files** — the ordinary folder contents of the selected Space.
 - **Chats** — conversations associated with the selected Space.
 - **Library** — reusable personal materials available across Spaces.
 - **History** — checkpoints and recoverable changes for the selected Space.

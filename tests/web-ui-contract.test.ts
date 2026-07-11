@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { assistantNavigation, primaryNavigation, welcomeActions } from "../web-local/src/ui-contract.js";
 
-test("Workspace navigation expresses the Space mental model", () => {
+test("Workspace navigation separates the active Space from its surfaces", () => {
   assert.deepEqual(primaryNavigation.map(({ id, label }) => [id, label]), [
-    ["space", "Space"],
+    ["files", "Files"],
     ["chats", "Chats"],
     ["library", "Library"],
     ["history", "History"],

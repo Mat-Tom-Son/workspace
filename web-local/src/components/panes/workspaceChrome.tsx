@@ -1,18 +1,39 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { DocumentFolder20Filled, DocumentFolder20Regular } from "@fluentui/react-icons";
-import { Bot, Check, ChevronDown, History, ImagePlus, Keyboard, LibraryBig, Loader2, MessageSquare, Plug, Search, Settings2, Sparkles, X } from "lucide-react";
+import {
+  ArrowClockwise20Regular,
+  BookToolbox20Filled,
+  BookToolbox20Regular,
+  ChatMultiple20Filled,
+  ChatMultiple20Regular,
+  Checkmark20Regular,
+  ChevronRight20Regular,
+  Dismiss20Regular,
+  DocumentFolder20Filled,
+  DocumentFolder20Regular,
+  Folder20Filled,
+  History20Filled,
+  History20Regular,
+  ImageAdd20Regular,
+  Keyboard20Regular,
+  Library20Filled,
+  Library20Regular,
+  PlugConnected20Filled,
+  PlugConnected20Regular,
+  Search20Regular,
+  Settings20Filled,
+  Settings20Regular,
+} from "@fluentui/react-icons";
 import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspace-icons";
 import { workspaceBannerOptions } from "../../constants";
 import { errorText } from "../../lib/api";
-import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityFor, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
-import { surfaceDomIdSuffix, workspaceHeaderSourceBadgeLabel } from "../../lib/workspace-ui";
-import type { WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
+import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
+import type { WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
 import { WorkspaceIconGlyph } from "../chrome/common";
 
 function WorkspaceModeRail({
   activeMode,
   workspace,
-  workspaceIdentity,
+  workspaceIdentity: _workspaceIdentity,
   onModeChange,
   accountControl,
   onOpenKeyboardShortcuts,
@@ -26,32 +47,41 @@ function WorkspaceModeRail({
   onOpenKeyboardShortcuts: () => void;
   updateControl?: ReactNode;
 }) {
-  const WorkspaceIcon = workspaceIdentity.Icon;
-  const FilesIcon = activeMode === "space" ? DocumentFolder20Filled : DocumentFolder20Regular;
+  const FilesIcon = activeMode === "files" ? DocumentFolder20Filled : DocumentFolder20Regular;
+  const ChatsIcon = activeMode === "chats" ? ChatMultiple20Filled : ChatMultiple20Regular;
+  const LibraryIcon = activeMode === "library" ? Library20Filled : Library20Regular;
+  const HistoryIcon = activeMode === "history" ? History20Filled : History20Regular;
   const workspaceLabel = workspace.name.trim() || "Space";
-  const items: Array<{ mode: WorkspaceRailMode; label: string; ariaLabel: string; title: string; icon: ReactNode; className?: string; showLabel?: boolean }> = [
-    {
-      mode: "workspaces",
-      label: workspaceLabel,
-      ariaLabel: `Space: ${workspaceLabel}`,
-      title: `Space: ${workspaceLabel}`,
-      icon: <WorkspaceIconGlyph icon={WorkspaceIcon} size={20} className="workspace-rail-custom-icon" />,
-      className: "workspace-rail-workspace",
-      showLabel: false,
-    },
-    { mode: "space", label: "Space", ariaLabel: "Space", title: "Files in this Space", icon: <FilesIcon className="fluent-rail-icon" /> },
-    { mode: "chats", label: "Chats", ariaLabel: "Chats", title: "Chats", icon: <MessageSquare size={20} /> },
-    { mode: "library", label: "Library", ariaLabel: "Library", title: "Reusable files for any Space", icon: <LibraryBig size={20} /> },
-    { mode: "history", label: "History", ariaLabel: "History", title: "Restore points and recent activity", icon: <History size={20} /> },
+  const primaryItems: Array<{ mode: WorkspaceRailMode; label: string; ariaLabel: string; title: string; icon: ReactNode }> = [
+    { mode: "files", label: "Files", ariaLabel: "Files", title: "Files in this Space", icon: <FilesIcon className="fluent-rail-icon" /> },
+    { mode: "chats", label: "Chats", ariaLabel: "Chats", title: "Chats", icon: <ChatsIcon className="fluent-rail-icon" /> },
+    { mode: "library", label: "Library", ariaLabel: "Library", title: "Reusable files for any Space", icon: <LibraryIcon className="fluent-rail-icon" /> },
+    { mode: "history", label: "History", ariaLabel: "History", title: "Restore points and recent activity", icon: <HistoryIcon className="fluent-rail-icon" /> },
+  ];
+  const assistantItems = [
+    { mode: "setup" as const, label: "Setup", RegularIcon: Settings20Regular, FilledIcon: Settings20Filled },
+    { mode: "skills" as const, label: "Skills", RegularIcon: BookToolbox20Regular, FilledIcon: BookToolbox20Filled },
+    { mode: "extensions" as const, label: "Extensions", RegularIcon: PlugConnected20Regular, FilledIcon: PlugConnected20Filled },
   ];
   return (
-    <nav className="workspace-mode-rail" aria-label="Workspace sections">
+    <nav className="workspace-mode-rail professional-workspace-rail" aria-label="Workspace navigation">
       <div className="workspace-rail-nav">
-        {items.map((item) => (
+        <button
+          className={["workspace-rail-button", "workspace-rail-workspace", "workspace-rail-space-selector", activeMode === "workspaces" ? "active" : ""].filter(Boolean).join(" ")}
+          type="button"
+          onClick={() => onModeChange("workspaces")}
+          aria-label={`Select or manage Space: ${workspaceLabel}`}
+          aria-current={activeMode === "workspaces" ? "page" : undefined}
+          title={`Select or manage Space: ${workspaceLabel}`}
+        >
+          <span className="workspace-rail-icon workspace-rail-space-avatar" aria-hidden="true"><Folder20Filled /></span>
+          <span className="workspace-rail-space-copy"><span>Space</span><strong>{workspaceLabel}</strong></span>
+          <ChevronRight20Regular className="workspace-rail-space-caret" aria-hidden="true" />
+        </button>
+        {primaryItems.map((item) => (
           <button
             className={[
               "workspace-rail-button",
-              item.className ?? "",
               activeMode === item.mode ? "active" : "",
             ].filter(Boolean).join(" ")}
             type="button"
@@ -61,16 +91,16 @@ function WorkspaceModeRail({
             title={item.title}
           >
             <span className="workspace-rail-icon" aria-hidden="true">{item.icon}</span>
-            {item.showLabel === false ? null : <span className="workspace-rail-label">{item.label}</span>}
+            <span className="workspace-rail-label">{item.label}</span>
           </button>
         ))}
         <div className="workspace-rail-group" role="group" aria-label="Assistant">
-          <span className="workspace-rail-group-label"><Bot size={15} /><span>Assistant</span></span>
-          {([
-            { mode: "setup" as const, label: "Setup", icon: <Settings2 size={18} /> },
-            { mode: "skills" as const, label: "Skills", icon: <Sparkles size={18} /> },
-            { mode: "extensions" as const, label: "Extensions", icon: <Plug size={18} /> },
-          ]).map((item) => <button className={["workspace-rail-button", "workspace-rail-assistant", activeMode === item.mode ? "active" : ""].filter(Boolean).join(" ")} type="button" key={item.mode} onClick={() => onModeChange(item.mode)} aria-label={`Assistant ${item.label}`} title={`Assistant · ${item.label}`}><span className="workspace-rail-icon" aria-hidden="true">{item.icon}</span><span className="workspace-rail-label">{item.label}</span></button>)}
+          <span className="workspace-rail-group-label"><span>Assistant</span></span>
+          {assistantItems.map((item) => {
+            const active = activeMode === item.mode;
+            const Icon = active ? item.FilledIcon : item.RegularIcon;
+            return <button className={["workspace-rail-button", "workspace-rail-assistant", active ? "active" : ""].filter(Boolean).join(" ")} type="button" key={item.mode} onClick={() => onModeChange(item.mode)} aria-label={`Assistant ${item.label}`} title={`Assistant · ${item.label}`}><span className="workspace-rail-icon" aria-hidden="true"><Icon /></span><span className="workspace-rail-label">{item.label}</span></button>;
+          })}
         </div>
       </div>
       <div className="workspace-rail-account">
@@ -83,185 +113,44 @@ function WorkspaceModeRail({
             aria-label="Keyboard shortcuts"
             title="Keyboard shortcuts"
           >
-            <Keyboard size={16} aria-hidden="true" />
+            <Keyboard20Regular aria-hidden="true" />
             <span>Shortcuts</span>
           </button>
         </div>
-        {accountControl}
+        <div className="workspace-rail-settings-control">
+          {accountControl}
+          <Settings20Regular className="workspace-rail-settings-icon" aria-hidden="true" />
+          <span className="workspace-rail-settings-label" aria-hidden="true">Settings</span>
+        </div>
       </div>
     </nav>
   );
 }
 
 function WorkspacePaneHeader({
-  workspace,
   title,
   detail,
-  identity,
-  workspaces,
-  workspaceCustomizations,
-  onSwitchWorkspace,
   action,
 }: {
-  workspace: WorkspaceSummary;
   title: string;
   detail?: string;
-  identity: WorkspaceIdentity;
-  workspaces?: WorkspaceSummary[];
-  workspaceCustomizations?: WorkspaceCustomizationMap;
-  onSwitchWorkspace?: (workspace: WorkspaceSummary) => void;
   action?: ReactNode;
 }) {
-  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
-  const headerRef = useRef<HTMLDivElement>(null);
-  const quickSwitcherEnabled = Boolean(workspaces?.length && workspaceCustomizations && onSwitchWorkspace);
-  const switcherId = `workspace-header-switcher-${surfaceDomIdSuffix(workspace.id)}`;
   const headerClassName = [
     "workspace-pane-current",
     "workspace-pane-header",
-    "workspace-banner-surface",
-    `banner-${identity.bannerName}`,
-    workspace.location.providerHint === "google-drive" ? "drive" : "local",
-    identity.bannerImage ? "has-banner-image" : "",
+    "professional-pane-header",
     action ? "has-action" : "",
-    quickSwitcherEnabled ? "has-switcher" : "",
-    quickSwitcherOpen ? "switcher-open" : "",
   ].filter(Boolean).join(" ");
 
-  useEffect(() => {
-    if (!quickSwitcherOpen) return;
-    function closeOnOutsidePointer(event: PointerEvent) {
-      if (headerRef.current?.contains(event.target as Node)) return;
-      setQuickSwitcherOpen(false);
-    }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setQuickSwitcherOpen(false);
-    }
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [quickSwitcherOpen]);
-
-  function toggleQuickSwitcher() {
-    if (!quickSwitcherEnabled) return;
-    setQuickSwitcherOpen((current) => !current);
-  }
-
-  function handleHeaderKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!quickSwitcherEnabled || event.currentTarget !== event.target) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      toggleQuickSwitcher();
-    }
-  }
-
   return (
-    <div className="workspace-pane-header-wrap" ref={headerRef}>
-      <div
-        className={headerClassName}
-        style={workspaceIdentityStyle(identity)}
-        role={quickSwitcherEnabled ? "button" : undefined}
-        tabIndex={quickSwitcherEnabled ? 0 : undefined}
-        aria-haspopup={quickSwitcherEnabled ? "dialog" : undefined}
-        aria-expanded={quickSwitcherEnabled ? quickSwitcherOpen : undefined}
-        aria-controls={quickSwitcherEnabled ? switcherId : undefined}
-        onClick={toggleQuickSwitcher}
-        onKeyDown={handleHeaderKeyDown}
-        title={quickSwitcherEnabled ? "Switch Space" : undefined}
-      >
-        {identity.bannerImage ? (
-          <span className="workspace-pane-banner-image" aria-hidden="true">
-            <img src={identity.bannerImage} alt="" draggable={false} />
-            <span className="workspace-pane-banner-scrim" />
-          </span>
-        ) : null}
-        <span className="workspace-pane-current-copy">
-          <span className="workspace-pane-current-lockup">
-            <span className="workspace-pane-current-icon" aria-hidden="true">
-              <WorkspaceIconGlyph icon={identity.Icon} size={20} />
-            </span>
-            <strong>{title}</strong>
-          </span>
-          {detail ? <span className="sr-only">{detail}</span> : null}
+    <div className="workspace-pane-header-wrap">
+      <div className={headerClassName}>
+        <span className="workspace-pane-page-copy">
+          <strong className="workspace-pane-page-title">{title}</strong>
+          {detail ? <span className="workspace-pane-page-detail">{detail}</span> : null}
         </span>
-        {quickSwitcherEnabled ? (
-          <span className="workspace-pane-switch-caret" aria-hidden="true">
-            <ChevronDown size={18} />
-          </span>
-        ) : null}
-        {action ? (
-          <span
-            className="workspace-pane-header-action"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
-          >
-            {action}
-          </span>
-        ) : null}
-      </div>
-      {quickSwitcherEnabled && quickSwitcherOpen && workspaces && workspaceCustomizations && onSwitchWorkspace ? (
-        <WorkspaceHeaderSwitcher
-          id={switcherId}
-          currentWorkspace={workspace}
-          workspaces={workspaces}
-          workspaceCustomizations={workspaceCustomizations}
-          onSwitchWorkspace={onSwitchWorkspace}
-          onClose={() => setQuickSwitcherOpen(false)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function WorkspaceHeaderSwitcher({
-  id,
-  currentWorkspace,
-  workspaces,
-  workspaceCustomizations,
-  onSwitchWorkspace,
-  onClose,
-}: {
-  id: string;
-  currentWorkspace: WorkspaceSummary;
-  workspaces: WorkspaceSummary[];
-  workspaceCustomizations: WorkspaceCustomizationMap;
-  onSwitchWorkspace: (workspace: WorkspaceSummary) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="workspace-header-switcher" id={id} role="dialog" aria-label="Switch Space">
-      <div className="workspace-header-switcher-list">
-        {workspaces.map((item) => {
-          const active = item.id === currentWorkspace.id;
-          const identity = workspaceIdentityFor(item, workspaceCustomizations);
-          const Icon = identity.Icon;
-          return (
-            <button
-              className={active ? "workspace-header-switcher-row active" : "workspace-header-switcher-row"}
-              type="button"
-              key={item.id}
-              disabled={active}
-              aria-current={active ? "page" : undefined}
-              style={workspaceIdentityStyle(identity)}
-              onClick={() => {
-                onClose();
-                onSwitchWorkspace(item);
-              }}
-            >
-              <span className="workspace-header-switcher-icon" aria-hidden="true">
-                <WorkspaceIconGlyph icon={Icon} size={17} />
-              </span>
-              <span className="workspace-header-switcher-copy">
-                <strong>{item.name}</strong>
-              </span>
-              <span className="workspace-header-switcher-badge">{workspaceHeaderSourceBadgeLabel(item)}</span>
-              {active ? <Check className="workspace-header-switcher-check" size={15} aria-hidden="true" /> : null}
-            </button>
-          );
-        })}
+        {action ? <span className="workspace-pane-header-action professional-header-action">{action}</span> : null}
       </div>
     </div>
   );
@@ -342,10 +231,10 @@ function WorkspaceRenameEditor({
           aria-label={`Space name for ${workspace.name}`}
         />
         <button className="workspace-rename-action save" type="submit" disabled={saving || !name.trim()} aria-label="Save Space name" title="Save">
-          {saving ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+          {saving ? <ArrowClockwise20Regular className="spin" /> : <Checkmark20Regular />}
         </button>
         <button className="workspace-rename-action" type="button" disabled={saving} onClick={onClose} aria-label="Cancel rename" title="Cancel">
-          <X size={14} />
+          <Dismiss20Regular />
         </button>
       </form>
       {error ? <span className="workspace-rename-error">{error}</span> : null}
@@ -407,7 +296,7 @@ function WorkspaceAppearancePanel({
                 aria-pressed={identity.color === option.color}
                 title={option.label}
               >
-                {identity.color === option.color ? <Check size={12} /> : null}
+                {identity.color === option.color ? <Checkmark20Regular /> : null}
               </button>
             ))}
           </div>
@@ -448,7 +337,7 @@ function WorkspaceAppearancePanel({
                 aria-label="Remove second banner color"
                 title="Match primary color"
               >
-                <X size={12} />
+                <Dismiss20Regular />
               </button>
             ) : null}
           </div>
@@ -490,7 +379,7 @@ function WorkspaceAppearancePanel({
             >
               {identity.bannerImage ? <img src={identity.bannerImage} alt="" draggable={false} /> : null}
               <span className="workspace-banner-swatch-name">
-                {bannerUploadBusy ? <Loader2 className="spin" size={13} /> : <ImagePlus size={13} />}
+                {bannerUploadBusy ? <ArrowClockwise20Regular className="spin" /> : <ImageAdd20Regular />}
                 {identity.bannerImage ? "Replace" : "Upload"}
               </span>
             </button>
@@ -514,7 +403,7 @@ function WorkspaceAppearancePanel({
               }}
               disabled={bannerUploadBusy}
             >
-              <X size={12} />
+              <Dismiss20Regular />
               Remove custom image
             </button>
           ) : null}
@@ -525,7 +414,7 @@ function WorkspaceAppearancePanel({
         <span className="workspace-appearance-label">Icon</span>
         <div className="workspace-icon-picker">
           <label className="workspace-icon-search">
-            <Search size={14} aria-hidden="true" />
+            <Search20Regular aria-hidden="true" />
             <input
               type="search"
               value={iconSearchQuery}
@@ -560,4 +449,4 @@ function WorkspaceAppearancePanel({
   );
 }
 
-export { WorkspaceAppearancePanel, WorkspaceHeaderSwitcher, WorkspaceModeRail, WorkspacePaneHeader, WorkspaceRenameEditor };
+export { WorkspaceAppearancePanel, WorkspaceModeRail, WorkspacePaneHeader, WorkspaceRenameEditor };

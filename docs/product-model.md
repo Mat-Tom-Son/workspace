@@ -16,6 +16,7 @@ Workspace is for general computer work. Coding is one valid use, not the organiz
 |---|---|---|
 | **Workspace** | The desktop product that brings places, conversations, materials, and an Assistant together. | It is not the name of each folder-backed activity. |
 | **Space** | One understandable place for an activity, backed by an ordinary folder. | Registering a folder does not move or convert it. |
+| **Files** | The ordinary folder contents visible for the selected Space. | Files are not a separate container or proprietary format. |
 | **Chats** | Conversations grounded in the selected Space. | A chat does not automatically receive every file in the Space. |
 | **Library** | Personal materials worth reusing across Spaces. | Items are passive and are copied explicitly; they are not prompt context. |
 | **History** | Checkpoints and recoverable changes associated with a Space. | It should remain distinct from chat history. |
@@ -23,9 +24,9 @@ Workspace is for general computer work. Coding is one valid use, not the organiz
 | **Skill** | A reusable way of working that helps the Assistant approach a task. | A Skill may contain executable scripts and is not merely a document. |
 | **Extension** | An executable capability or connection available to the Assistant. | It has a stronger trust implication than a Library item. |
 
-The stable navigation follows these nouns:
+The Space switcher chooses the active root-folder entity. The stable primary navigation then follows these surface nouns:
 
-- **Space**
+- **Files**
 - **Chats**
 - **Library**
 - **History**

@@ -1,4 +1,4 @@
-export type WorkspacePane = "space" | "chats" | "library" | "history" | "setup" | "skills" | "extensions";
+export type WorkspacePane = "files" | "chats" | "library" | "history" | "setup" | "skills" | "extensions";
 export type WorkspaceRailMode = "workspaces" | WorkspacePane;
 export type AppTheme = "light" | "dark";
 export type AppThemePreference = AppTheme | "system";

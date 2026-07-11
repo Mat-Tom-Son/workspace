@@ -1,5 +1,5 @@
 export const primaryNavigation = [
-  { id: "space", label: "Space" },
+  { id: "files", label: "Files" },
   { id: "chats", label: "Chats" },
   { id: "library", label: "Library" },
   { id: "history", label: "History" },

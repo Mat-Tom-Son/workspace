@@ -1,0 +1,611 @@
+/* Professional desktop shell overrides. These selectors intentionally carry
+   enough specificity to sit above the retained legacy theme rules. */
+
+.app-shell .workspace-layout {
+  --workspace-rail-width: clamp(148px, 12vw, 176px);
+  --workspace-identity-header-height: 54px;
+  --workspace-identity-radius: 0;
+  --workspace-pane-edge-fill: var(--ui-surface);
+  background: var(--ui-canvas);
+}
+
+.app-shell .workspace-layout .workspace-mode-pane {
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  box-shadow: none;
+}
+
+.app-shell .professional-workspace-rail {
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px;
+  color: var(--ui-text);
+  background: var(--ui-surface-subtle);
+  border-color: var(--ui-border);
+  border-right: 0;
+  box-shadow: none;
+}
+
+.app-shell .professional-workspace-rail::after {
+  display: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-nav {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: none;
+  place-items: center start;
+  gap: 8px;
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--ui-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  transform: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button::after {
+  display: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button:hover,
+.app-shell .professional-workspace-rail .workspace-rail-button:focus-visible {
+  width: 100%;
+  margin: 0;
+  color: var(--ui-text);
+  background: var(--ui-surface-hover);
+  border-color: transparent;
+  border-radius: var(--ui-radius-sm);
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button.active,
+.app-shell .professional-workspace-rail .workspace-rail-button.active:hover,
+.app-shell .professional-workspace-rail .workspace-rail-button.active:focus-visible {
+  width: 100%;
+  margin: 0;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  box-shadow: inset 3px 0 0 var(--ui-accent);
+  transform: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-icon,
+.app-shell .professional-workspace-rail .workspace-rail-button.active .workspace-rail-icon,
+.app-shell .professional-workspace-rail .workspace-rail-button:hover .workspace-rail-icon,
+.app-shell .professional-workspace-rail .workspace-rail-button:focus-visible .workspace-rail-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button svg,
+.app-shell .professional-workspace-rail .workspace-rail-group-label svg,
+.app-shell .professional-workspace-rail .workspace-rail-quiet-button svg,
+.app-shell .professional-workspace-rail .workspace-rail-settings-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-label {
+  width: 100%;
+  max-width: 100%;
+  color: inherit;
+  font-weight: inherit;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-selector,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:hover,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:focus-visible,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active:hover,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active:focus-visible {
+  width: 100%;
+  min-height: 46px;
+  grid-template-columns: 28px minmax(0, 1fr) 16px;
+  grid-template-rows: none;
+  justify-self: stretch;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:hover,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:focus-visible {
+  background: var(--ui-surface-hover);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active {
+  box-shadow: inset 3px 0 0 var(--ui-accent);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-avatar,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:hover .workspace-rail-space-avatar,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector:focus-visible .workspace-rail-space-avatar,
+.app-shell .professional-workspace-rail .workspace-rail-space-selector.active .workspace-rail-space-avatar {
+  width: 28px;
+  height: 28px;
+  color: var(--ui-text-muted);
+  background: var(--ui-surface-subtle);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  box-shadow: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-avatar svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-copy {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  text-align: left;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-copy > span {
+  color: var(--ui-text-subtle);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-text);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-space-caret {
+  width: 16px;
+  height: 16px;
+  color: var(--ui-text-subtle);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-group {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-group-label {
+  min-height: 26px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  color: var(--ui-text-subtle);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button.workspace-rail-assistant {
+  min-height: 34px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-account {
+  width: 100%;
+  display: grid;
+  place-items: stretch;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-tools {
+  width: 100%;
+  display: grid;
+  place-items: stretch;
+  gap: 4px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-update {
+  display: grid;
+  justify-content: start;
+  padding-left: 2px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-quiet-button {
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  place-items: center start;
+  gap: 8px;
+  padding: 5px 8px;
+  color: var(--ui-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-quiet-button:hover,
+.app-shell .professional-workspace-rail .workspace-rail-quiet-button:focus-visible {
+  color: var(--ui-text);
+  background: var(--ui-surface-hover);
+  border-color: transparent;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-control {
+  position: relative;
+  width: 100%;
+  min-height: 34px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-control .workspace-rail-account-button {
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  display: block;
+  padding: 0;
+  color: var(--ui-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-control .workspace-rail-account-button:hover,
+.app-shell .professional-workspace-rail .workspace-rail-settings-control .workspace-rail-account-button:focus-visible {
+  color: var(--ui-text);
+  background: var(--ui-surface-hover);
+  border-color: transparent;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-control .workspace-rail-account-button > svg {
+  display: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-icon,
+.app-shell .professional-workspace-rail .workspace-rail-settings-label {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  color: var(--ui-text-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-icon {
+  left: 10px;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-label {
+  left: 40px;
+  right: 8px;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-settings-control:has(.workspace-rail-account-button:hover) .workspace-rail-settings-icon,
+.app-shell .professional-workspace-rail .workspace-rail-settings-control:has(.workspace-rail-account-button:hover) .workspace-rail-settings-label,
+.app-shell .professional-workspace-rail .workspace-rail-settings-control:has(.workspace-rail-account-button:focus-visible) .workspace-rail-settings-icon,
+.app-shell .professional-workspace-rail .workspace-rail-settings-control:has(.workspace-rail-account-button:focus-visible) .workspace-rail-settings-label {
+  color: var(--ui-text);
+}
+
+.app-shell .workspace-layout .workspace-pane-header-wrap {
+  height: 54px;
+  flex: 0 0 54px;
+}
+
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header,
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header:hover,
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header:focus-visible,
+.app-shell .workspace-layout .workspace-mode-pane .professional-pane-header.switcher-open {
+  width: 100%;
+  height: 54px;
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  overflow: visible;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+  outline: 0;
+  transform: none;
+}
+
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:hover) .professional-pane-header,
+.app-shell .workspace-layout:has(.workspace-rail-space-selector:focus-visible) .professional-pane-header {
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell .professional-pane-header .workspace-pane-page-copy {
+  min-width: 0;
+  display: grid;
+  flex: 1 1 auto;
+  align-content: center;
+  gap: 1px;
+}
+
+.app-shell .professional-pane-header .workspace-pane-page-title,
+.app-shell .professional-pane-header .workspace-pane-page-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .professional-pane-header .workspace-pane-page-title {
+  color: var(--ui-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-shadow: none;
+}
+
+.app-shell .professional-pane-header .workspace-pane-page-detail {
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.app-shell .professional-pane-header .workspace-pane-header-action.professional-header-action {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  transform: none;
+}
+
+.app-shell .professional-pane-header .professional-header-action > .minimal-icon-button {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  color: var(--ui-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+}
+
+.app-shell .professional-pane-header .professional-header-action > .minimal-icon-button:hover,
+.app-shell .professional-pane-header .professional-header-action > .minimal-icon-button:focus-visible {
+  color: var(--ui-text);
+  background: var(--ui-surface-hover);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.app-shell[data-theme="dark"] .workspace-layout .professional-workspace-rail,
+.app-shell[data-theme="dark"] .workspace-layout .workspace-mode-pane,
+.app-shell[data-theme="dark"] .workspace-layout .professional-pane-header {
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  box-shadow: none;
+}
+
+.app-shell[data-theme="dark"] .workspace-layout .professional-workspace-rail {
+  background: var(--ui-surface-subtle);
+}
+
+.app-shell[data-theme="dark"] .workspace-layout .professional-pane-header,
+.app-shell[data-theme="dark"] .workspace-layout:has(.workspace-rail-space-selector:hover) .professional-pane-header,
+.app-shell[data-theme="dark"] .workspace-layout:has(.workspace-rail-space-selector:focus-visible) .professional-pane-header {
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  box-shadow: none;
+  transform: none;
+}
+
+
+@media (max-width: 1180px) and (min-width: 821px) {
+  .app-shell .workspace-layout {
+    --workspace-rail-width: 144px;
+  }
+}
+
+@media (max-height: 720px) and (min-width: 821px) {
+  .app-shell .professional-workspace-rail {
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-button,
+  .app-shell .professional-workspace-rail .workspace-rail-button.workspace-rail-assistant {
+    min-height: 32px;
+    padding-block: 3px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector:hover,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector:focus-visible,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector.active {
+    min-height: 42px;
+    margin-bottom: 3px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-group {
+    margin-top: 4px;
+    padding-top: 4px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-group-label {
+    min-height: 22px;
+  }
+}
+
+@media (max-width: 820px) {
+  .app-shell .workspace-layout {
+    --workspace-rail-width: auto;
+  }
+
+  .app-shell .professional-workspace-rail {
+    width: 100%;
+    min-height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    margin: 0 0 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-md);
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-nav {
+    width: max-content;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    overflow: visible;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-button,
+  .app-shell .professional-workspace-rail .workspace-rail-button:hover,
+  .app-shell .professional-workspace-rail .workspace-rail-button:focus-visible,
+  .app-shell .professional-workspace-rail .workspace-rail-button.active {
+    width: auto;
+    min-width: 78px;
+    flex: 0 0 auto;
+    margin: 0;
+    grid-template-columns: 20px auto;
+    padding-inline: 8px;
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-sm);
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector:hover,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector:focus-visible,
+  .app-shell .professional-workspace-rail .workspace-rail-space-selector.active {
+    width: min(190px, 46vw);
+    min-width: 130px;
+    grid-template-columns: 28px minmax(0, 1fr) 16px;
+    margin: 0 5px 0 0;
+    border-color: var(--ui-border);
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0 0 0 4px;
+    padding: 0 0 0 7px;
+    border-top: 0;
+    border-left: 1px solid var(--ui-border);
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-group-label {
+    min-width: max-content;
+    padding-inline: 4px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-account {
+    width: auto;
+    min-width: max-content;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0 0 0 auto;
+    padding: 0 0 0 7px;
+    border-top: 0;
+    border-left: 1px solid var(--ui-border);
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-tools {
+    width: auto;
+    display: flex;
+    align-items: center;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-quiet-button,
+  .app-shell .professional-workspace-rail .workspace-rail-settings-control {
+    width: 36px;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-quiet-button {
+    grid-template-columns: 1fr;
+    place-items: center;
+    padding: 0;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-quiet-button span,
+  .app-shell .professional-workspace-rail .workspace-rail-settings-label {
+    display: none;
+  }
+
+  .app-shell .professional-workspace-rail .workspace-rail-settings-icon {
+    left: 8px;
+  }
+
+  .app-shell .workspace-layout .workspace-mode-pane .professional-pane-header {
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 440px) {
+  .app-shell .professional-pane-header .workspace-pane-page-detail {
+    display: none;
+  }
+}
