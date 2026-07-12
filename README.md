@@ -14,14 +14,14 @@ The core idea is simple: the folder stays ordinary; Workspace makes it feel like
 | **Space** | Everything associated with one activity, backed by an ordinary folder. |
 | **Files** | The ordinary folder contents of the selected Space. |
 | **Library** | Reusable personal materials that can be brought into any Space. |
+| **Capabilities** | The place to discover and manage what the Assistant can do. |
 | **Skill** | A reusable way of working that guides the Assistant. |
 | **Extension** | A capability or connection the Assistant can use. |
 
 The Space switcher selects the root-folder entity a person is working in. The primary navigation then opens surfaces for that selected Space and the surrounding product:
 
 - **Files**
-- **Skills**
-- **Extensions**
+- **Capabilities**
 - **Chats**
 - **Library**
 - **History**
@@ -38,7 +38,8 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - Space file browsing, uploads, previews, chat attachments, and ordinary-folder access.
 - A personal Library for organizing reusable files and copying them into Spaces when needed.
 - Pi's normal built-in tools, provider/model selection, authentication, prompt templates, context files, and packages.
-- Global and trusted-project Pi extensions.
+- One Capabilities surface for installed Skills and Extensions, official/reference sources, community Pi packages, provenance, scope, diagnostics, update, and removal.
+- Global and trusted-Space Pi Extensions.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
 - Assisted Windows installation and GitHub-hosted application updates.
 
@@ -87,7 +88,7 @@ The user-facing **Library** contains personal materials. Separately, Workspace f
 
 - User resources: the configured Pi agent directory (normally `~/.pi/agent`).
 - Portable project resources: `.pi/` inside a Space folder that the user has explicitly trusted.
-- Packages: npm, git, HTTPS, and local package sources supported by Pi.
+- Packages: npm, git, HTTPS, and local package sources supported by Pi, managed as provenance and lifecycle records inside Capabilities.
 
 Npm and git package sources use the corresponding command-line tools on `PATH`; local package paths and Skill imports do not require them. The packaged app uses Pi's normal global agent directory (typically `~/.pi/agent`) for packages and resources, while provider credentials are encrypted by the operating system for Workspace. Internal APIs and code may retain terms such as `workspace`, `project`, and `resource` where they identify existing Pi or storage concepts; those names do not change the user-facing Space, Library, Skill, and Extension model.
 

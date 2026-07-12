@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { ArrowDown20Regular, ArrowUp20Regular } from "@fluentui/react-icons";
 import { AlertTriangle, CircleCheck, Loader2, Square, X } from "lucide-react";
@@ -20,6 +20,7 @@ import { showToast } from "../../ui/feedback";
 const emptyFixtureTreeEntries: TreeEntry[] = [];
 
 export function ChatPanel({
+  surfaceTabId,
   workspace,
   workspaceCustomizations,
   active = true,
@@ -36,6 +37,7 @@ export function ChatPanel({
   fixtureConversations,
   fixtureTreeEntries = emptyFixtureTreeEntries,
 }: {
+  surfaceTabId: string;
   workspace: WorkspaceSummary;
   workspaceCustomizations: WorkspaceCustomizationMap;
   active?: boolean;
@@ -100,9 +102,14 @@ export function ChatPanel({
   const scriptPlaybackTimerRef = useRef<number | null>(null);
   const activeDraftStorageKeyRef = useRef<string | null>(null);
   const draftRef = useRef(draft);
+  const activityLogId = useId();
   const draftStorageKey = useMemo(
-    () => chatDraftStorageKey(workspace.id, targetConversationId ?? conversation?.id ?? null),
-    [workspace.id, targetConversationId, conversation?.id],
+    () => chatDraftStorageKey(
+      workspace.id,
+      targetConversationId ?? conversation?.id ?? null,
+      surfaceTabId === `chat:${workspace.id}:new` ? null : surfaceTabId,
+    ),
+    [workspace.id, targetConversationId, conversation?.id, surfaceTabId],
   );
   const runtimePreviewScrollKey = useMemo(
     () => runtimePreviews.map((entry) => `${entry.id}:${entry.phase ?? ""}:${entry.text.length}`).join("|"),
@@ -1220,7 +1227,7 @@ export function ChatPanel({
           {running && (streamingAssistant || hasRuntimePreview) ? (
             <article className="message assistant streaming">
               <div className="message-header">
-                <span className="message-author">{assistantName}</span>
+                <span className="message-identity"><span className="message-author">{assistantName}</span></span>
               </div>
               {hasRuntimePreview ? <RuntimeContextPreview entries={runtimePreviews} running={running} /> : null}
               {streamingAssistant ? <MarkdownMessage content={streamingAssistant} /> : null}
@@ -1229,7 +1236,7 @@ export function ChatPanel({
           {running && !streamingAssistant && !hasRuntimePreview ? (
             <article className="message assistant streaming working-message">
               <div className="message-header">
-                <span className="message-author">{assistantName}</span>
+                <span className="message-identity"><span className="message-author">{assistantName}</span></span>
               </div>
               <div className="typing-line"><Loader2 className="spin" size={14} /> Working</div>
             </article>
@@ -1276,7 +1283,7 @@ export function ChatPanel({
             type="button"
             onClick={toggleActivityLog}
             aria-expanded={activityLogOpen}
-            aria-controls="agent-activity-log"
+            aria-controls={activityLogId}
             title="Activity"
           >
             <span>Activity</span>
@@ -1284,6 +1291,7 @@ export function ChatPanel({
         </div>
         {activityLogOpen ? (
           <AgentActivityLog
+            id={activityLogId}
             events={activityLog}
             listRef={activityLogListRef}
             onScroll={updateActivityLogScrollPosition}

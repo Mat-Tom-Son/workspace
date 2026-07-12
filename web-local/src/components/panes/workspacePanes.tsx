@@ -10,13 +10,10 @@ import {
   ArrowSync16Regular,
   ArrowUpload16Regular,
   Bot20Regular,
-  BookToolbox20Regular,
-  Box16Regular,
   Chat16Regular,
   Checkmark12Regular,
   Checkmark16Regular,
   Clock16Regular,
-  Code16Regular,
   Color16Regular,
   Copy16Regular,
   Delete16Regular,
@@ -29,15 +26,12 @@ import {
   History16Regular,
   History20Regular,
   Library20Regular,
-  PlugConnected20Regular,
   ShieldCheckmark16Regular,
-  ShieldCheckmark20Regular,
 } from "@fluentui/react-icons";
 import { api, apiForm, errorText } from "../../lib/api";
 import { formatChatListTime, formatItemCount } from "../../lib/format";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "../../lib/workspace-identity";
 import type {
-  AgentCatalog,
   AgentModel,
   AgentStatus,
   ConversationSummary,
@@ -48,6 +42,7 @@ import type {
 } from "../../types";
 import { WorkspaceIconGlyph } from "../chrome/common";
 import { FileTypeIcon } from "../tree/FileTree";
+import { TextInputModal } from "../modals/TextInputModal";
 import { requestConfirm } from "../../ui/feedback";
 import { WorkspaceRenameEditor } from "./workspaceChrome";
 
@@ -192,6 +187,7 @@ export function LibraryPane({ workspace, fixtureTree, onError }: { workspace: Wo
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const selectedEntry = selected ? findTreeEntry(tree, selected) : null;
 
@@ -216,16 +212,13 @@ export function LibraryPane({ workspace, fixtureTree, onError }: { workspace: Wo
     finally { setBusy(false); }
   }
 
-  async function createFolder() {
+  async function createFolder(name: string) {
     if (fixtureTree) return;
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
     setBusy(true);
     try {
-      await api("/api/resources/folders", { method: "POST", body: { parentPath: selectedEntry?.kind === "folder" ? selectedEntry.path : "", name: name.trim() } });
+      await api("/api/resources/folders", { method: "POST", body: { parentPath: selectedEntry?.kind === "folder" ? selectedEntry.path : "", name } });
       await load();
-    } catch (caught) { onError(errorText(caught)); }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   }
 
   async function copyToSpace() {
@@ -254,7 +247,7 @@ export function LibraryPane({ workspace, fixtureTree, onError }: { workspace: Wo
         </label>
         <div className="professional-toolbar-actions">
           <button className="minimal-icon-button" type="button" disabled={busy || Boolean(fixtureTree)} onClick={() => uploadRef.current?.click()} aria-label="Add files" title="Add files"><ArrowUpload16Regular /></button>
-          <button className="minimal-icon-button" type="button" disabled={busy || Boolean(fixtureTree)} onClick={() => void createFolder()} aria-label="New folder" title="New folder"><FolderAdd16Regular /></button>
+          <button className="minimal-icon-button" type="button" disabled={busy || Boolean(fixtureTree)} onClick={() => setFolderDialogOpen(true)} aria-label="New folder" title="New folder"><FolderAdd16Regular /></button>
         </div>
         <input hidden ref={uploadRef} type="file" multiple onChange={(event) => void upload(event)} />
       </div>
@@ -292,11 +285,19 @@ export function LibraryPane({ workspace, fixtureTree, onError }: { workspace: Wo
           </div>
         </div>
       )}
+      {folderDialogOpen ? <TextInputModal title="New Library folder" description="Create a folder in the selected Library location." label="Folder name" confirmLabel="Create folder" onSubmit={createFolder} onClose={() => setFolderDialogOpen(false)} /> : null}
     </div>
   );
 }
 
-export function HistoryPane({ workspace, fixtureItems, refreshRequest = 0, onOpen, onError }: { workspace: WorkspaceSummary; fixtureItems?: WorkspaceCheckpoint[]; refreshRequest?: number; onOpen?: (item?: WorkspaceCheckpoint) => void; onError: (message: string | null) => void }) {
+export function HistoryPane({ workspace, fixtureItems, refreshRequest = 0, selectedCheckpointId, onOpen, onError }: {
+  workspace: WorkspaceSummary;
+  fixtureItems?: WorkspaceCheckpoint[];
+  refreshRequest?: number;
+  selectedCheckpointId?: string;
+  onOpen?: (item: WorkspaceCheckpoint) => void;
+  onError: (message: string | null) => void;
+}) {
   const [items, setItems] = useState<WorkspaceCheckpoint[]>(fixtureItems ?? []);
   const [busy, setBusy] = useState(false);
 
@@ -335,10 +336,13 @@ export function HistoryPane({ workspace, fixtureItems, refreshRequest = 0, onOpe
       </div>
       <div className="history-list professional-history-list">
         {items.map((item) => (
-          <article className="professional-history-card" key={item.checkpointId} onDoubleClick={() => onOpen?.(item)}>
+          <article className={item.checkpointId === selectedCheckpointId ? "professional-history-card selected" : "professional-history-card"} key={item.checkpointId} aria-current={item.checkpointId === selectedCheckpointId ? "true" : undefined}>
             <span className="professional-icon-tile" aria-hidden="true"><History16Regular /></span>
             <div className="professional-history-copy"><strong>{item.label || item.reason}</strong><span>{formatDate(item.createdAt)} · {item.fileCount} files</span></div>
-            <button className="professional-button professional-button-secondary" type="button" disabled={busy || Boolean(fixtureItems)} onClick={() => void restore(item)}>Restore</button>
+            <div className="professional-history-actions">
+              {onOpen ? <button className="professional-button professional-button-secondary" type="button" onClick={() => onOpen(item)}>Open</button> : null}
+              <button className="professional-button professional-button-secondary" type="button" disabled={busy || Boolean(fixtureItems)} onClick={() => void restore(item)}>Restore</button>
+            </div>
           </article>
         ))}
         {!items.length ? <EmptyState icon={<History20Regular />} title="No restore points yet" detail="Workspace creates restore points before important file changes. You can make one manually too." /> : null}
@@ -441,167 +445,6 @@ export function AssistantSetupPane({ workspace, status, fixtureMode = false, emb
   );
 }
 
-export function AssistantCapabilityPane({ workspace, mode, status, fixtureMode = false, onOpenSettings, onError }: { workspace: WorkspaceSummary; mode: "skills" | "extensions"; status: AgentStatus; fixtureMode?: boolean; onOpenSettings: () => void; onError: (message: string | null) => void }) {
-  const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
-  const [source, setSource] = useState("");
-  const [scope, setScope] = useState<"global" | "project">("global");
-  const [busy, setBusy] = useState(false);
-  const importRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (fixtureMode) { setCatalog(fixtureCatalog()); return; }
-    void load();
-  }, [fixtureMode, workspace.id]);
-
-  async function load() {
-    if (fixtureMode) return;
-    try { setCatalog(await api<AgentCatalog>(`/api/workspaces/${workspace.id}/agent/catalog`)); }
-    catch (caught) { onError(errorText(caught)); }
-  }
-
-  async function trust() {
-    if (fixtureMode) { setCatalog((current) => current ? { ...current, projectTrusted: !current.projectTrusted } : current); return; }
-    try { setCatalog((await api<{ catalog: AgentCatalog }>(`/api/workspaces/${workspace.id}/agent/trust`, { method: "POST", body: { trusted: !catalog?.projectTrusted } })).catalog); }
-    catch (caught) { onError(errorText(caught)); }
-  }
-
-  async function install() {
-    if (!source.trim() || fixtureMode) return;
-    setBusy(true);
-    try {
-      await api("/api/agent/packages/install", { method: "POST", body: { workspaceId: workspace.id, source: source.trim(), scope } });
-      setSource("");
-      await load();
-    } catch (caught) { onError(errorText(caught)); }
-    finally { setBusy(false); }
-  }
-
-  async function importSkills(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
-    if (!files.length || fixtureMode) return;
-    const form = new FormData();
-    form.set("workspaceId", workspace.id);
-    form.set("scope", scope);
-    files.forEach((file) => form.append("files", file, file.name));
-    setBusy(true);
-    try { await apiForm("/api/agent/skills/import", form); await load(); }
-    catch (caught) { onError(errorText(caught)); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <div className="workspace-pane-content assistant-pane professional-surface professional-assistant">
-      {!status.configured ? (
-        <NoticeBanner
-          icon={<Bot20Regular />}
-          title="Assistant not set up yet"
-          detail="You can organize capabilities now and choose a provider when you are ready."
-          action={<button className="professional-button professional-button-secondary" type="button" onClick={onOpenSettings}>Open Settings</button>}
-        />
-      ) : null}
-      {catalog ? (
-        <NoticeBanner
-          icon={<ShieldCheckmark20Regular />}
-          title={catalog.projectTrusted ? "This Space is trusted" : "This Space is not trusted"}
-          detail={catalog.projectTrusted ? "Capabilities stored inside it may load." : "Personal capabilities still work. Trust the Space to load local capabilities."}
-          action={<button className="professional-button professional-button-secondary" type="button" onClick={() => void trust()}>{catalog.projectTrusted ? "Remove trust" : "Trust Space"}</button>}
-          tone={catalog.projectTrusted ? "success" : "neutral"}
-        />
-      ) : <LoadingRow label="Loading capabilities" />}
-
-      <CapabilityInstallPanel
-        mode={mode}
-        scope={scope}
-        source={source}
-        busy={busy}
-        importRef={importRef}
-        onScopeChange={setScope}
-        onSourceChange={setSource}
-        onImport={(event) => void importSkills(event)}
-        onInstall={() => void install()}
-      />
-
-      {catalog?.diagnostics.length ? (
-        <div className="professional-diagnostics" role="status">
-          {catalog.diagnostics.map((item, index) => <span className={item.type} key={`${item.message}-${index}`}>{item.message}</span>)}
-        </div>
-      ) : null}
-
-      {mode === "skills" ? (
-        <div className="professional-card-grid">
-          {catalog?.skills.map((skill) => <CapabilityCard key={`${skill.source}:${skill.name}`} icon={<BookToolbox20Regular />} title={skill.name} detail={skill.description} meta={`${skill.source} · ${skill.path}`} enabled={skill.enabled} />)}
-          {catalog && !catalog.skills.length ? <EmptyState icon={<BookToolbox20Regular />} title="No Skills loaded" detail="Import an Agent Skill or compatible Skill pack, or add one to a standard Pi location." /> : null}
-        </div>
-      ) : (
-        <>
-          <div className="professional-card-grid">
-            {catalog?.extensions.map((extension) => <CapabilityCard key={`${extension.source}:${extension.id}`} icon={<PlugConnected20Regular />} title={extension.name} detail={`${extension.tools.length} tools · ${extension.commands.length} commands`} meta={`${extension.source} · ${extension.path}`} enabled={extension.enabled} />)}
-            {catalog && !catalog.extensions.length ? <EmptyState icon={<PlugConnected20Regular />} title="No Extensions loaded" detail="Install a Pi package containing an Extension, or add one to a trusted .pi/extensions folder." /> : null}
-          </div>
-          {catalog?.tools.length ? (
-            <details className="professional-tool-details">
-              <summary><Code16Regular />Available tools ({catalog.tools.length})</summary>
-              <div className="professional-tool-list">{catalog.tools.map((tool) => <span key={tool.name}><strong>{tool.name}</strong><span>{tool.description}</span><small>{tool.source}</small></span>)}</div>
-            </details>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
-
-function CapabilityInstallPanel({ mode, scope, source, busy, importRef, onScopeChange, onSourceChange, onImport, onInstall }: {
-  mode: "skills" | "extensions";
-  scope: "global" | "project";
-  source: string;
-  busy: boolean;
-  importRef: React.RefObject<HTMLInputElement | null>;
-  onScopeChange: (scope: "global" | "project") => void;
-  onSourceChange: (source: string) => void;
-  onImport: (event: ChangeEvent<HTMLInputElement>) => void;
-  onInstall: () => void;
-}) {
-  function submitInstall(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    onInstall();
-  }
-
-  return (
-    <section className="professional-card professional-install-panel" aria-labelledby={`${mode}-install-title`}>
-      <div className="professional-install-heading">
-        <div><h2 id={`${mode}-install-title`}>Add {mode === "skills" ? "Skills" : "Extensions"}</h2><p>Choose whether this capability belongs to you or only to this Space.</p></div>
-        <div className="professional-scope-toggle" role="group" aria-label="Capability location">
-          <button className={scope === "global" ? "active" : ""} type="button" onClick={() => onScopeChange("global")} aria-pressed={scope === "global"}>Personal</button>
-          <button className={scope === "project" ? "active" : ""} type="button" onClick={() => onScopeChange("project")} aria-pressed={scope === "project"}>This Space</button>
-        </div>
-      </div>
-      {mode === "skills" ? (
-        <div className="professional-import-row">
-          <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}><ArrowUpload16Regular />Import Skill or pack</button>
-          <span>Supports individual Skills and compatible pack bundles.</span>
-          <input hidden ref={importRef} type="file" accept=".zip,.skill,.md" multiple onChange={onImport} />
-        </div>
-      ) : null}
-      <form className="professional-package-input" onSubmit={submitInstall}>
-        <Box16Regular aria-hidden="true" />
-        <input value={source} onChange={(event) => onSourceChange(event.target.value)} placeholder="npm package, git URL, or local path" aria-label={`Install ${mode === "skills" ? "Skill" : "Extension"} package`} />
-        <button className="professional-button professional-button-secondary" type="submit" disabled={busy || !source.trim()}>{busy ? <ArrowSync16Regular className="spin" /> : "Install"}</button>
-      </form>
-    </section>
-  );
-}
-
-function NoticeBanner({ icon, title, detail, action, tone = "neutral" }: { icon: ReactNode; title: string; detail: string; action?: ReactNode; tone?: "neutral" | "success" }) {
-  return (
-    <aside className={`trust-banner professional-notice professional-notice-${tone}`}>
-      <span className="professional-notice-icon" aria-hidden="true">{icon}</span>
-      <div className="professional-notice-copy"><strong>{title}</strong><span>{detail}</span></div>
-      {action ? <div className="professional-notice-action">{action}</div> : null}
-    </aside>
-  );
-}
-
 function LibraryTree({ entries, selected, onSelect, level = 0 }: { entries: TreeEntry[]; selected: string | null; onSelect: (path: string) => void; level?: number }) {
   return (
     <div className="file-tree">
@@ -615,16 +458,6 @@ function LibraryTree({ entries, selected, onSelect, level = 0 }: { entries: Tree
         </div>
       ))}
     </div>
-  );
-}
-
-function CapabilityCard({ icon, title, detail, meta, enabled }: { icon: ReactNode; title: string; detail: string; meta: string; enabled: boolean }) {
-  return (
-    <article className="professional-capability-card">
-      <span className="professional-icon-tile" aria-hidden="true">{icon}</span>
-      <div className="professional-capability-copy"><strong>{title}</strong><p>{detail}</p><small>{meta}</small></div>
-      <span className={enabled ? "enabled-badge professional-status-badge enabled" : "disabled-badge professional-status-badge"}>{enabled ? "Enabled" : "Disabled"}</span>
-    </article>
   );
 }
 
@@ -645,4 +478,3 @@ function unique<T>(items: T[]) { return [...new Set(items)]; }
 function formatDate(value: string) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
 function findTreeEntry(entries: TreeEntry[], path: string): TreeEntry | null { for (const entry of entries) { if (entry.path === path) return entry; const child = entry.children ? findTreeEntry(entry.children, path) : null; if (child) return child; } return null; }
 function filterTree(entries: TreeEntry[], query: string): TreeEntry[] { return entries.flatMap((entry) => { const children = entry.children ? filterTree(entry.children, query) : []; return entry.name.toLocaleLowerCase().includes(query) || children.length ? [{ ...entry, children }] : []; }); }
-function fixtureCatalog(): AgentCatalog { return { projectTrusted: true, diagnostics: [], packages: [], skills: [{ name: "Trip planner", description: "Turns bookings and preferences into a practical itinerary.", path: "skills/trip-planner/SKILL.md", source: "personal", enabled: true }], extensions: [{ id: "calendar", name: "Calendar helper", path: ".pi/extensions/calendar.ts", source: "project", enabled: true, commands: ["calendar"], tools: ["read_calendar"] }], tools: [{ name: "read", description: "Read files in the current Space", source: "Pi", active: true }, { name: "write", description: "Create and update files", source: "Pi", active: true }] }; }

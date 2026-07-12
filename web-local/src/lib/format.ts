@@ -15,8 +15,9 @@ export function splitConfirmMessage(message: string): { title: string; body?: st
   return body ? { title, body } : { title };
 }
 
-export function chatDraftStorageKey(workspaceId: string, conversationId: string | null): string {
-  return `${chatDraftKeyPrefix}:${workspaceId}:${conversationId ?? chatDraftNewConversationId}`;
+export function chatDraftStorageKey(workspaceId: string, conversationId: string | null, surfaceTabId?: string | null): string {
+  const subject = conversationId ?? (surfaceTabId ? `draft:${surfaceTabId}` : chatDraftNewConversationId);
+  return `${chatDraftKeyPrefix}:${workspaceId}:${subject}`;
 }
 
 export function readStoredChatDraft(key: string): string {

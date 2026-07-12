@@ -42,7 +42,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 - The Files rail item, resizable file pane, search, expandable tree, file-type icons, details pane, and file history remain first-class for the selected Space.
 - Right-click actions are available throughout the file tree and use native desktop context behavior where appropriate.
-- Supported actions include open, reveal in Explorer/Finder, copy path, attach to chat, rename, move, create folder/file, upload/import, delete, and version history.
+- Supported actions include open, reveal in Explorer/Finder, copy path, attach to chat, rename, move, upload/import, delete, and version history. File and folder creation controls should appear only when the corresponding workflow is implemented and verified.
 - Desktop drag-out, file opening, and reveal operations use safe workspace-relative paths and never escape the Space root.
 - Destructive actions require clear confirmation and preserve recovery/history behavior where supported.
 - Registering an existing folder as a Space never moves or converts user files. It maintains only the documented hidden `.workspace/` identity and conversation layer; that layer and native `.pi/` configuration never appear as ordinary Files.
@@ -51,7 +51,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 - Preserve conversation history, rename, drafts, streaming activity, tool/runtime detail, stop behavior, context attachments, copy actions, suggested prompts, and extension UI requests.
 - Preserve the command palette, keyboard shortcuts, toast/confirm feedback, onboarding, Space creation/linking, themes, typography, and resizable layout.
-- A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Skills`, `Extensions`, `Chats`, `Library`, and `History`. Provider, model, API-key, and OAuth setup lives in `Settings → Assistant`.
+- A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Capabilities`, `Chats`, `Library`, and `History`. Capabilities combines Installed and Discover views for Skills and Extensions while retaining scope, provenance, load state, diagnostics, and package lifecycle. Provider, model, API-key, and OAuth setup lives in `Settings → Assistant`.
 
 ## Deliberately removed or replaced
 

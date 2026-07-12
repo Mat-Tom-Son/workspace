@@ -4,7 +4,7 @@ Workspace exposes Pi resources directly instead of maintaining a parallel Assist
 
 Start with [Assistant capabilities](assistant-capabilities.md) for the product concepts, safety model, scopes, and package boundary. This page is the compact compatibility reference for implementation and verification.
 
-In the product navigation, **Skills** and **Extensions** are top-level Space-aware surfaces. A Skill describes a reusable way of working; an Extension adds an executable capability or connection. Provider and model setup lives under **Settings → Assistant**.
+In the product navigation, **Capabilities** is the single Space-aware surface for Skills and Extensions. A Skill describes a reusable way of working; an Extension adds an executable capability or connection. Installed and Discover views retain the item type, source, scope, load state, diagnostics, and package lifecycle. Provider and model setup lives under **Settings → Assistant**.
 
 ## Extensions
 
@@ -27,6 +27,6 @@ Hooks, MCP servers, agents, binaries, and other plugin features outside discover
 
 Workspace's importer writes personal Skills under the configured Pi agent directory and Space-scoped Skills under `.pi/skills`. Pi may additionally discover standard `.agents/skills`, package, settings, and explicit resource locations; the native Pi catalog remains authoritative.
 
-Pi packages remain the installation and update mechanism for npm, git, HTTPS, and local sources. Workspace surfaces Pi's diagnostics, scope, source, and enablement state rather than inventing a second package format.
+Pi packages remain the installation, update, and removal mechanism for npm, git, HTTPS, and local sources. Workspace surfaces Pi's diagnostics, scope, source, resource types, and load state rather than inventing a second package format. Project-scoped mutations require an explicit persistent Pi trust policy, with a negative host override or saved Space decision taking precedence. Capability mutations are rejected while an affected Space has an active turn or Chat compaction so changing the catalog cannot terminate background work.
 
-Packages are distribution plumbing, not a separate top-level user concept. The interface should describe what a person is installing—a Skill or Extension—while retaining package source and diagnostic details where they are useful.
+Packages are distribution plumbing, not a separate top-level user concept. The interface should describe what a person is installing—a Skill, Extension, or mixed capability package—while retaining package source and diagnostic details. The Discover catalog may combine first-party/reference sources with npm packages tagged `pi-package`; popularity and download counts are discovery signals, not security endorsements.

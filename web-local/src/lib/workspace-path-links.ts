@@ -9,6 +9,11 @@ export interface WorkspacePathMention {
 
 const knownFileExtensions = new Set([
   "csv",
+  "c",
+  "cc",
+  "cpp",
+  "cs",
+  "css",
   "doc",
   "docm",
   "docx",
@@ -18,25 +23,49 @@ const knownFileExtensions = new Set([
   "gif",
   "htm",
   "html",
+  "h",
+  "hpp",
+  "ini",
+  "java",
+  "js",
+  "jsx",
   "jpeg",
   "jpg",
   "json",
+  "kt",
+  "log",
   "md",
+  "markdown",
   "pdf",
   "png",
+  "ps1",
+  "py",
   "potx",
   "ppt",
   "pptm",
   "pptx",
   "rtf",
+  "rb",
+  "rs",
+  "scss",
+  "sh",
+  "sql",
   "svg",
+  "svelte",
+  "swift",
+  "toml",
+  "ts",
+  "tsx",
   "txt",
+  "vue",
   "webp",
   "xls",
   "xlsb",
   "xlsm",
   "xlsx",
   "xml",
+  "yaml",
+  "yml",
 ]);
 
 const leadingPathPunctuation = /^[([{"'`<]+/;
@@ -55,8 +84,12 @@ export function collectWorkspacePathCandidates(markdown: string, limit = 32): st
   for (const span of codeSpans) {
     addCandidate(workspacePathCandidate(span.text, { allowSpaces: true }));
   }
-  const markdownWithoutInlineCode = maskRanges(markdown, codeSpans);
-  for (const mention of findWorkspacePathMentions(markdownWithoutInlineCode)) {
+  const markdownLinks = markdownLinkDestinations(markdown);
+  for (const link of markdownLinks) {
+    addCandidate(workspacePathCandidate(link.text, { allowSpaces: true }));
+  }
+  const markdownWithoutStructuredPaths = maskRanges(markdown, [...codeSpans, ...markdownLinks]);
+  for (const mention of findWorkspacePathMentions(markdownWithoutStructuredPaths)) {
     addCandidate(mention.normalizedPath);
   }
   return candidates;
@@ -85,7 +118,13 @@ export function findWorkspacePathMentions(text: string): WorkspacePathMention[] 
 }
 
 export function workspacePathCandidate(value: string, options: { allowSpaces: boolean }): string | null {
-  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/g, "");
+  let normalized = value.trim().replace(/^<|>$/g, "").replace(/\\/g, "/");
+  try { normalized = decodeURIComponent(normalized); } catch { /* keep the literal path */ }
+  normalized = normalized
+    .replace(/^\.\//, "")
+    .replace(/(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)$/i, "")
+    .replace(/#[A-Za-z0-9_.-]+$/, "")
+    .replace(/\/+$/g, "");
   if (!normalized) return null;
   if (!options.allowSpaces && /\s/.test(normalized)) return null;
   if (/^[a-z][a-z0-9+.-]*:/i.test(normalized)) return null;
@@ -136,6 +175,20 @@ function inlineCodeSpans(markdown: string): Array<{ start: number; end: number; 
     spans.push({ start: match.index, end: match.index + match[0].length, text: match[1] ?? "" });
   }
   return spans;
+}
+
+function markdownLinkDestinations(markdown: string): Array<{ start: number; end: number; text: string }> {
+  const destinations: Array<{ start: number; end: number; text: string }> = [];
+  const linkPattern = /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = linkPattern.exec(markdown))) {
+    destinations.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      text: match[1] ?? match[2] ?? "",
+    });
+  }
+  return destinations;
 }
 
 function maskRanges(value: string, ranges: Array<{ start: number; end: number }>): string {

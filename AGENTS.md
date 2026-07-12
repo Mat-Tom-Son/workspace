@@ -8,7 +8,7 @@ Workspace is a local-first Electron shell around ordinary folders and the native
 - A **Space** is a human-friendly working context backed by one ordinary folder. Registering an existing folder must not move, copy, or rename user files. Workspace deliberately maintains hidden, portable `.workspace/space.json` identity metadata and `.workspace/conversations/` logs in that folder.
 - The folder is transparent infrastructure, not a proprietary container. Keep **Show folder** and normal filesystem interoperability intact.
 - Use **Library** only for passive, reusable personal materials. Library items enter a Space through an explicit copy and never become Assistant context automatically.
-- Use **Skill** for a reusable way of working and **Extension** for executable Pi capabilities or connections. Packages are distribution plumbing, not another top-level product concept.
+- Use **Capability** as the navigation umbrella. Inside it, use **Skill** for a reusable way of working and **Extension** for executable Pi capabilities or connections. Packages are distribution and lifecycle plumbing, not another top-level product concept.
 - Keep package, protocol, IPC, updater, user-data, and environment identifiers independent and product-neutral.
 - Keep provider credentials, trust decisions, History objects, Pi sessions, ignore rules, and machine-specific application state outside user content folders. Only the documented portable `.workspace/` records belong in a Space.
 - Treat project Pi resources—including `.pi` and other Pi-supported project locations—as executable configuration: load them only after the user trusts the folder.
@@ -19,7 +19,7 @@ Workspace is a local-first Electron shell around ordinary folders and the native
 ## Product rails
 
 - **Local first:** a Space remains useful as a folder without an account or cloud service.
-- **Understandable:** explain outcomes in terms of Spaces, Library materials, Skills, and Extensions; reveal technical paths and package sources as supporting detail.
+- **Understandable:** explain outcomes in terms of Spaces, Library materials, and Capabilities; identify Skills and Extensions inside that surface, and reveal technical paths and package sources as supporting detail.
 - **Explicit context:** adding, copying, installing, trusting, and attaching are separate user actions. Do not silently put files or capabilities into a conversation.
 - **Progressive trust:** browsing a folder is lower trust than executing its `.pi` configuration. Trust decisions live outside the Space and must be reversible.
 - **Portable identity:** `.workspace/` is data, not executable configuration. Preserve a valid manifest id when a Space folder moves, hide `.workspace/` and `.pi/` from Files, and exclude both from History capture.
@@ -30,7 +30,7 @@ Workspace is a local-first Electron shell around ordinary folders and the native
 
 ## Stable information architecture
 
-The rail starts with the **Space** selector, followed by **Files**, **Skills**, **Extensions**, **Chats**, **Library**, and **History**. **Shortcuts** and **Settings** stay at the bottom. Provider, model, API-key, and OAuth setup belongs in **Settings → Assistant**, not in the rail. User-facing copy uses **Space** and **Library** even where internal routes or types retain `workspace`, `project`, or `resource` for compatibility.
+The rail starts with the **Space** selector, followed by **Files**, **Capabilities**, **Chats**, **Library**, and **History**. **Shortcuts** and **Settings** stay at the bottom. Capabilities combines Skills and Extensions into one Installed/Discover surface; package source, scope, type, load state, diagnostics, update, and removal remain visible inside it. Provider, model, API-key, and OAuth setup belongs in **Settings → Assistant**, not in the rail. User-facing copy uses **Space** and **Library** even where internal routes or types retain `workspace`, `project`, or `resource` for compatibility.
 
 See [Assistant capabilities](docs/assistant-capabilities.md) for the scopes, trust model, Anthropic-compatible skill import behavior, package boundary, and distinction between Library materials and Pi resources.
 

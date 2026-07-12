@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useEffect, useState, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, memo, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Checkmark20Regular, Copy20Regular, Sparkle20Regular } from "@fluentui/react-icons";
@@ -6,6 +6,7 @@ import { Checkmark20Regular, Copy20Regular, Sparkle20Regular } from "@fluentui/r
 import { assistantName } from "../../constants";
 import { safeExternalHref } from "../../lib/api";
 import { formatChatListTime, formatDateTime } from "../../lib/format";
+import { resolveMessageImageSource } from "../../lib/message-images";
 import { collectWorkspacePathCandidates, findWorkspacePathMentions, workspacePathCandidate } from "../../lib/workspace-path-links";
 import type { AgentActivityEvent, ChatMessage, ChatMessageLanding, RuntimePreviewEntry } from "../../types";
 import { FluentGlyph } from "../chrome/common";
@@ -71,7 +72,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   return (
     <article className={`message ${message.role}${suppressEnterAnimation ? " settled" : ""}`}>
       <div className="message-header">
-        <span className="message-author">{message.role === "user" ? "You" : assistantName}</span>
+        <span className="message-identity">
+          <span className="message-author">{message.role === "user" ? "You" : assistantName}</span>
+        </span>
         {message.createdAt && messageTime ? (
           <time className="message-time" dateTime={message.createdAt} title={formatDateTime(message.createdAt)}>
             {messageTime}
@@ -86,12 +89,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         key={workspaceLinkVersion}
       />
       {message.role === "assistant" && showLanding && message.landing ? <TurnLanding landing={message.landing} /> : null}
-      {message.role === "assistant" ? (
-        <MessageActions
-          copied={copied}
-          onCopy={() => void onCopyMessage(message.id, message.content)}
-        />
-      ) : null}
+      <MessageActions
+        copied={copied}
+        onCopy={() => void onCopyMessage(message.id, message.content)}
+      />
       {showRecap ? <AgentActivityRecap events={activityRecap} /> : null}
     </article>
   );
@@ -183,6 +184,8 @@ export function MarkdownMessage({
           li: ({ children }) => <li>{linkChildren(children)}</li>,
           td: ({ children }) => <td>{linkChildren(children)}</td>,
           th: ({ children }) => <th>{linkChildren(children)}</th>,
+          table: ({ children }) => <div className="message-table-scroll"><table>{children}</table></div>,
+          pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
           code: ({ children, className }) => {
             const text = reactNodeText(children);
             if (className || text.includes("\n")) return <code className={className}>{children}</code>;
@@ -201,13 +204,62 @@ export function MarkdownMessage({
             );
           },
           a: ({ href, children }) => {
+            const workspacePath = workspacePathCandidate(href ?? "", { allowSpaces: true });
+            const resolvedPath = workspacePath ? workspaceLinks?.get(workspacePath) ?? null : null;
+            if (resolvedPath && onOpenWorkspaceFile) {
+              return <button className="workspace-file-link" type="button" onClick={() => onOpenWorkspaceFile(resolvedPath)} title={resolvedPath}>{children}</button>;
+            }
             const safeHref = safeExternalHref(href);
-            return safeHref ? <a href={safeHref} target="_blank" rel="noreferrer">{children}</a> : <>{children}</>;
+            return safeHref ? <a className="message-external-link" href={safeHref} target="_blank" rel="noreferrer">{children}</a> : <>{children}</>;
+          },
+          img: ({ src, alt }) => {
+            const workspacePath = workspacePathCandidate(src ?? "", { allowSpaces: true });
+            const resolvedPath = workspacePath ? workspaceLinks?.get(workspacePath) ?? null : null;
+            if (resolvedPath && onOpenWorkspaceFile) {
+              return <button className="message-image-file" type="button" onClick={() => onOpenWorkspaceFile(resolvedPath)} title={resolvedPath}>{alt || resolvedPath.split("/").pop() || "Open image"}</button>;
+            }
+            const resolution = resolveMessageImageSource(src, window.location.href);
+            if (resolution.kind === "embed") return <img className="message-image" src={resolution.src} alt={alt ?? ""} loading="lazy" referrerPolicy="no-referrer" />;
+            if (resolution.kind === "external-link") {
+              return <a className="message-image-external" href={resolution.href} target="_blank" rel="noreferrer">{alt ? `Open image: ${alt}` : "Open external image"}</a>;
+            }
+            return <span className="message-image-unavailable">{alt ? `${alt} (image unavailable)` : "Image unavailable"}</span>;
           },
         }}
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+function MarkdownCodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const text = reactNodeText(children).replace(/\n$/, "");
+  const codeElement = Children.toArray(children).find((child) => isValidElement(child)) as ReactElement<{ className?: string }> | undefined;
+  const language = codeElement?.props.className?.match(/(?:^|\s)language-([\w-]+)/)?.[1] ?? "";
+  const label = language ? language.toLocaleUpperCase() : "Code";
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="message-code-block">
+      <div className="message-code-toolbar">
+        <span>{label}</span>
+        <button type="button" onClick={() => void copyCode()} aria-label={copied ? "Copied code" : "Copy code"} title={copied ? "Copied" : "Copy code"}>
+          <FluentGlyph icon={copied ? Checkmark20Regular : Copy20Regular} size={13} />
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+      <pre>{children}</pre>
     </div>
   );
 }
@@ -247,8 +299,10 @@ function linkWorkspacePathText(
   if (!workspaceLinks?.size || !onOpenWorkspaceFile) return children;
   return Children.map(children, (child) => {
     if (typeof child === "string") return linkWorkspacePathString(child, workspaceLinks, onOpenWorkspaceFile);
-    if (!isValidElement(child) || child.type === "a" || child.type === "code") return child;
-    return child;
+    if (!isValidElement(child) || child.type === "a" || child.type === "code" || child.type === "button") return child;
+    const element = child as ReactElement<{ children?: ReactNode }>;
+    if (element.props.children === undefined) return child;
+    return cloneElement(element, undefined, linkWorkspacePathText(element.props.children, workspaceLinks, onOpenWorkspaceFile));
   });
 }
 
@@ -283,7 +337,11 @@ function linkWorkspacePathString(
 }
 
 function reactNodeText(children: ReactNode): string {
-  return Children.toArray(children).map((child) => typeof child === "string" || typeof child === "number" ? String(child) : "").join("");
+  return Children.toArray(children).map((child) => {
+    if (typeof child === "string" || typeof child === "number") return String(child);
+    if (!isValidElement(child)) return "";
+    return reactNodeText((child as ReactElement<{ children?: ReactNode }>).props.children);
+  }).join("");
 }
 
 export async function copyMarkdownToClipboard(content: string): Promise<void> {

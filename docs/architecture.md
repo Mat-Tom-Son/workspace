@@ -2,7 +2,7 @@
 
 Workspace has three runtime layers:
 
-1. The React renderer presents a Space selector plus Files, Skills, Extensions, Chats, Library, and History surfaces, with Assistant configuration in Settings.
+1. The React renderer presents a Space selector plus Files, Capabilities, Chats, Library, and History surfaces, with Assistant configuration in Settings.
 2. The local Node API owns filesystem access, conversations, resource import, and Pi sessions.
 3. Electron supplies native windows, menus, dialogs, secure storage, and packaging.
 
@@ -15,15 +15,14 @@ The renderer never receives provider secrets or unrestricted filesystem access. 
 The Space selector establishes the active root-folder entity; a Space is not itself a peer navigation surface. The primary information architecture is:
 
 - **Files** — the ordinary folder contents of the selected Space.
-- **Skills** — reusable ways of working, available personally or from a trusted Space.
-- **Extensions** — executable capabilities and external connections, available personally or from a trusted Space.
+- **Capabilities** — one Installed/Discover surface for Skills and Extensions, available personally or from a trusted Space. Package provenance and lifecycle live here without becoming another top-level concept.
 - **Chats** — conversations associated with the selected Space.
 - **Library** — reusable personal materials available across Spaces.
 - **History** — checkpoints and recoverable changes for the selected Space.
 
 Provider, model, and authentication configuration for the Pi-powered Assistant lives under **Settings → Assistant**.
 
-The concepts have deliberately different scopes and trust levels. Library materials are passive and personal. Skills influence how the Assistant works. Extensions can execute code or reach other systems and therefore require stronger, explicit trust. Making something available does not silently activate it or add it to a chat's context.
+The concepts have deliberately different scopes and trust levels. Library materials are passive and personal. Skills influence how the Assistant works and may include scripts. Extensions execute code or reach other systems and therefore require stronger, explicit trust. Combining them in one management surface does not collapse those differences: type, provenance, scope, load state, diagnostics, and package contents remain visible. Making something available does not silently activate it or add it to a chat's context.
 
 Surface tabs are Space-bound rather than global views of the currently selected folder. Activating a tab activates its owning Space, and switching Spaces restores that Space's most recent tab. All open Chat panels remain mounted; an accepted Pi turn continues in the local API while its tab is inactive, the window is minimized, or the window is hidden to the system tray. Event-stream reconnects use server turn-state snapshots and persisted transcript rehydration so renderer sleep or wake does not lose the result.
 

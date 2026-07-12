@@ -129,16 +129,18 @@ export function AgentActivityTicker({ events }: { events: AgentActivityEvent[] }
 }
 
 export function AgentActivityLog({
+  id,
   events,
   listRef,
   onScroll,
 }: {
+  id: string;
   events: AgentActivityLogEntry[];
   listRef: RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
   return (
-    <section className="agent-activity-log" id="agent-activity-log" aria-label="Activity log">
+    <section className="agent-activity-log" id={id} aria-label="Activity log">
       {events.length ? (
         <div className="agent-activity-log-list" ref={listRef} onScroll={onScroll}>
           {events.map((event) => (
@@ -229,12 +231,12 @@ function recapActivityEvents(events: AgentActivityEvent[]): AgentActivityEvent[]
 function activityRecapSummary(events: AgentActivityEvent[]): string {
   const count = events.length;
   const errorCount = events.filter((event) => event.phase === "error").length;
-  if (errorCount) return `${count} ${count === 1 ? "tool action" : "tool actions"} run, ${errorCount} Learned From`;
+  if (errorCount) return `${count} ${count === 1 ? "tool action" : "tool actions"} run, ${errorCount} failed`;
   return `${count} ${count === 1 ? "tool action" : "tool actions"} completed`;
 }
 
 function activityPhaseLabel(phase?: AgentActivityPhase): string {
-  if (phase === "error") return "Learned From";
+  if (phase === "error") return "Failed";
   if (phase === "running" || phase === "streaming") return "Running";
   if (phase === "queued") return "Queued";
   return "Done";

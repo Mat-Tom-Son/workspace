@@ -21,14 +21,14 @@ Workspace is for general computer work. Coding is one valid use, not the organiz
 | **Library** | Personal materials worth reusing across Spaces. | Items are passive and are copied explicitly; they are not prompt context. |
 | **History** | Checkpoints and recoverable changes associated with a Space. | It should remain distinct from chat history. |
 | **Assistant** | The Pi-powered helper. | Its provider and model are configured in Settings, independently from Space content. |
+| **Capabilities** | One place to discover and manage what the Assistant can do. | It groups Skills and Extensions; it is not another runtime or package format. |
 | **Skill** | A reusable way of working that helps the Assistant approach a task. | A Skill may contain executable scripts and is not merely a document. |
 | **Extension** | An executable capability or connection available to the Assistant. | It has a stronger trust implication than a Library item. |
 
 The Space switcher chooses the active root-folder entity. The stable primary navigation then follows these surface nouns:
 
 - **Files**
-- **Skills**
-- **Extensions**
+- **Capabilities**
 - **Chats**
 - **Library**
 - **History**
@@ -73,7 +73,9 @@ There are two capability scopes:
 - **Personal:** available across Spaces from the user's Pi agent directory.
 - **This Space:** portable configuration stored under the Space's `.pi/` directory and loaded only after explicit trust.
 
-Packages can distribute Skills, Extensions, prompts, themes, and related Pi resources. They remain installation plumbing; the primary UI should describe the capability a person is gaining. See [Assistant capabilities](assistant-capabilities.md) for the complete compatibility and safety model.
+The **Capabilities** surface unifies discovery and management without erasing the distinctions that matter. It identifies whether an item is a Skill or Extension, Personal or This Space, active or merely available, direct-imported or package-provided, and healthy or diagnostic-failing. Installed items can be searched, filtered by type and scope, and sorted by name, type, scope, or source. Discover results can be searched, filtered, and sorted by first-party/reference status, downloads, recency, or name.
+
+Packages can distribute Skills, Extensions, prompts, themes, and related Pi resources. They remain installation and lifecycle plumbing; the primary UI should describe the capability a person is gaining, show inspected resource types and lifecycle scripts when registry metadata is available, and label unavailable details as unknown rather than absent. A package that includes Extensions or install scripts is a code-execution decision and must not be presented as a harmless Skill-only import. See [Assistant capabilities](assistant-capabilities.md) for the complete compatibility and safety model.
 
 ## Product rails
 
@@ -97,8 +99,10 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Browse and upload Space files, run Space-scoped Chats, use the Library, and view History.
 - Restore content-addressed History checkpoints created around file mutations and Assistant turns.
 - Configure a Pi provider/model with an API key and use Pi's built-in tools.
-- Discover personal and trusted-Space Skills and Extensions.
+- Discover and search personal and trusted-Space Skills and Extensions in one Capabilities surface, with accurate source, scope, load state, and diagnostics.
+- Browse curated first-party/reference Skills and Extensions alongside community Pi packages, with type filters and explicit provenance.
 - Import standard Skills and compatible skill bundles while preserving their supporting files.
+- Install, update, and remove Pi packages at Personal or trusted-Space scope.
 - Customize each Space with a compact banner, paired accent colors, and a searchable Fluent icon catalog without changing its folder.
 - Build a Windows installer and deliver updates through GitHub Releases.
 
@@ -106,7 +110,9 @@ When a design is ambiguous, prefer the option that best preserves these properti
 
 - Make Space location, storage ownership, History coverage, and trust state easier to inspect at a glance.
 - Add Library organization controls such as rename, move, delete, reveal, and bulk operations.
-- Add capability lifecycle controls: inspect provenance and permissions, enable/disable, update, and remove Skills, Extensions, and packages.
+- Add per-resource enable/disable and package filtering controls without confusing availability with activation.
+- Add receipts and safe removal for directly imported Skills, independently from package lifecycle.
+- Add named-pack selection for Anthropic marketplace bundles instead of importing every discovered Skill in an archive.
 - Make “what this Chat can see and use” visible before and during a conversation.
 - Strengthen onboarding, keyboard/accessibility behavior, renderer interaction tests, recovery, export, and diagnostics.
 

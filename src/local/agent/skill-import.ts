@@ -6,7 +6,11 @@ import { pipeline } from "node:stream/promises";
 
 import JSZip from "jszip";
 
-import { resolvePiRuntime, type PiRuntimeProvider } from "./pi-runtime-config.js";
+import {
+  hasExplicitPiProjectMutationTrust,
+  resolvePiRuntime,
+  type PiRuntimeProvider,
+} from "./pi-runtime-config.js";
 
 export interface PiSkillBundleImportResult {
   scope: "user" | "project";
@@ -43,7 +47,7 @@ export async function importPiSkillBundle(
 
   const runtime = await resolvePiRuntime(workspaceRoot, runtimeProvider, { requestProjectTrust: false });
   const scope = input.scope ?? "user";
-  if (scope === "project" && !projectImportTrusted(runtime)) {
+  if (scope === "project" && !hasExplicitPiProjectMutationTrust(runtime)) {
     throw new Error("Trust this Space before importing Space-scoped Skills.");
   }
 
@@ -138,7 +142,7 @@ async function importStandaloneSkill(
 
   const runtime = await resolvePiRuntime(workspaceRoot, runtimeProvider, { requestProjectTrust: false });
   const scope = input.scope ?? "user";
-  if (scope === "project" && !projectImportTrusted(runtime)) {
+  if (scope === "project" && !hasExplicitPiProjectMutationTrust(runtime)) {
     throw new Error("Trust this Space before importing Space-scoped Skills.");
   }
   const destinationRoot = scope === "project"
@@ -205,12 +209,6 @@ const blockedRootPluginEntries = new Set([
   "plugin.json",
   "plugins",
 ]);
-
-function projectImportTrusted(runtime: Awaited<ReturnType<typeof resolvePiRuntime>>): boolean {
-  return runtime.projectTrust.savedDecision === true
-    || runtime.config.projectTrust?.override === true
-    || runtime.settingsManager.getDefaultProjectTrust() === "always";
-}
 
 function safeArchivePath(value: string): string {
   const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");

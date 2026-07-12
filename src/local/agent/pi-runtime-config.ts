@@ -161,6 +161,28 @@ export interface PiConfiguredPackage {
   installedPath?: string;
 }
 
+/**
+ * Project capability writes require an explicit, persistent trust policy. Pi
+ * treats a project with no trust-gated files as runtime-trusted, but that
+ * implicit state must not authorize Workspace to create executable project
+ * configuration on the user's behalf.
+ */
+export function hasExplicitPiProjectMutationTrust(runtime: ResolvedPiRuntime): boolean {
+  const override = runtime.config.projectTrust?.override;
+  if (typeof override === "boolean") return override;
+  const savedDecision = runtime.projectTrust.savedDecision;
+  if (typeof savedDecision === "boolean") return savedDecision;
+  return runtime.settingsManager.getDefaultProjectTrust() === "always";
+}
+
+export async function isPiProjectMutationTrusted(
+  workspaceRoot: string,
+  runtimeProvider?: PiRuntimeProvider,
+): Promise<boolean> {
+  const runtime = await resolvePiRuntime(workspaceRoot, runtimeProvider, { requestProjectTrust: false });
+  return hasExplicitPiProjectMutationTrust(runtime);
+}
+
 export async function resolvePiRuntime(
   workspaceRoot: string,
   provider?: PiRuntimeProvider,
@@ -380,6 +402,7 @@ export async function installPiPackage(
   const packageSource = source.trim();
   if (!packageSource) throw new Error("Package source is required.");
   const runtime = await resolvePiRuntime(workspaceRoot, options.runtimeProvider, { requestProjectTrust: false });
+  assertPiProjectMutationTrusted(runtime, options.scope);
   const manager = createPackageManager(workspaceRoot, runtime, options.onProgress);
   await manager.installAndPersist(packageSource, { local: options.scope === "project" });
   await runtime.settingsManager.flush();
@@ -393,8 +416,17 @@ export async function removePiPackage(
   const packageSource = source.trim();
   if (!packageSource) throw new Error("Package source is required.");
   const runtime = await resolvePiRuntime(workspaceRoot, options.runtimeProvider, { requestProjectTrust: false });
+  assertPiProjectMutationTrusted(runtime, options.scope);
   const manager = createPackageManager(workspaceRoot, runtime, options.onProgress);
-  const removed = await manager.removeAndPersist(packageSource, { local: options.scope === "project" });
+  const configured = manager.listConfiguredPackages().find((item) =>
+    item.source === packageSource && item.scope === (options.scope ?? "user"));
+  // Local project sources are persisted relative to `.pi/settings.json` while
+  // remove input is normally resolved from the Space root. Feed the resolved
+  // path back to Pi so a source copied directly from listPiPackages matches.
+  const removalSource = configured?.installedPath && !isManagedPackageSource(packageSource)
+    ? configured.installedPath
+    : packageSource;
+  const removed = await manager.removeAndPersist(removalSource, { local: options.scope === "project" });
   await runtime.settingsManager.flush();
   return removed;
 }
@@ -405,8 +437,43 @@ export async function updatePiPackages(
   options: PiPackageMutationOptions = {},
 ): Promise<void> {
   const runtime = await resolvePiRuntime(workspaceRoot, options.runtimeProvider, { requestProjectTrust: false });
+  assertPiProjectMutationTrusted(runtime, options.scope);
   const manager = createPackageManager(workspaceRoot, runtime, options.onProgress);
-  await manager.update(source?.trim() || undefined);
+  const packageSource = source?.trim() || undefined;
+  if (!options.scope) {
+    await manager.update(packageSource);
+    return;
+  }
+
+  if (!packageSource) throw new Error("Package source is required for a scoped update.");
+  const configured = manager.listConfiguredPackages().find((item) =>
+    item.source === packageSource && item.scope === options.scope);
+  if (!configured) throw new Error(`Package is not configured in the requested scope: ${packageSource}`);
+
+  // A local source is a live reference rather than a managed checkout, so
+  // there is nothing to update after confirming it is still present.
+  if (!isManagedPackageSource(packageSource)) {
+    if (!configured.installedPath) throw new Error(`Package path does not exist: ${packageSource}`);
+    return;
+  }
+
+  // install() refreshes the exact npm/git source in the requested storage
+  // scope without changing settings. This avoids DefaultPackageManager's
+  // identity-based update() touching a same-name package in the other scope.
+  await manager.install(packageSource, { local: options.scope === "project" });
+}
+
+function assertPiProjectMutationTrusted(
+  runtime: ResolvedPiRuntime,
+  scope: PiPackageMutationOptions["scope"],
+): void {
+  if (scope === "project" && !hasExplicitPiProjectMutationTrust(runtime)) {
+    throw new Error("Trust this Space before changing Space-scoped capabilities.");
+  }
+}
+
+function isManagedPackageSource(source: string): boolean {
+  return /^(?:npm:|git:|https?:\/\/|ssh:\/\/|git:\/\/)/i.test(source);
 }
 
 function preferredModelFromSettings(settings: SettingsManager): PiPreferredModel | undefined {

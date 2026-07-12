@@ -5,7 +5,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import {
-  ProjectTrustStore,
   SessionManager,
   VERSION as PI_SDK_VERSION,
   createAgentSessionFromServices,
@@ -584,17 +583,7 @@ export class PiConversationClient extends EventEmitter {
       const trust = this.resolvedRuntime!.projectTrust;
       return `This Space is ${trust.trusted ? "trusted" : "not trusted"}${trust.required ? "" : " (no trust-gated capabilities found)"}.`;
     }
-    const decision = ["yes", "trust", "trusted"].includes(normalized)
-      ? true
-      : ["no", "untrust", "untrusted"].includes(normalized)
-        ? false
-        : null;
-    if (decision === null && normalized !== "ask") return "Usage: /trust [yes|no|ask]";
-    new ProjectTrustStore(this.resolvedRuntime!.agentDir).set(this.workspaceRoot, decision);
-    await this.stop();
-    return decision === null
-      ? "Cleared the saved Space-trust decision. Workspace will ask again when supported by the host."
-      : `Saved this Space as ${decision ? "trusted" : "untrusted"}. The next turn will reload its Pi capabilities.`;
+    return "Space trust changes are managed in Workspace’s Capabilities view so active Chats are never interrupted. Use /trust without arguments to inspect the current status.";
   }
 
   private uiBridge(): PiExtensionUiBridge {

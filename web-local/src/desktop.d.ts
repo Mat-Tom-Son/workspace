@@ -18,6 +18,8 @@ type WorkspaceDesktopMenuCommand =
   | "reload-workspace-state"
   | "check-for-updates"
   | "open-settings"
+  | "open-about"
+  | "open-capabilities"
   | "open-skills"
   | "open-extensions"
   | "open-command-palette"

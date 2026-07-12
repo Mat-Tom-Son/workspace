@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
 import JSZip from "jszip";
 
 import { createPersistentPiAuthStorage, type PiAuthStorageData } from "../src/local/agent/auth-storage.js";
@@ -14,7 +14,15 @@ import { PiConversationClient } from "../src/local/agent/pi-client.js";
 import { RoutedPiExtensionUiBridge, type PiExtensionUiRequest } from "../src/local/agent/extension-ui.js";
 import { importPiSkillBundle } from "../src/local/agent/skill-import.js";
 import { loadAgentSkillCatalog } from "../src/local/agent/skill-catalog.js";
-import { listPiModels, type PiRuntimeProvider } from "../src/local/agent/pi-runtime-config.js";
+import {
+  installPiPackage,
+  isPiProjectMutationTrusted,
+  listPiModels,
+  listPiPackages,
+  removePiPackage,
+  updatePiPackages,
+  type PiRuntimeProvider,
+} from "../src/local/agent/pi-runtime-config.js";
 
 test("host-backed Pi AuthStorage persists provider-neutral API key data", async () => {
   let stored: PiAuthStorageData = {};
@@ -129,6 +137,63 @@ test("project skill imports require an explicit trust decision", async (t) => {
   assert.match(result.bundlePath.replace(/\\/g, "/"), /\/\.pi\/skills\/trusted-helper$/);
 });
 
+test("project package lifecycle requires the same explicit trust decision as Skill import", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "workspace-package-trust-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const agentDir = join(root, "agent");
+  const workspaceRoot = join(root, "workspace");
+  const packageRoot = join(root, "local-package");
+  await mkdir(workspaceRoot, { recursive: true });
+  await mkdir(packageRoot, { recursive: true });
+  await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "local-capability", private: true }), "utf8");
+  const provider: PiRuntimeProvider = { async resolveRuntime() { return { agentDir }; } };
+
+  await assert.rejects(
+    installPiPackage(workspaceRoot, packageRoot, { scope: "project", runtimeProvider: provider }),
+    /Trust this Space/,
+  );
+
+  new ProjectTrustStore(agentDir).set(workspaceRoot, true);
+  await installPiPackage(workspaceRoot, packageRoot, { scope: "project", runtimeProvider: provider });
+  const configured = (await listPiPackages(workspaceRoot, provider)).find((item) => item.scope === "project");
+  assert.ok(configured);
+  assert.equal(configured.installedPath, packageRoot);
+
+  await updatePiPackages(workspaceRoot, configured.source, { scope: "project", runtimeProvider: provider });
+  assert.equal(await removePiPackage(workspaceRoot, configured.source, { scope: "project", runtimeProvider: provider }), true);
+  assert.equal((await listPiPackages(workspaceRoot, provider)).some((item) => item.scope === "project"), false);
+});
+
+test("project capability mutation trust honors negative policy precedence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "workspace-mutation-trust-precedence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const agentDir = join(root, "agent");
+  const workspaceRoot = join(root, "workspace");
+  await mkdir(workspaceRoot, { recursive: true });
+  const trustStore = new ProjectTrustStore(agentDir);
+
+  trustStore.set(workspaceRoot, false);
+  assert.equal(await isPiProjectMutationTrusted(workspaceRoot, {
+    async resolveRuntime() {
+      return {
+        agentDir,
+        settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
+      };
+    },
+  }), false, "a saved Space denial must win over Pi's persistent always default");
+
+  trustStore.set(workspaceRoot, true);
+  assert.equal(await isPiProjectMutationTrusted(workspaceRoot, {
+    async resolveRuntime() {
+      return {
+        agentDir,
+        projectTrust: { override: false },
+        settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
+      };
+    },
+  }), false, "a negative host override must win over a saved allow decision and default");
+});
+
 test("native Pi host discovers trusted project extensions, skills, context, commands, and built-ins", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "workspace-native-pi-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -186,9 +251,23 @@ test("native Pi host discovers trusted project extensions, skills, context, comm
   for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls"]) {
     assert.equal(catalog.tools.some((tool) => tool.name === name), true, `missing built-in ${name}`);
   }
+  assert.deepEqual(catalog.toolManagement, {
+    mode: "session-only",
+    persisted: false,
+    mutable: false,
+    scope: "chat",
+    reason: "Pi has no persisted Personal or Space tool default; tool selection belongs to each Chat.",
+  });
+  const readTool = catalog.tools.find((tool) => tool.name === "read");
+  assert.equal(readTool?.label, "read");
+  assert.equal(readTool?.kind, "core");
+  assert.equal(readTool?.core, true);
+  assert.equal(readTool?.configurable, false);
+  assert.equal(readTool?.configurationScope, "chat");
   assert.equal(catalog.extensions.some((extension) => extension.resolvedPath.endsWith("ping.ts")), true);
   assert.equal(catalog.skills.some((skill) => skill.name === "demo"), true);
   assert.equal(catalog.contextFiles.some((file) => file.path.endsWith("AGENTS.md")), true);
+  assert.equal(catalog.commands.find((command) => command.name === "trust")?.description, "Show Space trust status");
   assert.equal(catalog.commands.some((command) => command.name === "ping" && command.source === "extension"), true);
   assert.equal(catalog.projectTrust.trusted, true);
   for (const unsupported of ["new", "resume", "fork", "clone", "tree", "import"]) {
@@ -202,6 +281,8 @@ test("native Pi host discovers trusted project extensions, skills, context, comm
   const [uiEvent] = await uiEventPromise;
   assert.equal(uiEvent.method, "notify");
   assert.equal(uiEvent.message, "pong");
+  assert.match(await client.prompt("/trust no"), /Capabilities view/);
+  assert.equal(new ProjectTrustStore(agentDir).get(workspaceRoot), true, "hosted /trust must not mutate Space trust mid-turn");
   const sessionBefore = (await client.getState()).sessionId;
   assert.match(await client.prompt("/new"), /unavailable because Workspace keeps the visible chat transcript synchronized/);
   assert.equal((await client.getState()).sessionId, sessionBefore);

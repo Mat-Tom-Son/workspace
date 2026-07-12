@@ -401,6 +401,8 @@ type RendererMenuCommand =
   | "reload-workspace-state"
   | "check-for-updates"
   | "open-settings"
+  | "open-about"
+  | "open-capabilities"
   | "open-skills"
   | "open-extensions"
   | "open-command-palette"
@@ -470,13 +472,12 @@ function buildApplicationSubmenuTemplate(menuId: ApplicationMenuId): MenuItemCon
     ];
   }
   return [
-    { id: "open-skills", label: "Skills", accelerator: "CommandOrControl+Shift+S", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-skills") },
-    { id: "open-extensions", label: "Extensions", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-extensions") },
+    { id: "open-capabilities", label: "Capabilities", accelerator: "CommandOrControl+Shift+S", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-capabilities") },
     { label: "Keyboard Shortcuts", accelerator: "CommandOrControl+/", click: () => sendRendererMenuCommand("open-keyboard-shortcuts") },
     { type: "separator" },
     { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
     { type: "separator" },
-    { label: `About ${productName} ${app.getVersion()}`, enabled: false },
+    { label: `About ${productName} ${app.getVersion()}`, click: () => sendRendererMenuCommand("open-about") },
   ];
 }
 
@@ -515,8 +516,7 @@ function updateApplicationMenuState(value: unknown): void {
   const menu = Menu.getApplicationMenu();
   setMenuItemEnabled(menu, "new-chat", rendererMenuState.spaceOpen);
   setMenuItemEnabled(menu, "refresh-space", rendererMenuState.spaceOpen);
-  setMenuItemEnabled(menu, "open-skills", rendererMenuState.spaceOpen);
-  setMenuItemEnabled(menu, "open-extensions", rendererMenuState.spaceOpen);
+  setMenuItemEnabled(menu, "open-capabilities", rendererMenuState.spaceOpen);
 }
 
 function setMenuItemEnabled(menu: Menu | null, id: string, enabled: boolean): void {

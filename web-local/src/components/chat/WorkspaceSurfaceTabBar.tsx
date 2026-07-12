@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown16Regular, Dismiss12Regular } from "@fluentui/react-icons";
 
 import { chatDisplayTitle } from "../../lib/format";
+import { nextMenuItemIndex, type MenuNavigationKey } from "../../lib/menu-navigation";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "../../lib/workspace-identity";
 import { surfacePanelDomId, surfaceTabDomId } from "../../lib/workspace-ui";
 import type { ConversationSummary, WorkspaceCustomizationMap, WorkspaceSummary, WorkspaceSurfaceTab } from "../../types";
@@ -13,10 +14,8 @@ export function WorkspaceSurfaceTabBar({
   workspaceCustomizations,
   activeTabId,
   newChatWorkspaceId,
-  newChatWorkspaceName,
   onActivate,
   onClose,
-  onNewChat,
   onNewChatInWorkspace,
   onRenameChat,
 }: {
@@ -25,17 +24,19 @@ export function WorkspaceSurfaceTabBar({
   workspaceCustomizations: WorkspaceCustomizationMap;
   activeTabId: string | null;
   newChatWorkspaceId: string;
-  newChatWorkspaceName: string;
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
-  onNewChat: () => void;
   onNewChatInWorkspace: (workspace: WorkspaceSummary) => void;
   onRenameChat: (workspace: WorkspaceSummary, conversation: ConversationSummary, event: ReactMouseEvent) => void;
 }) {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const menuAnchorRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const otherWorkspaces = workspaces.filter((item) => item.id !== newChatWorkspaceId);
+  const menuWorkspaces = [
+    ...workspaces.filter((item) => item.id === newChatWorkspaceId),
+    ...workspaces.filter((item) => item.id !== newChatWorkspaceId),
+  ];
 
   useEffect(() => {
     if (!workspaceMenuOpen) return;
@@ -88,34 +89,14 @@ export function WorkspaceSurfaceTabBar({
     return Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
   }
 
-  function focusWorkspaceMenuItem(offset: number): void {
-    const items = workspaceMenuItems();
-    if (!items.length) return;
-    const activeIndex = Math.max(0, items.findIndex((item) => item === document.activeElement));
-    items[(activeIndex + offset + items.length) % items.length]?.focus();
-  }
-
   function handleWorkspaceMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusWorkspaceMenuItem(1);
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusWorkspaceMenuItem(-1);
-      return;
-    }
-    if (event.key === "Home") {
-      event.preventDefault();
-      workspaceMenuItems()[0]?.focus();
-      return;
-    }
-    if (event.key === "End") {
-      event.preventDefault();
-      const items = workspaceMenuItems();
-      items[items.length - 1]?.focus();
-    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = workspaceMenuItems();
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = nextMenuItemIndex(currentIndex, items.length, event.key as MenuNavigationKey);
+    if (nextIndex === null) return;
+    event.preventDefault();
+    items[nextIndex]?.focus();
   }
 
   function handleWorkspaceMenuSelect(targetWorkspace: WorkspaceSummary): void {
@@ -176,61 +157,68 @@ export function WorkspaceSurfaceTabBar({
                 aria-label={`Close ${tab.title}`}
                 title="Close tab"
               >
-                <X size={14} />
+                <Dismiss12Regular />
               </button>
             </span>
           );
         })}
       </div>
       <div className="surface-tab-actions">
-        <button className="surface-tab-action" type="button" onClick={onNewChat} aria-label={`New chat in ${newChatWorkspaceName}`} title={`New chat in ${newChatWorkspaceName}`}>
-          <FluentGlyph icon={NewChatIcon} size={18} />
-        </button>
-        {otherWorkspaces.length ? (
-          <div className="surface-tab-workspace-menu-anchor">
-            <button
-              ref={menuButtonRef}
-              className="surface-tab-action surface-tab-action-caret"
-              type="button"
-              onClick={() => setWorkspaceMenuOpen((current) => !current)}
-              aria-label="New chat in another Space"
-              aria-haspopup="menu"
-              aria-expanded={workspaceMenuOpen}
-              title="New chat in another Space"
+        <div
+          className="surface-tab-workspace-menu-anchor"
+          ref={menuAnchorRef}
+          onBlurCapture={(event) => {
+            if (workspaceMenuOpen && !event.currentTarget.contains(event.relatedTarget as Node | null)) setWorkspaceMenuOpen(false);
+          }}
+        >
+          <button
+            ref={menuButtonRef}
+            className="surface-tab-action surface-tab-new-chat-trigger"
+            type="button"
+            onClick={() => setWorkspaceMenuOpen((current) => !current)}
+            aria-label="Start a new Chat"
+            aria-haspopup="menu"
+            aria-expanded={workspaceMenuOpen}
+            aria-controls="new-chat-space-menu"
+            title="Start a new Chat"
+          >
+            <FluentGlyph icon={NewChatIcon} size={18} />
+            <ChevronDown16Regular aria-hidden="true" />
+          </button>
+          {workspaceMenuOpen ? (
+            <div
+              ref={menuRef}
+              id="new-chat-space-menu"
+              className="surface-tab-workspace-menu"
+              role="menu"
+              aria-label="Start a new Chat in Space"
+              onClick={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+              onKeyDown={handleWorkspaceMenuKeyDown}
             >
-              <ChevronDown size={14} />
-            </button>
-            {workspaceMenuOpen ? (
-              <div
-                ref={menuRef}
-                className="surface-tab-workspace-menu"
-                role="menu"
-                onClick={(event) => event.stopPropagation()}
-                onContextMenu={(event) => event.preventDefault()}
-                onKeyDown={handleWorkspaceMenuKeyDown}
-              >
-                {otherWorkspaces.map((item) => {
-                  const identity = workspaceIdentityFor(item, workspaceCustomizations);
-                  const Icon = identity.Icon;
-                  return (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      tabIndex={-1}
-                      key={item.id}
-                      style={workspaceIdentityStyle(identity)}
-                      onClick={() => handleWorkspaceMenuSelect(item)}
-                      title={item.name}
-                    >
-                      <span className="workspace-identity-icon"><WorkspaceIconGlyph icon={Icon} size={14} /></span>
-                      <span>{item.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+              <span className="surface-tab-workspace-menu-heading">New Chat in</span>
+              {menuWorkspaces.map((item) => {
+                const identity = workspaceIdentityFor(item, workspaceCustomizations);
+                const Icon = identity.Icon;
+                const current = item.id === newChatWorkspaceId;
+                return (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    key={item.id}
+                    style={workspaceIdentityStyle(identity)}
+                    onClick={() => handleWorkspaceMenuSelect(item)}
+                    title={`New Chat in ${item.name}`}
+                  >
+                    <span className="workspace-identity-icon"><WorkspaceIconGlyph icon={Icon} size={14} /></span>
+                    <span className="surface-tab-workspace-menu-copy"><strong>{item.name}</strong>{current ? <small>Current Space</small> : null}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

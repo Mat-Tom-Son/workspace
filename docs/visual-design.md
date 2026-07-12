@@ -6,7 +6,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 - A **Space** is a root folder. It is selected or switched; it is not a peer navigation surface.
 - **Files** is the first working surface inside the selected Space.
-- Primary surfaces are Files, Skills, Extensions, Chats, Library, and History.
+- Primary surfaces are Files, Capabilities, Chats, Library, and History.
 - Provider, model, and authentication controls live in Settings under Assistant; Assistant is not a rail group.
 - The first rail item opens the Space manager and identifies the selected root folder. The persistent header above the left pane repeats that Space identity; the selected rail item identifies the current surface.
 
@@ -14,9 +14,9 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 - Use Fluent System Icons for shell navigation, commands, status, and empty states.
 - Use regular icons at rest and the matching filled icon for a selected navigation item.
-- Use 16px icons for inline actions, 20px for navigation and section markers, and no more than 24px for empty states.
+- Use 16px icons for inline actions, 20px for navigation and section markers, and no more than 24px for empty states. The root Space identity glyph is a deliberate 26px exception because it anchors the larger 90px identity band rather than an ordinary navigation row.
 - Material file-type icons are the one deliberate exception because file recognition benefits from familiar type colors.
-- Do not mix icon libraries within one control group. The Space glyph may repeat only where it communicates inherited root context: the root selector, Space identity header, switcher, cards, and Space-bound tabs.
+- Do not mix icon libraries within one control group. The Space glyph may repeat only where it communicates inherited root context: the root selector, switcher, cards, and Space-bound tabs. The banner itself is name-first and does not repeat the rail glyph.
 - Space color may appear as a small avatar accent or active indicator, never as a frame around the application.
 
 ## Typography and spacing
@@ -30,9 +30,10 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 ## Layout
 
 - Navigation uses compact, aligned rows with text labels and one subtle selected state.
-- A 90px identity header sits above every left-pane surface. Its centered icon-over-name lockup represents the selected Space, not the active page. Files, Skills, Extensions, Chats, Library, and History keep the quick Space switcher; the Spaces-management surface omits that redundant switcher.
+- Every left-pane surface begins with the same 90px identity band in the same position. Its centered, name-only lockup represents the selected Space, not the active page. The root Space selector aligns to that band with a centered icon-over-name lockup and up to two lines of the Space name; modestly larger type and subtle positive tracking make both identity labels feel deliberate while respecting the user's selected font. Ordinary navigation rows remain compact, and narrow layouts return the selector to a horizontal lockup. Files, Capabilities, Chats, Library, and History keep the quick Space switcher, while the Spaces-management surface omits that redundant switcher.
 - Space banners stay inside the identity header and appearance previews. They do not wallpaper the right work surface or recolor structural borders; interaction color and shell structure remain part of the global application system.
 - Color and icon identity inherit through Space-bound cards, chat groups, tabs, surfaces, and chat empty states. Content belonging to another Space carries that Space's own identity rather than the currently selected one.
+- User Chat bubbles use one solid primary Space accent, never a gradient between accent colors. Assistant message headers are text-only and do not repeat a decorative Assistant avatar.
 - Forms use stacked labels and hints with an explicit action row.
 - Notices use `icon | copy | action` and stack only when their own pane becomes narrow.
 - Empty states are centered, restrained, and no wider than 440px.

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createReadStream, existsSync, readFileSync, watch } from "node:fs";
@@ -19,17 +19,26 @@ import {
   type PiExtensionUiSettled,
 } from "./agent/extension-ui.js";
 import { appendMessage, createConversation, listConversations, readConversation, renameConversation } from "./agent/chat-store.js";
+import {
+  RemoteCapabilityRegistry,
+  type CapabilityRegistryService,
+  type CapabilitySort,
+  type CapabilityType,
+} from "./agent/capability-registry.js";
 import { importPiSkillBundle } from "./agent/skill-import.js";
 import { loadAgentSkillCatalog, type PiCatalogSource, type PiResourceCatalog } from "./agent/skill-catalog.js";
 import {
   getPiSetupStatus,
   installPiPackage,
+  isPiProjectMutationTrusted,
   listPiPackages,
   listPiModels,
   loginPiOAuth,
+  removePiPackage,
   savePiApiKey,
   setPiDefaultModel,
   setPiProjectTrust,
+  updatePiPackages,
   type PiOAuthHooks,
   type PiSetupStatus,
 } from "./agent/pi-runtime-config.js";
@@ -89,6 +98,7 @@ export interface LocalApiOptions {
   piRuntimeProvider?: PiRuntimeProvider;
   extensionUiBridge?: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
+  capabilityRegistry?: CapabilityRegistryService;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   maxBodyBytes?: number;
   loadEnv?: boolean;
@@ -117,10 +127,14 @@ interface LocalApiState {
   runtimeProvider: PiRuntimeProvider;
   extensionUi: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
+  capabilityRegistry: CapabilityRegistryService;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   chatStreams: Map<string, Set<ServerResponse>>;
   clients: Map<string, PiConversationClient>;
   runningTurns: Set<string>;
+  compactingConversations: Set<string>;
+  capabilityMutations: Set<string>;
+  workspaceIdsByRoot: Map<string, string>;
   extensionRequests: Map<string, PiExtensionUiRequest>;
   fileStreams: Set<() => void>;
   activeTurns: number;
@@ -163,10 +177,14 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     runtimeProvider,
     extensionUi,
     piOAuthHooks: options.piOAuthHooks,
+    capabilityRegistry: options.capabilityRegistry ?? new RemoteCapabilityRegistry(),
     localFolderGrantProvider: options.localFolderGrantProvider,
     chatStreams: new Map(),
     clients: new Map(),
     runningTurns: new Set(),
+    compactingConversations: new Set(),
+    capabilityMutations: new Set(),
+    workspaceIdsByRoot: new Map(),
     extensionRequests: new Map(),
     fileStreams: new Set(),
     activeTurns: 0,
@@ -267,6 +285,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       state.extensionUi.cancel(request.id);
       state.extensionRequests.delete(request.id);
     }
+    state.workspaceIdsByRoot.delete(workspaceRootKey(workspace.rootPath));
     sendJson(res, await removeWorkspace(workspace.id, state.workspaceBase));
     return;
   }
@@ -572,17 +591,97 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     sendJson(res, { status: normalizeStatus(await getPiSetupStatus(workspace.rootPath, state.runtimeProvider)) });
     return;
   }
+  if (method === "GET" && url.pathname === "/api/agent/capabilities/discover") {
+    const result = await state.capabilityRegistry.search({
+      query: url.searchParams.get("query") ?? undefined,
+      type: capabilityRegistryType(url.searchParams.get("type")),
+      sort: capabilityRegistrySort(url.searchParams.get("sort")),
+      offset: optionalBoundedInteger(url.searchParams.get("offset"), "offset"),
+      limit: optionalBoundedInteger(url.searchParams.get("limit"), "limit"),
+    });
+    sendJson(res, { ...result, catalogUrl: "https://pi.dev/packages" });
+    return;
+  }
+  if (method === "GET" && url.pathname === "/api/agent/capabilities/details") {
+    const id = url.searchParams.get("id")?.trim();
+    if (!id) throw badRequest("Capability id is required.");
+    sendJson(res, { item: await state.capabilityRegistry.details(id) });
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/agent/capabilities/install") {
+    const body = await readJsonBody<{ workspaceId?: string; id?: string; scope?: "global" | "project" }>(state, req);
+    if (!body.workspaceId || !body.id?.trim()) throw badRequest("A Space and capability are required.");
+    const workspace = await getWorkspace(body.workspaceId);
+    const scope = capabilityScope(body.scope);
+    // Remote inspection is read-only and can take several seconds. Complete it
+    // before reserving the mutation so discovery never blocks an unrelated turn.
+    const item = await state.capabilityRegistry.details(body.id);
+    const bundle = item.sourceKind === "bundle"
+      ? await state.capabilityRegistry.buildOfficialSkillBundle(item.id)
+      : null;
+    const installSource = item.installSource;
+    if (!bundle && !installSource) throw badRequest("This capability is a reference and cannot be installed directly.");
+    const installed = await runCapabilityMutation(state, workspace, scope, async () => {
+      if (bundle) {
+        const imported = await importPiSkillBundle(workspace.rootPath, {
+          fileName: bundle.fileName,
+          bytes: bundle.bytes,
+          scope: scope === "project" ? "project" : "user",
+        }, state.runtimeProvider);
+        return { kind: "skill" as const, item, imported };
+      }
+      await installPiPackage(workspace.rootPath, installSource!, {
+        scope: scope === "project" ? "project" : "user",
+        runtimeProvider: state.runtimeProvider,
+      });
+      return { kind: "package" as const, item, source: installSource! };
+    });
+    sendJson(res, { installed }, 201);
+    return;
+  }
   if (method === "POST" && url.pathname === "/api/agent/packages/install") {
     const body = await readJsonBody<{ workspaceId?: string; source?: string; scope?: "global" | "project" }>(state, req);
     if (!body.workspaceId || !body.source?.trim()) throw badRequest("A Space and package source are required.");
     const workspace = await getWorkspace(body.workspaceId);
-    await installPiPackage(workspace.rootPath, body.source, {
-      scope: body.scope === "project" ? "project" : "user",
-      runtimeProvider: state.runtimeProvider,
+    const scope = capabilityScope(body.scope);
+    await runCapabilityMutation(state, workspace, scope, async () => {
+      await installPiPackage(workspace.rootPath, body.source!, {
+        scope: scope === "project" ? "project" : "user",
+        runtimeProvider: state.runtimeProvider,
+      });
     });
-    if (body.scope === "project") await invalidateWorkspaceClients(state, workspace.id);
-    else await invalidateAllClients(state);
     sendJson(res, { installed: true }, 201);
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/agent/packages/update") {
+    const body = await readJsonBody<{ workspaceId?: string; source?: string; scope?: "global" | "project" }>(state, req);
+    if (!body.workspaceId || !body.source?.trim() || !body.scope) {
+      throw badRequest("A Space, package source, and scope are required.");
+    }
+    const workspace = await getWorkspace(body.workspaceId);
+    const scope = capabilityScope(body.scope);
+    await runCapabilityMutation(state, workspace, scope, async () => {
+      await updatePiPackages(workspace.rootPath, body.source, {
+        scope: scope === "project" ? "project" : "user",
+        runtimeProvider: state.runtimeProvider,
+      });
+    });
+    sendJson(res, { updated: true });
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/agent/packages/remove") {
+    const body = await readJsonBody<{ workspaceId?: string; source?: string; scope?: "global" | "project" }>(state, req);
+    if (!body.workspaceId || !body.source?.trim() || !body.scope) {
+      throw badRequest("A Space, package source, and scope are required.");
+    }
+    const workspace = await getWorkspace(body.workspaceId);
+    const scope = capabilityScope(body.scope);
+    const removed = await runCapabilityMutation(state, workspace, scope, async () =>
+      await removePiPackage(workspace.rootPath, body.source!, {
+        scope: scope === "project" ? "project" : "user",
+        runtimeProvider: state.runtimeProvider,
+      }));
+    sendJson(res, { removed });
     return;
   }
   if (method === "POST" && url.pathname === "/api/agent/skills/import") {
@@ -591,12 +690,18 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     if (!workspaceId || !multipart.files.length) throw badRequest("A Space and Skill files are required.");
     const workspace = await getWorkspace(workspaceId);
     const scope = multipart.fields.get("scope") === "project" ? "project" : "user";
-    const imported = [];
-    for (const file of multipart.files) {
-      imported.push(await importPiSkillBundle(workspace.rootPath, { fileName: file.fileName, bytes: file.data, scope }, state.runtimeProvider));
-    }
-    if (scope === "project") await invalidateWorkspaceClients(state, workspace.id);
-    else await invalidateAllClients(state);
+    const imported = await runCapabilityMutation(
+      state,
+      workspace,
+      scope === "project" ? "project" : "global",
+      async () => {
+        const results = [];
+        for (const file of multipart.files) {
+          results.push(await importPiSkillBundle(workspace.rootPath, { fileName: file.fileName, bytes: file.data, scope }, state.runtimeProvider));
+        }
+        return results;
+      },
+    );
     sendJson(res, { imported }, 201);
     return;
   }
@@ -604,11 +709,12 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   const catalogMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/agent\/catalog$/);
   if (method === "GET" && catalogMatch) {
     const workspace = await getWorkspace(catalogMatch[1]);
-    const [catalog, packages] = await Promise.all([
+    const [catalog, packages, mutationTrusted] = await Promise.all([
       loadAgentSkillCatalog(workspace.rootPath, state.runtimeProvider),
       listPiPackages(workspace.rootPath, state.runtimeProvider),
+      isPiProjectMutationTrusted(workspace.rootPath, state.runtimeProvider),
     ]);
-    sendJson(res, simplifyCatalog(catalog, packages));
+    sendJson(res, simplifyCatalog(catalog, packages, mutationTrusted));
     return;
   }
   const trustMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/agent\/trust$/);
@@ -616,13 +722,19 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const workspace = await getWorkspace(trustMatch[1]);
     const body = await readJsonBody<{ trusted?: boolean }>(state, req);
     if (typeof body.trusted !== "boolean") throw badRequest("Trust decision is required.");
-    await setPiProjectTrust(workspace.rootPath, body.trusted, state.runtimeProvider);
-    await invalidateWorkspaceClients(state, workspace.id);
-    const [catalog, packages] = await Promise.all([
+    await runCapabilityMutation(
+      state,
+      workspace,
+      "project",
+      () => setPiProjectTrust(workspace.rootPath, body.trusted!, state.runtimeProvider),
+      { requireProjectTrust: false },
+    );
+    const [catalog, packages, mutationTrusted] = await Promise.all([
       loadAgentSkillCatalog(workspace.rootPath, state.runtimeProvider),
       listPiPackages(workspace.rootPath, state.runtimeProvider),
+      isPiProjectMutationTrusted(workspace.rootPath, state.runtimeProvider),
     ]);
-    sendJson(res, { catalog: simplifyCatalog(catalog, packages) });
+    sendJson(res, { catalog: simplifyCatalog(catalog, packages, mutationTrusted) });
     return;
   }
 
@@ -659,7 +771,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
 
   const eventsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/events$/);
   if (method === "GET" && eventsMatch) {
-    await getWorkspace(eventsMatch[1]);
+    const workspace = await getWorkspace(eventsMatch[1]);
+    rememberWorkspaceRoot(state, workspace.id, workspace.rootPath);
     openChatStream(state, req, res, streamKey(eventsMatch[1], eventsMatch[2]), eventsMatch[2]);
     return;
   }
@@ -675,6 +788,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const contextPaths = normalizeContextPaths(workspace.rootPath, body.contextPaths);
     const existing = await readConversation(workspace.rootPath, conversationId);
     if (!existing.length) throw notFound("Conversation not found.");
+    assertNoCapabilityMutationForTurn(state, workspace.id);
+    if (state.compactingConversations.has(turnKey)) throw httpError(409, "Wait for the current Chat compaction to finish.");
     if (state.runningTurns.has(turnKey)) throw httpError(409, "Wait for the current agent turn to finish.");
     state.runningTurns.add(turnKey);
     broadcast(state, turnKey, turnStateEvent(conversationId, true));
@@ -703,11 +818,19 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   if (method === "POST" && compactMatch) {
     const workspace = await getWorkspace(compactMatch[1]);
     if (!(await readConversation(workspace.rootPath, compactMatch[2])).length) throw notFound("Conversation not found.");
-    if (state.runningTurns.has(clientKey(workspace.id, compactMatch[2]))) throw httpError(409, "Wait for the current agent turn to finish.");
+    const key = clientKey(workspace.id, compactMatch[2]);
     const body = await readJsonBody<{ customInstructions?: string }>(state, req);
-    const client = await getClient(state, workspace.id, workspace.rootPath, compactMatch[2]);
-    await client.compact(body.customInstructions?.trim() || undefined);
-    broadcast(state, streamKey(workspace.id, compactMatch[2]), { type: "done", conversationId: compactMatch[2] });
+    assertNoCapabilityMutationForTurn(state, workspace.id);
+    if (state.runningTurns.has(key)) throw httpError(409, "Wait for the current agent turn to finish.");
+    if (state.compactingConversations.has(key)) throw httpError(409, "Wait for the current Chat compaction to finish.");
+    state.compactingConversations.add(key);
+    try {
+      const client = await getClient(state, workspace.id, workspace.rootPath, compactMatch[2]);
+      await client.compact(body.customInstructions?.trim() || undefined);
+      broadcast(state, streamKey(workspace.id, compactMatch[2]), { type: "done", conversationId: compactMatch[2] });
+    } finally {
+      state.compactingConversations.delete(key);
+    }
     sendJson(res, { compacted: true });
     return;
   }
@@ -782,6 +905,7 @@ async function getClient(
   conversationId: string,
 ): Promise<PiConversationClient> {
   const key = clientKey(workspaceId, conversationId);
+  rememberWorkspaceRoot(state, workspaceId, workspaceRoot);
   const existing = state.clients.get(key);
   if (existing) return existing;
   const client = new PiConversationClient(conversationId, workspaceRoot, state.runtimeProvider);
@@ -808,6 +932,92 @@ async function invalidateAllClients(state: LocalApiState): Promise<void> {
   }
 }
 
+type CapabilityScope = "global" | "project";
+const globalCapabilityMutationKey = "*";
+
+function capabilityRegistryType(value: string | null): "all" | CapabilityType | undefined {
+  if (!value) return undefined;
+  if (value === "all" || value === "skill" || value === "extension") return value;
+  throw badRequest("Capability type must be all, skill, or extension.");
+}
+
+function capabilityRegistrySort(value: string | null): CapabilitySort | undefined {
+  if (!value) return undefined;
+  if (value === "official" || value === "downloads" || value === "recent" || value === "name") return value;
+  throw badRequest("Capability sort must be official, downloads, recent, or name.");
+}
+
+function optionalBoundedInteger(value: string | null, label: "offset" | "limit"): number | undefined {
+  if (value === null || value === "") return undefined;
+  const parsed = Number(value);
+  const minimum = label === "limit" ? 1 : 0;
+  if (!Number.isInteger(parsed) || parsed < minimum) throw badRequest(`Capability ${label} is invalid.`);
+  return parsed;
+}
+
+function capabilityScope(value: unknown): CapabilityScope {
+  if (value === undefined || value === null || value === "global") return "global";
+  if (value === "project") return "project";
+  throw badRequest("Capability scope must be global or project.");
+}
+
+async function runCapabilityMutation<T>(
+  state: LocalApiState,
+  workspace: { id: string; rootPath: string },
+  scope: CapabilityScope,
+  operation: () => Promise<T>,
+  options: { requireProjectTrust?: boolean } = {},
+): Promise<T> {
+  const key = scope === "global" ? globalCapabilityMutationKey : workspace.id;
+  reserveCapabilityMutation(state, workspace.id, scope, key);
+  try {
+    if (
+      scope === "project"
+      && options.requireProjectTrust !== false
+      && !await isPiProjectMutationTrusted(workspace.rootPath, state.runtimeProvider)
+    ) {
+      throw forbidden("Trust this Space before changing Space-scoped capabilities.");
+    }
+    const result = await operation();
+    if (scope === "global") await invalidateAllClients(state);
+    else await invalidateWorkspaceClients(state, workspace.id);
+    return result;
+  } finally {
+    state.capabilityMutations.delete(key);
+  }
+}
+
+function reserveCapabilityMutation(
+  state: LocalApiState,
+  workspaceId: string,
+  scope: CapabilityScope,
+  key: string,
+): void {
+  const mutationConflict = scope === "global"
+    ? state.capabilityMutations.size > 0
+    : state.capabilityMutations.has(globalCapabilityMutationKey) || state.capabilityMutations.has(workspaceId);
+  if (mutationConflict) throw httpError(409, "Wait for the current capability change to finish.");
+
+  const runningConflict = scope === "global"
+    ? state.runningTurns.size > 0 || state.compactingConversations.size > 0
+    : hasActiveAssistantOperationForWorkspace(state, workspaceId);
+  if (runningConflict) {
+    throw httpError(409, "Wait for affected Assistant work to finish before changing capabilities.");
+  }
+  state.capabilityMutations.add(key);
+}
+
+function assertNoCapabilityMutationForTurn(state: LocalApiState, workspaceId: string): void {
+  if (state.capabilityMutations.has(globalCapabilityMutationKey) || state.capabilityMutations.has(workspaceId)) {
+    throw httpError(409, "Wait for the current capability change to finish before starting an Assistant turn.");
+  }
+}
+
+function hasActiveAssistantOperationForWorkspace(state: LocalApiState, workspaceId: string): boolean {
+  const prefix = `${workspaceId}:`;
+  return [...state.runningTurns, ...state.compactingConversations].some((key) => key.startsWith(prefix));
+}
+
 function closeWorkspaceStreams(state: LocalApiState, workspaceId: string): void {
   const prefix = `${workspaceId}:`;
   for (const [key, streams] of [...state.chatStreams]) {
@@ -819,7 +1029,7 @@ function closeWorkspaceStreams(state: LocalApiState, workspaceId: string): void 
 
 function routeExtensionRequest(state: LocalApiState, request: PiExtensionUiRequest): void {
   state.extensionRequests.set(request.id, request);
-  const workspaceId = workspaceIdForRootSync(request.workspaceRoot);
+  const workspaceId = workspaceIdForRoot(state, request.workspaceRoot);
   if (!workspaceId) {
     state.extensionUi.cancel(request.id);
     state.extensionRequests.delete(request.id);
@@ -843,7 +1053,7 @@ function routeExtensionRequest(state: LocalApiState, request: PiExtensionUiReque
 }
 
 function routeExtensionEvent(state: LocalApiState, event: PiExtensionUiEvent): void {
-  const workspaceId = workspaceIdForRootSync(event.workspaceRoot);
+  const workspaceId = workspaceIdForRoot(state, event.workspaceRoot);
   if (!workspaceId) return;
   if (event.method === "notify") {
     broadcast(state, streamKey(workspaceId, event.conversationId), {
@@ -885,23 +1095,42 @@ function extensionEventMessage(event: PiExtensionUiEvent): string | null {
 
 function simplifyCatalog(
   catalog: PiResourceCatalog,
-  packages: Array<{ source: string; scope: "user" | "project"; filtered: boolean }>,
+  packages: Array<{ source: string; scope: "user" | "project"; filtered: boolean; installedPath?: string }>,
+  mutationTrusted: boolean,
 ): Record<string, unknown> {
+  const loadedPackageSources = new Set([
+    ...catalog.skills.map((item) => item.source),
+    ...catalog.extensions.map((item) => item.source),
+    ...catalog.prompts.map((item) => item.source),
+    ...catalog.themes.flatMap((item) => item.source ? [item.source] : []),
+  ].filter((source) => source.origin === "package").map((source) => source.source));
+
   return {
-    projectTrusted: catalog.projectTrust.required
-      ? catalog.projectTrust.trusted
-      : catalog.projectTrust.savedDecision === true,
+    projectTrust: { ...catalog.projectTrust, mutationTrusted },
+    trust: { ...catalog.projectTrust, mutationTrusted },
+    // Compatibility for older renderers. A Space with no gated resources is
+    // runtime-trusted; do not mislabel it as untrusted merely because it has no
+    // saved decision.
+    projectTrusted: catalog.projectTrust.trusted,
     packages: packages.map((item) => ({
       source: item.source,
       scope: item.scope === "project" ? "project" : "global",
-      enabled: true,
+      filtered: item.filtered,
+      ...(item.installedPath ? { installedPath: item.installedPath } : {}),
+      installed: Boolean(item.installedPath),
+      loaded: loadedPackageSources.has(item.source),
     })),
+    toolManagement: { ...catalog.toolManagement },
     skills: catalog.skills.map((skill) => ({
       name: skill.name,
       description: skill.description,
       path: skill.path,
       source: sourceLabel(skill.source),
+      ...capabilitySourceFields(skill.source),
       enabled: true,
+      loaded: true,
+      status: "loaded",
+      ...(skill.content !== undefined ? { content: skill.content } : {}),
       ...(skill.disableModelInvocation ? { disableModelInvocation: true } : {}),
     })),
     extensions: catalog.extensions.map((extension) => ({
@@ -909,15 +1138,62 @@ function simplifyCatalog(
       name: basename(extension.resolvedPath).replace(/\.[^.]+$/, ""),
       path: extension.path,
       source: sourceLabel(extension.source),
+      ...capabilitySourceFields(extension.source),
       enabled: true,
+      loaded: true,
+      status: "loaded",
       commands: extension.commands,
       tools: extension.tools,
+      flags: extension.flags,
     })),
     tools: catalog.tools.map((tool) => ({
       name: tool.name,
+      label: tool.label,
       description: tool.description,
       source: sourceLabel(tool.source),
+      ...capabilitySourceFields(tool.source),
+      enabled: true,
+      loaded: true,
+      status: "loaded",
       active: tool.active,
+      kind: tool.kind,
+      core: tool.core,
+      configurable: tool.configurable,
+      configurationScope: tool.configurationScope,
+    })),
+    prompts: catalog.prompts.map((prompt) => ({
+      name: prompt.name,
+      description: prompt.description,
+      ...(prompt.argumentHint ? { argumentHint: prompt.argumentHint } : {}),
+      path: prompt.path,
+      source: sourceLabel(prompt.source),
+      ...capabilitySourceFields(prompt.source),
+      enabled: true,
+      loaded: true,
+      status: "loaded",
+    })),
+    themes: catalog.themes.map((theme) => ({
+      name: theme.name,
+      ...(theme.path ? { path: theme.path } : {}),
+      ...(theme.source ? {
+        source: sourceLabel(theme.source),
+        ...capabilitySourceFields(theme.source),
+      } : {}),
+      enabled: true,
+      loaded: true,
+      status: "loaded",
+    })),
+    commands: catalog.commands.map((command) => ({
+      name: command.name,
+      ...(command.description ? { description: command.description } : {}),
+      kind: command.source,
+      ...(command.sourceInfo ? {
+        source: sourceLabel(command.sourceInfo),
+        ...capabilitySourceFields(command.sourceInfo),
+      } : { source: command.source }),
+      enabled: true,
+      loaded: true,
+      status: "loaded",
     })),
     diagnostics: catalog.diagnostics.map((diagnostic) => ({
       type: diagnostic.type === "collision" ? "warning" : diagnostic.type,
@@ -928,7 +1204,31 @@ function simplifyCatalog(
 }
 
 function sourceLabel(source: PiCatalogSource): string {
-  return [source.scope, source.origin === "package" ? "package" : source.source].filter(Boolean).join(" · ");
+  const scope = source.scope === "user" ? "Personal" : source.scope === "project" ? "This Space" : "Temporary";
+  const origin = source.origin === "package"
+    ? source.source
+    : source.source === "auto" ? "standard Pi location" : source.source;
+  return [scope, origin].filter(Boolean).join(" · ");
+}
+
+function capabilitySourceFields(source: PiCatalogSource): Record<string, unknown> {
+  const scope = source.scope === "user" ? "global" : source.scope;
+  const provenance = {
+    label: sourceLabel(source),
+    source: source.source,
+    path: source.path,
+    scope,
+    origin: source.origin,
+    ...(source.baseDir ? { baseDir: source.baseDir } : {}),
+    ...(source.origin === "package" ? { packageSource: source.source } : {}),
+  };
+  return {
+    scope,
+    origin: source.origin,
+    ...(source.origin === "package" ? { packageSource: source.source } : {}),
+    sourceInfo: provenance,
+    provenance,
+  };
 }
 
 function normalizeStatus(status: PiSetupStatus): Record<string, unknown> {
@@ -1267,9 +1567,17 @@ function match(path: string, pattern: RegExp): string[] | null {
 function streamKey(workspaceId: string, conversationId: string): string { return `${workspaceId}:${conversationId}`; }
 function clientKey(workspaceId: string, conversationId: string): string { return streamKey(workspaceId, conversationId); }
 
-function workspaceIdForRootSync(rootPath: string): string | null {
-  const normalized = process.platform === "win32" ? resolve(rootPath).toLocaleLowerCase() : resolve(rootPath);
-  return `ws-${createHash("sha256").update(normalized).digest("hex").slice(0, 16)}`;
+function rememberWorkspaceRoot(state: LocalApiState, workspaceId: string, rootPath: string): void {
+  state.workspaceIdsByRoot.set(workspaceRootKey(rootPath), workspaceId);
+}
+
+function workspaceIdForRoot(state: LocalApiState, rootPath: string): string | null {
+  return state.workspaceIdsByRoot.get(workspaceRootKey(rootPath)) ?? null;
+}
+
+function workspaceRootKey(rootPath: string): string {
+  const normalized = resolve(rootPath);
+  return process.platform === "win32" ? normalized.toLocaleLowerCase() : normalized;
 }
 
 function changeTurnCount(state: LocalApiState, delta: number): void {

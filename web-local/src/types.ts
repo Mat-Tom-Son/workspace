@@ -1,4 +1,4 @@
-export type WorkspacePane = "files" | "skills" | "extensions" | "chats" | "library" | "history";
+export type WorkspacePane = "files" | "capabilities" | "chats" | "library" | "history";
 export type WorkspaceRailMode = "workspaces" | WorkspacePane;
 export type AppTheme = "light" | "dark";
 export type AppThemePreference = AppTheme | "system";
@@ -180,34 +180,140 @@ export interface AgentModel {
 }
 
 export interface AgentSkill {
+  id?: string;
   name: string;
   description: string;
   path: string;
-  source: string;
-  enabled: boolean;
+  source: string | AgentCapabilitySource;
+  sourceInfo?: AgentCapabilitySource;
+  scope?: AgentCapabilityScope | "user";
+  origin?: AgentCapabilityOrigin;
+  packageSource?: string;
+  enabled?: boolean;
+  loaded?: boolean;
+  status?: AgentCapabilityStatus;
   disableModelInvocation?: boolean;
+  content?: string;
+  diagnostics?: AgentDiagnostic[];
 }
 
 export interface AgentExtension {
   id: string;
   name: string;
   path: string;
-  source: string;
-  enabled: boolean;
+  source: string | AgentCapabilitySource;
+  sourceInfo?: AgentCapabilitySource;
+  scope?: AgentCapabilityScope | "user";
+  origin?: AgentCapabilityOrigin;
+  packageSource?: string;
+  enabled?: boolean;
+  loaded?: boolean;
+  status?: AgentCapabilityStatus;
   commands: string[];
   tools: string[];
+  flags?: string[];
+  diagnostics?: AgentDiagnostic[];
 }
 
-export interface AgentPackage { source: string; scope: "global" | "project"; enabled: boolean }
-export interface AgentTool { name: string; description: string; source: string; active: boolean }
+export type AgentCapabilityScope = "global" | "project";
+export type AgentCapabilityOrigin = "package" | "top-level";
+export type AgentCapabilityStatus = "loaded" | "available" | "disabled" | "error" | "blocked" | "missing";
+export interface AgentCapabilitySource {
+  label?: string;
+  path?: string;
+  source: string;
+  scope: "user" | "project" | "temporary" | AgentCapabilityScope;
+  origin: AgentCapabilityOrigin;
+  baseDir?: string;
+  packageSource?: string;
+}
+export interface AgentProjectTrust {
+  required: boolean;
+  trusted: boolean;
+  savedDecision: boolean | null;
+  mutationTrusted?: boolean;
+}
+export interface AgentPackage {
+  source: string;
+  scope: AgentCapabilityScope;
+  enabled?: boolean;
+  installed?: boolean;
+  loaded?: boolean;
+  filtered?: boolean;
+  installedPath?: string;
+  updateAvailable?: boolean;
+  displayName?: string;
+  types?: Array<"skill" | "extension" | "prompt" | "theme">;
+}
+export interface AgentTool {
+  name: string;
+  label?: string;
+  description: string;
+  source: string;
+  active: boolean;
+  kind?: "core" | "extension";
+  core?: boolean;
+  configurable?: false;
+  configurationScope?: "chat";
+}
+export interface AgentToolManagement {
+  mode: "session-only";
+  persisted: false;
+  mutable: false;
+  scope: "chat";
+  reason: string;
+}
 export interface AgentDiagnostic { type: "info" | "warning" | "error"; message: string; path?: string }
 export interface AgentCatalog {
   skills: AgentSkill[];
   extensions: AgentExtension[];
   packages: AgentPackage[];
   tools: AgentTool[];
+  toolManagement?: AgentToolManagement;
   diagnostics: AgentDiagnostic[];
-  projectTrusted: boolean;
+  trust?: AgentProjectTrust;
+  projectTrusted?: boolean;
+}
+
+export interface CapabilityDiscoverItem {
+  id: string;
+  name: string;
+  description: string;
+  types: Array<"skill" | "extension">;
+  sourceKind: string;
+  installSource?: string;
+  official: boolean;
+  author?: string;
+  version?: string;
+  downloads?: number;
+  publishedAt?: string;
+  repositoryUrl?: string;
+  homepageUrl?: string;
+  npmUrl?: string;
+  license?: string;
+}
+
+export interface CapabilityDiscoverResponse {
+  items: CapabilityDiscoverItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  catalogUrl: string;
+  truncated?: boolean;
+  diagnostics?: string[];
+}
+
+export interface CapabilityDiscoverDetailsItem extends CapabilityDiscoverItem {
+  skills?: string[];
+  extensions?: string[];
+  prompts?: string[];
+  themes?: string[];
+  installScripts?: Array<{ name: "preinstall" | "install" | "postinstall"; command: string }>;
+  dependencyCount?: number;
+}
+
+export interface CapabilityDiscoverDetailsResponse {
+  item: CapabilityDiscoverDetailsItem;
 }
 
 export interface WorkspaceCheckpoint {

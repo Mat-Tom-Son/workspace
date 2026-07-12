@@ -2,6 +2,8 @@
 
 Workspace uses Pi's native capability system. This guide explains how Skills, Extensions, packages, scopes, and trust fit the product without confusing them with the user-facing Library.
 
+The rail exposes one **Capabilities** destination. Its **Installed** view answers what is present, where it came from, which scope owns it, and whether Pi loaded it. Its **Discover** view searches first-party/reference sources and community Pi packages. Skills and Extensions remain distinct item types inside both views because their behavior and risk are different.
+
 ## Library materials are not Pi resources
 
 The word “resource” has two different possible meanings, so Workspace uses different product language:
@@ -25,6 +27,8 @@ A Skill is a reusable way of working. Its interoperable unit is an [Agent Skill]
 - A compatible Anthropic-style plugin or marketplace bundle, from which Workspace imports only the discovered Skill directories.
 
 The last case is deliberately **skill-compatible**, not full plugin compatibility. Workspace preserves each discovered Skill directory so its supporting scripts, references, and assets continue to resolve. It does not activate bundled hooks, agents, MCP servers, plugin commands, binaries, marketplace metadata, or Extensions merely because they share an archive with a Skill.
+
+Anthropic marketplace archives may describe several named packs in `.claude-plugin/marketplace.json`. The current compatible importer discovers and imports Skill directories safely, but does not yet offer named-pack selection. This is a deliberate remaining lifecycle gap rather than a claim of full Claude plugin compatibility.
 
 ### Minimal Skill
 
@@ -58,7 +62,7 @@ If a developer places a Skill directory into a standard Pi scope by another trus
 
 ## Extensions
 
-A [Pi Extension](https://pi.dev/docs/latest/extensions) is executable code that can add tools, commands, providers, event behavior, or other runtime capabilities. Workspace uses Pi's normal extension loader and adapts supported extension UI requests—such as confirmation, selection, text input, notifications, and external links—to desktop UI.
+A [Pi Extension](https://pi.dev/docs/latest/extensions) is executable code that can add tools, commands, providers, event behavior, or other runtime capabilities. Workspace uses Pi's normal extension loader and adapts supported extension UI requests—such as confirmation, selection, text/editor input, notifications, status and working messages, text widgets, title/editor updates, OAuth handoffs, clipboard actions, and external links—to desktop UI. Terminal-only custom components, custom headers/footers, custom editor components, and autocomplete providers are reported as unsupported rather than pretending their TUI can render in React.
 
 Extensions are more powerful than Library materials and should be presented with their source, scope, load status, tools, commands, and diagnostics. Installing or trusting an Extension is a code-execution decision, not a content-import decision.
 
@@ -95,7 +99,22 @@ Importing a Skill directly into **This Space** also requires Pi to consider that
 
 Supported Pi sources include npm packages, git sources, HTTPS sources, and local paths. Npm and git sources require their corresponding command-line tools on `PATH`; local paths and direct Skill imports do not. Packages can be personal or project-scoped.
 
-In product language, lead with the outcome (“install this Skill” or “add this Extension”) and show package source, scope, and diagnostics as provenance. Do not add **Packages** as a peer to Space, Library, Skills, or Extensions unless the product model is deliberately revisited.
+In product language, lead with the outcome (“install this Skill” or “add this Extension”) and show package source, scope, resource types, load state, and diagnostics as provenance. A package can be mixed: installing an item presented as a Skill may also load Extensions, prompts, themes, dependencies, or install scripts. The review step must disclose that package boundary before installation. Do not add **Packages** as a peer to Space, Library, or Capabilities unless the product model is deliberately revisited.
+
+Workspace delegates package update and removal to Pi so its settings, installed paths, pinned references, and deduplication rules stay authoritative. Project package installation, update, and removal require an explicit persistent trust policy: a saved allow decision for that Space, an affirmative host override, or Pi's persistent `always` default. A negative host override or saved Space decision takes precedence and blocks the mutation. Capability mutations are rejected while an affected Space has an active Assistant turn or Chat compaction; switching tabs or minimizing the app must not let a catalog reload terminate background work.
+
+Direct Skill imports and packages have different ownership semantics. Package-provided resources can be updated or removed through their package record. Direct-imported Skills do not yet have an ownership receipt and safe removal workflow; that remains separate follow-up work. Per-resource enable/disable and Pi package filters are likewise future controls, even though the catalog already distinguishes active tools from tools that are merely available.
+
+## Discovery sources
+
+The Discover view combines sources without pretending they have one trust level:
+
+- official Pi documentation and maintained first-party/reference repositories;
+- the public Pi Skills examples;
+- compatible Skills from Anthropic's public repository; and
+- npm packages that opt into discovery with the `pi-package` keyword.
+
+Results expose their source and link back to it. Search, type filters, and sorting by first-party/reference status, downloads, recency, or name help navigation. “Official,” download counts, and recency are provenance or popularity signals—not signatures, malware scans, or endorsements. Every third-party package still requires source review, especially when it includes Extensions or lifecycle scripts.
 
 ## Authentication and external connections
 
@@ -114,4 +133,4 @@ For every new Assistant capability, keep these answers visible in code and UI:
 5. Is it loaded, disabled, or failing diagnostics?
 6. How can the person update, disable, remove, or revoke it?
 
-The current catalog and import/install surfaces establish the first layer. Provenance inspection, permissions, enable/disable, update, and removal are important lifecycle work still to complete.
+The current catalog and import/install surfaces expose provenance, scope, status, diagnostics, and package update/removal. Fine-grained permissions, per-resource enable/disable, direct-import receipts/removal, and named Anthropic-pack selection remain lifecycle work to complete.

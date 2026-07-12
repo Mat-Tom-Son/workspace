@@ -32,7 +32,20 @@ export interface PiToolCatalogItem {
   label: string;
   description: string;
   active: boolean;
+  kind: "core" | "extension";
+  core: boolean;
+  configurable: false;
+  configurationScope: "chat";
   source: PiCatalogSource;
+}
+
+export interface PiToolManagement {
+  mode: "session-only";
+  persisted: false;
+  /** Whether the Capabilities API can change the active tool set. */
+  mutable: false;
+  scope: "chat";
+  reason: string;
 }
 
 export interface PiSkillCatalogItem {
@@ -89,6 +102,7 @@ export interface PiCatalogDiagnostic {
 export interface PiResourceCatalog {
   projectTrust: ResolvedPiRuntime["projectTrust"];
   packages: ReturnType<ResolvedPiRuntime["settingsManager"]["getPackages"]>;
+  toolManagement: PiToolManagement;
   tools: PiToolCatalogItem[];
   skills: PiSkillCatalogItem[];
   extensions: PiExtensionCatalogItem[];
@@ -171,13 +185,20 @@ export async function buildPiResourceCatalog(
     flags: [...extension.flags.keys()].sort(),
   }));
 
-  const tools = session.getAllTools().map((tool) => ({
-    name: tool.name,
-    label: session.getToolDefinition(tool.name)?.label ?? humanize(tool.name),
-    description: tool.description,
-    active: activeTools.has(tool.name),
-    source: catalogSource(tool.sourceInfo),
-  })).sort((left, right) => left.name.localeCompare(right.name));
+  const tools = session.getAllTools().map((tool) => {
+    const core = tool.sourceInfo.source === "builtin";
+    return {
+      name: tool.name,
+      label: session.getToolDefinition(tool.name)?.label ?? humanize(tool.name),
+      description: tool.description,
+      active: activeTools.has(tool.name),
+      kind: core ? "core" as const : "extension" as const,
+      core,
+      configurable: false as const,
+      configurationScope: "chat" as const,
+      source: catalogSource(tool.sourceInfo),
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
 
   const prompts = promptsResult.prompts.map((prompt) => ({
     name: prompt.name,
@@ -219,6 +240,13 @@ export async function buildPiResourceCatalog(
   return {
     projectTrust: runtime.projectTrust,
     packages: runtime.settingsManager.getPackages(),
+    toolManagement: {
+      mode: "session-only",
+      persisted: false,
+      mutable: false,
+      scope: "chat",
+      reason: "Pi has no persisted Personal or Space tool default; tool selection belongs to each Chat.",
+    },
     tools,
     skills: skills.sort((left, right) => left.name.localeCompare(right.name)),
     extensions: extensions.sort((left, right) => left.resolvedPath.localeCompare(right.resolvedPath)),
@@ -251,7 +279,7 @@ export const builtInPiCommands: PiCommandCatalogItem[] = [
   ["session", "Show session information and statistics"],
   ["changelog", "Show Pi changelog entries"],
   ["hotkeys", "Show keyboard shortcuts"],
-  ["trust", "Change project trust"],
+  ["trust", "Show Space trust status"],
   ["login", "Configure provider authentication"],
   ["logout", "Remove provider authentication"],
   ["compact", "Compact the session context"],
