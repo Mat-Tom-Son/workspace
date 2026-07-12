@@ -8,6 +8,12 @@ import "./professional-surfaces.css";
 import "./professional-customization.css";
 import { App } from "./App";
 
+if (window.workspaceDesktop?.window.material === "mica") {
+  document.documentElement.dataset.windowMaterial = "mica";
+} else {
+  delete document.documentElement.dataset.windowMaterial;
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

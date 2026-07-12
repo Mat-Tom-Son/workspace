@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import type { BrowserWindow, MessageBoxOptions } from "electron";
 
 const require = createRequire(import.meta.url);
@@ -88,6 +89,16 @@ export interface WorkspaceUpdaterOptions {
     updateIntervalMs: number;
     transientRetryDelayMs: number;
   }>;
+}
+
+export function hasPackagedWindowsUpdateFeed(options: {
+  isPackaged: boolean;
+  platform: NodeJS.Platform;
+  resourcesPath: string;
+  fileExists?: (path: string) => boolean;
+}): boolean {
+  if (!options.isPackaged || options.platform !== "win32") return false;
+  return (options.fileExists ?? existsSync)(join(options.resourcesPath, "app-update.yml"));
 }
 
 /**
@@ -519,7 +530,11 @@ function defaultUpdaterAdapter(): WorkspaceUpdaterAdapter {
 function defaultElectronHost(getWindow: () => BrowserWindow | null): WorkspaceUpdaterHost {
   const electron = require("electron") as typeof import("electron");
   return {
-    isSupported: () => electron.app.isPackaged && process.platform === "win32",
+    isSupported: () => hasPackagedWindowsUpdateFeed({
+      isPackaged: electron.app.isPackaged,
+      platform: process.platform,
+      resourcesPath: process.resourcesPath,
+    }),
     currentVersion: () => electron.app.getVersion(),
     now: () => new Date().toISOString(),
     installerExists: existsSync,

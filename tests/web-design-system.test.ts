@@ -7,6 +7,7 @@ const rendererRoot = join(process.cwd(), "web-local", "src");
 
 const [
   appSource,
+  rendererMainSource,
   workspaceChromeSource,
   workspacePanesSource,
   workspaceIdentitySource,
@@ -19,6 +20,7 @@ const [
   capabilitiesSource,
 ] = await Promise.all([
   readRenderer("App.tsx"),
+  readRenderer("main.tsx"),
   readRenderer("components/panes/workspaceChrome.tsx"),
   readRenderer("components/panes/workspacePanes.tsx"),
   readRenderer("lib/workspace-identity.ts"),
@@ -43,6 +45,8 @@ test("Files is the first primary surface and Space remains the root selector", (
   assert.ok(selectorIndex >= 0, "the rail must expose a distinct Space selector");
   assert.ok(primaryRenderIndex > selectorIndex, "the Space selector must render before primary surfaces");
   assert.match(workspaceChromeSource, /onModeChange\("workspaces"\)/);
+  assert.match(workspaceChromeSource, /aria-current=\{activeMode === item\.mode \? "page" : undefined\}/, "the active icon-only destination must be announced");
+  assert.match(workspaceChromeSource, /data-rail-tooltip=\{item\.title\}/, "icon-only destinations need visible hover and focus labels");
   assert.match(workspaceChromeSource, /workspace-rail-space-copy"><strong>\{workspaceLabel\}<\/strong>/);
   assert.doesNotMatch(workspaceChromeSource, /<span>Space<\/span>|ChevronRight20Regular|workspace-rail-space-caret/);
 });
@@ -57,11 +61,11 @@ test("pane navigation uses one Fluent icon contract", () => {
   }
 
   const requiredNavPairs = [
-    "DocumentFolder20",
-    "ChatMultiple20",
-    "Library20",
-    "History20",
-    "BookToolbox20",
+    "DocumentFolder24",
+    "ChatMultiple24",
+    "Library24",
+    "History24",
+    "BookToolbox24",
   ];
   for (const icon of requiredNavPairs) {
     assert.match(workspaceChromeSource, new RegExp(`\\b${icon}Regular\\b`), `${icon} needs a regular state`);
@@ -197,6 +201,9 @@ test("professional shell keeps compact navigation and the persistent Space ident
   const spaceSelectorRule = cssRuleBody(shellCss, ".app-shell .professional-workspace-rail .workspace-rail-space-selector");
   const compactShellCss = shellCss.slice(shellCss.indexOf("@media (max-width: 820px)"));
   const compactSpaceSelectorRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail .workspace-rail-space-selector");
+  const compactRailRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail");
+  const compactNavRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail .workspace-rail-nav");
+  const compactAccountRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail .workspace-rail-account");
   const compactSpaceCopyRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail .workspace-rail-space-copy");
   const compactSpaceNameRule = cssRuleBody(compactShellCss, ".app-shell .professional-workspace-rail .workspace-rail-space-copy strong");
   const shortDesktopShellCss = shellCss.slice(shellCss.indexOf("@media (max-height: 720px)"));
@@ -214,19 +221,22 @@ test("professional shell keeps compact navigation and the persistent Space ident
 
   assert.ok(maxPxValue(customPropertyValue(layoutRule, "--workspace-rail-width")) <= 180, "desktop rail must remain compact");
   assert.equal(maxPxValue(customPropertyValue(layoutRule, "--workspace-identity-header-height")), 90, "the Space banner must retain its established 90px geometry");
-  assert.ok(pxDeclaration(navButtonRule, "min-height") <= 40, "primary navigation rows must remain compact");
-  assert.match(spaceSelectorRule, /height:\s*var\(--workspace-identity-header-height\)/, "the root Space selector must align with the identity banner");
+  assert.ok(pxDeclaration(navButtonRule, "min-height") <= 48, "primary navigation targets must stay compact");
+  assert.equal(pxDeclaration(navButtonRule, "width"), pxDeclaration(navButtonRule, "min-height"), "primary navigation uses square icon-only targets");
+  assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-label\s*\{[\s\S]*?display:\s*none/, "the desktop rail is icon-only; labels live in tooltips and accessible names");
+  assert.match(compactShellCss, /\.workspace-rail-label\s*\{[\s\S]*?display:\s*block/, "the narrow horizontal rail restores text labels");
+  assert.match(spaceSelectorRule, /height:\s*48px/, "the root Space selector is a compact 48px identity tile");
+  assert.match(spaceSelectorRule, /margin:\s*21px\s+0\s+17px/, "the identity tile stays centered within the 90px header band");
+  assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-space-copy\s*\{[^}]*display:\s*none/, "the desktop rail tile hides the Space name; the pane header carries it");
   assert.match(spaceSelectorRule, /border-radius:\s*var\(--workspace-identity-radius\)/, "the root Space selector and banner must share a silhouette");
   assert.match(spaceSelectorRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/, "the desktop Space identity must use a centered single-column lockup");
-  assert.match(spaceSelectorRule, /grid-template-rows:\s*auto\s+auto/);
+  assert.match(spaceSelectorRule, /grid-template-rows:\s*1fr/, "the desktop identity tile has one visible icon row");
   assert.match(spaceSelectorRule, /place-items:\s*center/);
   assert.match(layoutRule, /--workspace-identity-glyph-size:\s*26px/, "the Space identity glyph should carry slightly more visual weight");
   assert.match(layoutRule, /--workspace-identity-rail-label-size:\s*14px/);
   assert.match(layoutRule, /--workspace-identity-title-size:\s*17px/);
   assert.match(layoutRule, /--workspace-identity-tracking:\s*0\.01em/);
   assert.match(shortDesktopRailRule, /padding:\s*8px\s+6px\s+6px/, "short desktop layouts must keep the identity selector aligned with the pane banner");
-  assert.match(shellCss, /\.workspace-rail-space-copy strong[\s\S]*?-webkit-line-clamp:\s*2/, "the taller Space selector must use its height for longer names");
-  assert.match(shellCss, /\.workspace-rail-space-copy strong[\s\S]*?font-size:\s*var\(--workspace-identity-rail-label-size\)[\s\S]*?letter-spacing:\s*var\(--workspace-identity-tracking\)/, "the Space name needs a deliberate display treatment");
   assert.match(compactSpaceSelectorRule, /height:\s*auto/);
   assert.match(compactSpaceSelectorRule, /min-height:\s*46px/);
   assert.match(compactSpaceSelectorRule, /grid-template-columns:\s*28px\s+minmax\(0,\s*1fr\)/, "the narrow rail must retain its horizontal lockup");
@@ -236,8 +246,16 @@ test("professional shell keeps compact navigation and the persistent Space ident
   assert.match(compactSpaceCopyRule, /text-align:\s*left/);
   assert.match(compactSpaceNameRule, /white-space:\s*nowrap/);
   assert.match(compactSpaceNameRule, /-webkit-line-clamp:\s*unset/);
+  assert.match(compactSpaceNameRule, /text-overflow:\s*ellipsis/, "the narrow Space label must truncate without colliding with navigation");
+  assert.match(compactRailRule, /overflow:\s*hidden/, "the narrow rail must contain independent scroll regions");
+  assert.match(compactNavRule, /flex:\s*1\s+1\s+auto/);
+  assert.match(compactNavRule, /overflow-x:\s*auto/, "narrow primary destinations must scroll instead of colliding with tools");
+  assert.match(compactAccountRule, /flex:\s*0\s+0\s+auto/, "Shortcuts and Settings must remain reachable while destinations scroll");
+  const tooltipRule = cssRuleBody(shellCss, ".app-shell .professional-workspace-rail [data-rail-tooltip]::after");
+  assert.match(tooltipRule, /content:\s*attr\(data-rail-tooltip\)/);
+  assert.match(shellCss, /\[data-rail-tooltip\]:focus-visible::after/, "tooltips must work for sighted keyboard users");
   assert.match(spacesPaneRule, /scrollbar-gutter:\s*auto/, "the Spaces pane must not reserve a dead right-side gutter");
-  assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-button svg,[\s\S]*?\{[\s\S]*?width:\s*20px;[\s\S]*?height:\s*20px;/);
+  assert.match(shellCss, /\.professional-workspace-rail \.workspace-rail-button svg,[\s\S]*?\{[\s\S]*?width:\s*24px;[\s\S]*?height:\s*24px;/);
 });
 
 test("Space customization is visible, compact, and separate from structural chrome", () => {
@@ -271,7 +289,9 @@ test("Space customization is visible, compact, and separate from structural chro
   assert.match(darkRailIconRule, /box-shadow:\s*none/, "legacy dark-theme decoration must not recreate an icon tile");
   assert.match(customizationCss, /\.professional-appearance-surface/);
   assert.match(customizationCss, /\.workspace-banner-position-control/);
-  assert.match(customizationCss, /\.professional-workspace-rail \.workspace-rail-button\.active[\s\S]*?box-shadow:\s*inset 3px 0 0 var\(--workspace-custom-color\)/);
+  const activeRailMarkerRule = cssRuleBody(customizationCss, ".app-shell .professional-workspace-rail .workspace-rail-button.active::before");
+  assert.match(activeRailMarkerRule, /background:\s*var\(--workspace-custom-color\)/, "Space color must drive the compact active pill");
+  assert.doesNotMatch(activeRailMarkerRule, /box-shadow/, "the active pill must not resurrect the legacy full-row shadow");
   assert.match(customizationCss, /\.professional-spaces \.workspace-card-shell\.active[\s\S]*?background:\s*var\(--workspace-custom-color-soft\)/);
   assert.match(customizationCss, /\.professional-chats \.chat-workspace-heading > span:first-child[\s\S]*?color:\s*var\(--workspace-custom-color\)/);
   assert.doesNotMatch(
@@ -281,6 +301,9 @@ test("Space customization is visible, compact, and separate from structural chro
   );
 
   assert.match(foundationCss, /--workspace-ui-font:\s*var\(--workspace-font-family/);
+  assert.match(rendererMainSource, /window\.workspaceDesktop\?\.window\.material === "mica"[\s\S]*?dataset\.windowMaterial = "mica"/, "window material must be applied before React's first paint");
+  assert.match(rendererMainSource, /delete document\.documentElement\.dataset\.windowMaterial/, "non-Mica sessions must clear stale material state");
+  assert.doesNotMatch(appSource, /dataset\.windowMaterial/, "window material must not wait for a passive React effect");
   assert.doesNotMatch(foundationCss, /--workspace-font-size:/, "the professional layer must not override the user's text-size preference");
   assert.doesNotMatch(desktopSettingsSource, /from\s+["']lucide-react["']/);
   assert.match(desktopSettingsSource, /from\s+["']@fluentui\/react-icons["']/);

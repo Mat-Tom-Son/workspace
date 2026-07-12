@@ -12,6 +12,7 @@ import {
   Menu,
   net,
   nativeImage,
+  nativeTheme,
   Notification,
   powerMonitor,
   powerSaveBlocker,
@@ -43,6 +44,7 @@ import {
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
+import { shouldUseWindowsMica } from "./window-material.js";
 
 const productName = "Workspace";
 const appProtocol = "workspace-desktop";
@@ -53,6 +55,24 @@ const desktopTitleBarOverlayPalettes = {
   light: { color: "#f3f4f6", symbolColor: "#1b2433" },
   dark: { color: "#20242b", symbolColor: "#f8fafc" },
 } as const;
+// Electron supports Mica on Windows 11 22H2+ (build 22621). Older builds and
+// reduced-transparency sessions use a solid theme-matched window background.
+const micaSupported = shouldUseWindowsMica(
+  process.platform,
+  process.getSystemVersion(),
+  nativeTheme.prefersReducedTransparency,
+);
+const windowBackgroundColors = { light: "#f5f6f8", dark: "#111318" } as const;
+
+function titleBarOverlayFor(theme: "light" | "dark"): Electron.TitleBarOverlay {
+  return {
+    ...desktopTitleBarOverlayPalettes[theme],
+    // With Mica the window-controls corner stays transparent so the material
+    // shows through the whole title bar instead of a solid strip.
+    ...(micaSupported ? { color: "#00000000" } : {}),
+    height: desktopTitleBarHeight,
+  };
+}
 const currentFile = fileURLToPath(import.meta.url);
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const folderGrantTtlMs = 5 * 60 * 1000;
@@ -322,14 +342,13 @@ async function createMainWindow(): Promise<void> {
     icon: resolveWindowIcon(),
     autoHideMenuBar: process.platform === "win32",
     ...(process.platform === "win32" ? {
-      backgroundMaterial: "mica",
+      ...(micaSupported ? { backgroundMaterial: "mica" as const } : {}),
       titleBarStyle: "hidden",
-      titleBarOverlay: {
-        ...desktopTitleBarOverlayPalettes.light,
-        height: desktopTitleBarHeight,
-      },
+      titleBarOverlay: titleBarOverlayFor(nativeTheme.shouldUseDarkColors ? "dark" : "light"),
     } : {}),
-    backgroundColor: "#f7f8fb",
+    // A solid background would paint over the Mica material, so only set one
+    // where Mica is unavailable.
+    ...(micaSupported ? {} : { backgroundColor: windowBackgroundColors[nativeTheme.shouldUseDarkColors ? "dark" : "light"] }),
     show: false,
     webPreferences: {
       preload: resolvePreloadPath(),
@@ -342,6 +361,7 @@ async function createMainWindow(): Promise<void> {
       additionalArguments: [
         rendererArgument("api-base-url", api.origin),
         rendererArgument("app-version", app.getVersion()),
+        rendererArgument("window-material", micaSupported ? "mica" : "none"),
       ],
     },
   });
@@ -480,11 +500,15 @@ function registerIpc(): void {
     updateDesktopPreferences({ closeToTray: value });
     return closeToTrayStatus();
   });
-  ipcMain.on("workspace:window:set-theme", (event, value: unknown) => {
+  ipcMain.on("workspace:window:set-theme", (event, value: unknown, source: unknown) => {
     assertTrustedRenderer(event);
     if (value !== "light" && value !== "dark") return;
+    // Keep the OS-drawn chrome (Mica backdrop, frame, menus) on the app theme.
+    // "system" preserves prefers-color-scheme change events in the renderer.
+    nativeTheme.themeSource = source === "light" || source === "dark" || source === "system" ? source : value;
     if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.setTitleBarOverlay({ ...desktopTitleBarOverlayPalettes[value], height: desktopTitleBarHeight });
+    mainWindow.setTitleBarOverlay(titleBarOverlayFor(value));
+    if (!micaSupported) mainWindow.setBackgroundColor(windowBackgroundColors[value]);
   });
   ipcMain.on("workspace:menu:set-state", (event, value: unknown) => {
     assertTrustedRenderer(event);

@@ -13,6 +13,7 @@ function argumentValue(name: string): string {
 
 const apiBaseUrl = argumentValue("api-base-url");
 const appVersion = argumentValue("app-version");
+const windowMaterial = argumentValue("window-material") === "mica" ? "mica" : "none";
 
 contextBridge.exposeInMainWorld("workspaceDesktop", {
   desktop: true,
@@ -55,7 +56,8 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
     },
   },
   window: {
-    setTheme: (theme: "light" | "dark") => ipcRenderer.send("workspace:window:set-theme", theme),
+    material: windowMaterial,
+    setTheme: (theme: "light" | "dark", source?: "light" | "dark" | "system") => ipcRenderer.send("workspace:window:set-theme", theme, source),
     getAccentColor: () => ipcRenderer.invoke("workspace:window:accent-color"),
     getCloseToTray: () => ipcRenderer.invoke("workspace:window:get-close-to-tray"),
     setCloseToTray: (enabled: boolean) => ipcRenderer.invoke("workspace:window:set-close-to-tray", enabled),

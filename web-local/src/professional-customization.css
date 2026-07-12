@@ -303,7 +303,11 @@
 .app-shell .professional-workspace-rail .workspace-rail-space-selector.active:focus-visible {
   background: var(--workspace-custom-color-soft);
   border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
-  box-shadow: inset 3px 0 0 var(--workspace-custom-color);
+  box-shadow: none;
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-button.active::before {
+  background: var(--workspace-custom-color);
 }
 
 .app-shell[data-theme="dark"] .professional-workspace-rail .workspace-rail-space-selector.active,
@@ -311,7 +315,7 @@
 .app-shell[data-theme="dark"] .professional-workspace-rail .workspace-rail-space-selector.active:focus-visible {
   background: var(--workspace-custom-color-soft);
   border-color: rgba(var(--workspace-selection-accent-rgb), 0.24);
-  box-shadow: inset 3px 0 0 var(--workspace-custom-color);
+  box-shadow: none;
 }
 
 .app-shell .professional-workspace-rail .workspace-rail-button.active .workspace-rail-icon {
@@ -823,4 +827,22 @@
   .app-shell .professional-appearance-surface .workspace-banner-gallery {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* Windows 11 Mica. When the desktop shell reports the mica window material,
+   the canvas layers go transparent so the OS-drawn backdrop shows through the
+   title bar, rail, and pane gutters. Content surfaces stay opaque, matching
+   the native layer-on-mica pattern (Explorer, Settings, Notepad). */
+:root[data-window-material="mica"],
+:root[data-window-material="mica"] body,
+:root[data-window-material="mica"] .app-shell,
+:root[data-window-material="mica"] .app-shell .workspace-layout,
+:root[data-window-material="mica"] .app-shell .professional-workspace-rail {
+  background: transparent;
+}
+
+:root[data-window-material="mica"] .desktop-titlebar {
+  background: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
 }

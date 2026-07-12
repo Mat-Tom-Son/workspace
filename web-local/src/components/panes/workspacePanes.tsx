@@ -338,7 +338,7 @@ export function HistoryPane({ workspace, fixtureItems, refreshRequest = 0, selec
         {items.map((item) => (
           <article className={item.checkpointId === selectedCheckpointId ? "professional-history-card selected" : "professional-history-card"} key={item.checkpointId} aria-current={item.checkpointId === selectedCheckpointId ? "true" : undefined}>
             <span className="professional-icon-tile" aria-hidden="true"><History16Regular /></span>
-            <div className="professional-history-copy"><strong>{item.label || item.reason}</strong><span>{formatDate(item.createdAt)} · {item.fileCount} files</span></div>
+            <div className="professional-history-copy"><strong>{item.label || item.reason}</strong><span>{formatDate(item.createdAt)} · {item.fileCount} {item.fileCount === 1 ? "file" : "files"}</span></div>
             <div className="professional-history-actions">
               {onOpen ? <button className="professional-button professional-button-secondary" type="button" onClick={() => onOpen(item)}>Open</button> : null}
               <button className="professional-button professional-button-secondary" type="button" disabled={busy || Boolean(fixtureItems)} onClick={() => void restore(item)}>Restore</button>

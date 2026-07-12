@@ -60,7 +60,8 @@ declare global {
         onOpenSettings: (listener: () => void) => () => void;
       };
       window: {
-        setTheme: (theme: "light" | "dark") => void;
+        material: "mica" | "none";
+        setTheme: (theme: "light" | "dark", source?: "light" | "dark" | "system") => void;
         getAccentColor: () => Promise<string | null>;
         onAccentColorChanged: (listener: (accent: string | null) => void) => () => void;
         getCloseToTray: () => Promise<{ supported: boolean; enabled: boolean }>;

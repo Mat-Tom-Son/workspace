@@ -3553,7 +3553,7 @@ textarea,
   --workspace-selection-surface: rgba(var(--workspace-selection-accent-rgb), 0.055);
   --workspace-pane-edge-fill: #f5f9fb;
   --workspace-identity-header-height: 90px;
-  --workspace-identity-radius: 18px;
+  --workspace-identity-radius: 12px;
   display: grid;
   grid-template-columns: var(--workspace-rail-width) minmax(280px, var(--workspace-sidebar-width)) var(--workspace-resizer-width) minmax(0, 1fr);
   gap: 0;

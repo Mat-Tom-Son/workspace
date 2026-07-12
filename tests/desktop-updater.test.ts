@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
+  hasPackagedWindowsUpdateFeed,
   WorkspaceUpdater,
   type WorkspaceUpdateCheckResultLike,
   type WorkspaceUpdateMessage,
@@ -10,6 +12,17 @@ import {
   type WorkspaceUpdaterAdapter,
   type WorkspaceUpdaterHost,
 } from "../desktop/src/updater.js";
+
+test("only installed Windows builds with an updater feed enable update controls", () => {
+  const resourcesPath = "C:\\Program Files\\Workspace\\resources";
+  const expectedFeed = join(resourcesPath, "app-update.yml");
+  const fileExists = (path: string) => path === expectedFeed;
+
+  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists }), true);
+  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists: () => false }), false);
+  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: false, platform: "win32", resourcesPath, fileExists }), false);
+  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "darwin", resourcesPath, fileExists }), false);
+});
 
 class FakeUpdater extends EventEmitter implements WorkspaceUpdaterAdapter {
   autoDownload = true;

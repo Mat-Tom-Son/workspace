@@ -59,6 +59,7 @@ import {
 import { configureWorkspaceStateRoot } from "./state-paths.js";
 import { WorkspaceKernel } from "./workspace-kernel.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
+import { canonicalWorkspaceWatchRoot } from "./workspace-watch.js";
 import {
   createManagedWorkspace,
   createWorkspaceFolder,
@@ -1192,11 +1193,12 @@ async function openWorkspaceFileStream(
       sendEvent({ type: "file_event", eventType, path });
     });
   };
+  const watchRoot = await canonicalWorkspaceWatchRoot(workspaceRoot);
   try {
-    watcher = watch(workspaceRoot, { recursive: true }, onChange);
+    watcher = watch(watchRoot, { recursive: true }, onChange);
   } catch {
     recursive = false;
-    watcher = watch(workspaceRoot, onChange);
+    watcher = watch(watchRoot, onChange);
   }
   sendEvent({ type: "ready", recursive });
   const heartbeat = setInterval(() => {

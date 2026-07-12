@@ -19,6 +19,8 @@ During UI work, `npm run local:dev` is the normal live-reload loop. Run independ
 
 The lanes are cumulative confidence, not interchangeable artifacts. A passing development server does not verify ASAR/package paths, and an unpacked app does not verify the NSIS updater output. The retained `npm run desktop:package` command creates the slower Forge package and is useful only when diagnosing or changing that alternate lane; routine packaged QA should use `desktop:package:smoke` because it shares Electron Builder configuration with the release.
 
+Electron Builder's unpacked `--dir` lane does not generate `resources/app-update.yml`. Workspace therefore keeps updater controls disabled in that smoke package instead of presenting a missing-feed error. The NSIS `desktop:make` lane and the tagged GitHub build are the updater verification boundary.
+
 In one warm local comparison on the primary Windows workstation, `desktop:package:smoke` completed in about 68 seconds and the Forge `desktop:package` lane took about 412 seconds—roughly 6.2 times faster and nearly six minutes saved. Exact times depend on hardware and caches; the structural saving comes from using the release packager while skipping the alternate Forge pass and NSIS artifact work.
 
 CI runs `check`, `test`, and `desktop:package:smoke`. Because the smoke command already includes `desktop:prepare`, CI does not run preparation as a separate duplicate step.

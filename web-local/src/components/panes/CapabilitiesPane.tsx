@@ -588,7 +588,7 @@ function CoreToolsSection({ tools, management }: { tools: AgentTool[]; managemen
         <p className="capabilities-core-tools-copy" title={management?.reason}>These tools ship with Pi. New Chats start with the defaults below; a Chat or Extension may change its own selection.</p>
         <div className="capabilities-core-tool-list">{coreTools.map((tool) => (
           <article className="capabilities-core-tool-row" key={`${tool.source}:${tool.name}`}>
-            <div><strong>{tool.label || humanizeToolName(tool.name)}</strong><p>{tool.description}</p><small>{tool.source}</small></div>
+            <div><strong>{tool.label?.trim() || humanizeToolName(tool.name)}</strong><p>{tool.description}</p><small>{tool.source}</small></div>
             <span className={`professional-status-badge ${tool.active ? "enabled" : ""}`}>{tool.active ? "On in new Chats" : "Available to Chats"}</span>
           </article>
         ))}</div>

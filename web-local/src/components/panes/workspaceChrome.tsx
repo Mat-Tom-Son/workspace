@@ -2,24 +2,23 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSPropert
 import {
   ArrowClockwise20Regular,
   ArrowReset20Regular,
-  BookToolbox20Filled,
-  BookToolbox20Regular,
-  ChatMultiple20Filled,
-  ChatMultiple20Regular,
+  BookToolbox24Filled,
+  BookToolbox24Regular,
+  ChatMultiple24Filled,
+  ChatMultiple24Regular,
   Checkmark16Regular,
   Checkmark20Regular,
   ChevronDown20Regular,
   Dismiss20Regular,
-  DocumentFolder20Filled,
-  DocumentFolder20Regular,
-  History20Filled,
-  History20Regular,
+  DocumentFolder24Filled,
+  DocumentFolder24Regular,
+  History24Filled,
+  History24Regular,
   ImageAdd20Regular,
-  Keyboard20Regular,
-  Library20Filled,
-  Library20Regular,
+  Keyboard24Regular,
+  Library24Filled,
+  Library24Regular,
   Search20Regular,
-  Settings20Regular,
 } from "@fluentui/react-icons";
 import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspace-icons";
 import { workspaceBannerOptions } from "../../constants";
@@ -46,11 +45,11 @@ function WorkspaceModeRail({
   onOpenKeyboardShortcuts: () => void;
   updateControl?: ReactNode;
 }) {
-  const FilesIcon = activeMode === "files" ? DocumentFolder20Filled : DocumentFolder20Regular;
-  const CapabilitiesIcon = activeMode === "capabilities" ? BookToolbox20Filled : BookToolbox20Regular;
-  const ChatsIcon = activeMode === "chats" ? ChatMultiple20Filled : ChatMultiple20Regular;
-  const LibraryIcon = activeMode === "library" ? Library20Filled : Library20Regular;
-  const HistoryIcon = activeMode === "history" ? History20Filled : History20Regular;
+  const FilesIcon = activeMode === "files" ? DocumentFolder24Filled : DocumentFolder24Regular;
+  const CapabilitiesIcon = activeMode === "capabilities" ? BookToolbox24Filled : BookToolbox24Regular;
+  const ChatsIcon = activeMode === "chats" ? ChatMultiple24Filled : ChatMultiple24Regular;
+  const LibraryIcon = activeMode === "library" ? Library24Filled : Library24Regular;
+  const HistoryIcon = activeMode === "history" ? History24Filled : History24Regular;
   const workspaceLabel = workspace.name.trim() || "Space";
   const primaryItems: Array<{ mode: WorkspaceRailMode; label: string; ariaLabel: string; title: string; icon: ReactNode }> = [
     { mode: "files", label: "Files", ariaLabel: "Files", title: "Files in this Space", icon: <FilesIcon className="fluent-rail-icon" /> },
@@ -68,7 +67,7 @@ function WorkspaceModeRail({
           onClick={() => onModeChange("workspaces")}
           aria-label={`Select or manage Space: ${workspaceLabel}`}
           aria-current={activeMode === "workspaces" ? "page" : undefined}
-          title={`Select or manage Space: ${workspaceLabel}`}
+          data-rail-tooltip={`Select or manage Space: ${workspaceLabel}`}
         >
           <span className="workspace-rail-icon workspace-rail-space-avatar" aria-hidden="true" data-space-icon={workspaceIdentity.iconName} style={workspaceIdentityStyle(workspaceIdentity)}><WorkspaceIconGlyph icon={workspaceIdentity.Icon} size={26} filled /></span>
           <span className="workspace-rail-space-copy"><strong>{workspaceLabel}</strong></span>
@@ -83,7 +82,8 @@ function WorkspaceModeRail({
             key={item.mode}
             onClick={() => onModeChange(item.mode)}
             aria-label={item.ariaLabel}
-            title={item.title}
+            aria-current={activeMode === item.mode ? "page" : undefined}
+            data-rail-tooltip={item.title}
           >
             <span className="workspace-rail-icon" aria-hidden="true">{item.icon}</span>
             <span className="workspace-rail-label">{item.label}</span>
@@ -98,16 +98,14 @@ function WorkspaceModeRail({
             type="button"
             onClick={onOpenKeyboardShortcuts}
             aria-label="Keyboard shortcuts"
-            title="Keyboard shortcuts"
+            data-rail-tooltip="Keyboard shortcuts"
           >
-            <Keyboard20Regular aria-hidden="true" />
+            <Keyboard24Regular aria-hidden="true" />
             <span>Shortcuts</span>
           </button>
         </div>
         <div className="workspace-rail-settings-control">
           {accountControl}
-          <Settings20Regular className="workspace-rail-settings-icon" aria-hidden="true" />
-          <span className="workspace-rail-settings-label" aria-hidden="true">Settings</span>
         </div>
       </div>
     </nav>

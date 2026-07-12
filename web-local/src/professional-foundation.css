@@ -10,14 +10,16 @@
   --ui-text: #20242c;
   --ui-text-muted: #667085;
   --ui-text-subtle: #8a94a3;
-  --ui-accent: #2563eb;
-  --ui-accent-hover: #1d4ed8;
-  --ui-accent-soft: #eff6ff;
+  --ui-accent: #005fb8;
+  --ui-accent-hover: #004c96;
+  --ui-accent-soft: #e8f1fa;
   --ui-danger: #b42318;
-  --ui-radius-sm: 6px;
+  --ui-tooltip-background: #252525;
+  --ui-tooltip-text: #ffffff;
+  --ui-radius-sm: 4px;
   --ui-radius-md: 8px;
   --ui-radius-lg: 12px;
-  --ui-shadow-menu: 0 12px 32px rgba(23, 29, 39, 0.14);
+  --ui-shadow-menu: 0 8px 16px rgba(23, 29, 39, 0.14);
 }
 
 :root[data-theme="dark"] {
@@ -30,11 +32,13 @@
   --ui-text: #e8ebf0;
   --ui-text-muted: #a1a9b6;
   --ui-text-subtle: #7f8998;
-  --ui-accent: #6d9eff;
-  --ui-accent-hover: #8ab2ff;
-  --ui-accent-soft: rgba(74, 126, 226, 0.16);
+  --ui-accent: #479ef5;
+  --ui-accent-hover: #62abf5;
+  --ui-accent-soft: rgba(71, 158, 245, 0.16);
   --ui-danger: #ff9b92;
-  --ui-shadow-menu: 0 14px 36px rgba(0, 0, 0, 0.38);
+  --ui-tooltip-background: #f4f4f4;
+  --ui-tooltip-text: #202020;
+  --ui-shadow-menu: 0 8px 16px rgba(0, 0, 0, 0.28);
 }
 
 html,

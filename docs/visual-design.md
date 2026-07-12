@@ -14,7 +14,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 - Use Fluent System Icons for shell navigation, commands, status, and empty states.
 - Use regular icons at rest and the matching filled icon for a selected navigation item.
-- Use 16px icons for inline actions, 20px for navigation and section markers, and no more than 24px for empty states. The root Space identity glyph is a deliberate 26px exception because it anchors the larger 90px identity band rather than an ordinary navigation row.
+- Use 16px icons for inline actions, 24px for the icon-only rail navigation, 20px for section markers, and no more than 24px for empty states. The root Space identity glyph is a deliberate 26px exception because it anchors the larger 90px identity band rather than an ordinary navigation row.
 - Material file-type icons are the one deliberate exception because file recognition benefits from familiar type colors.
 - Do not mix icon libraries within one control group. The Space glyph may repeat only where it communicates inherited root context: the root selector, switcher, cards, and Space-bound tabs. The banner itself is name-first and does not repeat the rail glyph.
 - Space color may appear as a small avatar accent or active indicator, never as a frame around the application.
@@ -24,13 +24,13 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - The default is Segoe UI Variable Text with 15px body copy and weights 400, 600, and 700.
 - User-selected fonts and text sizes may change type, but must not change shell geometry or push controls out of bounds.
 - Use the 4, 8, 12, 16, 24, and 32px spacing scale.
-- Controls are 36–40px tall with 6–8px radii.
+- Controls are 36–40px tall with 4–8px radii.
 - Avoid all-caps labels, weight 800+, text shadows, ornamental whole-app gradients, and oversized hero headers.
 
 ## Layout
 
-- Navigation uses compact, aligned rows with text labels and one subtle selected state.
-- Every left-pane surface begins with the same 90px identity band in the same position. Its centered, name-only lockup represents the selected Space, not the active page. The root Space selector aligns to that band with a centered icon-over-name lockup and up to two lines of the Space name; modestly larger type and subtle positive tracking make both identity labels feel deliberate while respecting the user's selected font. Ordinary navigation rows remain compact, and narrow layouts return the selector to a horizontal lockup. Files, Capabilities, Chats, Library, and History keep the quick Space switcher, while the Spaces-management surface omits that redundant switcher.
+- Desktop rail navigation is icon-only: centered square targets (44–48px) with 24px Fluent icons, tooltips and accessible names carrying the labels, and one subtle selected state (soft fill plus a small accent pill). Narrow layouts return to horizontal rows with text labels.
+- Every left-pane surface begins with the same 90px identity band in the same position. Its centered, name-only lockup represents the selected Space, not the active page. The desktop root Space selector is a compact icon-only tile centered in that band while the adjacent pane header carries the full Space name; narrow layouts return the selector to a horizontal icon-and-name lockup. Files, Capabilities, Chats, Library, and History keep the quick Space switcher, while the Spaces-management surface omits that redundant switcher.
 - Space banners stay inside the identity header and appearance previews. They do not wallpaper the right work surface or recolor structural borders; interaction color and shell structure remain part of the global application system.
 - Color and icon identity inherit through Space-bound cards, chat groups, tabs, surfaces, and chat empty states. Content belonging to another Space carries that Space's own identity rather than the currently selected one.
 - User Chat bubbles use one solid primary Space accent, never a gradient between accent colors. Assistant message headers are text-only and do not repeat a decorative Assistant avatar.
