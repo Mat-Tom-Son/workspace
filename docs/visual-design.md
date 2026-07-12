@@ -39,6 +39,13 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - Empty states are centered, restrained, and no wider than 440px.
 - Resizable panes must adapt to their own width; prefer container queries to viewport-only breakpoints.
 
+## Windows material
+
+- Use Mica only on Windows 11 22H2 or newer (build 22621+) and only when the operating system does not report reduced transparency.
+- When Mica is active, keep the titlebar overlay transparent and make only the root window chrome, rail, and pane gutters transparent. Content surfaces remain opaque so hierarchy and contrast do not depend on the wallpaper.
+- The preload reports `window.material` and `main.tsx` applies `data-window-material="mica"` synchronously before React's first paint. Do not move this to a passive effect that produces a solid-background flash.
+- Older Windows builds and reduced-transparency sessions use a theme-matched solid background. Light, dark, and system theme changes must update native chrome and the renderer together.
+
 ## Visual acceptance
 
 Before a handoff, exercise every primary surface and every Settings section in light and dark themes at 1440×900, 1280×800, and a tall/narrow desktop window. Reject the candidate for:
@@ -52,6 +59,8 @@ Before a handoff, exercise every primary surface and every Settings section in l
 - empty states that leave unexplained split-pane chrome;
 - focus, hover, active, and disabled states that are not visually distinct.
 
+For Electron-integrated changes, repeat a packaged-app pass that confirms Mica or its solid fallback, light/dark/system transitions, custom menus, updater state, and the minimum window size. Browser fixtures cannot prove native material or titlebar behavior.
+
 ## Appearance scopes
 
 - **Settings → Appearance** controls the application theme, font, and text size.
@@ -60,3 +69,5 @@ Before a handoff, exercise every primary surface and every Settings section in l
 - Per-Space appearance is personal application state. It is not written into the user's ordinary folder and does not travel with shared files.
 - A custom image is resized and compressed before local storage. Unsafe image formats and malformed stored values are rejected.
 - Every Space appearance control updates a live preview, saves immediately, and offers a single Reset action.
+
+See [Desktop experience parity](ui-parity.md) for the complete interaction contract and [Architecture](architecture.md) for the native/renderer boundary.

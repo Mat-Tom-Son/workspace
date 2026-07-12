@@ -100,8 +100,9 @@ export interface WorkspaceCliCapabilitySummary {
 }
 
 /**
- * The deliberately narrow adapter needed by the CLI executor. A future
- * WorkspaceKernel can satisfy this interface without importing desktop code.
+ * The deliberately narrow adapter needed by the CLI executor. WorkspaceKernel
+ * satisfies this interface through a compact projection without importing
+ * desktop code into the reusable control plane.
  */
 export interface WorkspaceCliKernel {
   getContext(actor: WorkspaceCliActor, options: { space?: string }): Promise<WorkspaceCliContextSnapshot>;

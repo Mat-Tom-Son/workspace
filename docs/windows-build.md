@@ -1,6 +1,6 @@
 # Windows build
 
-Workspace requires Node 22.19.0 or newer.
+Workspace requires Node 22.19.0 or newer. GitHub CI and releases use Node 24; use that runtime for release work when it is available.
 
 ## Feedback ladder
 
@@ -23,13 +23,14 @@ Electron Builder's unpacked `--dir` lane does not generate `resources/app-update
 
 In one warm local comparison on the primary Windows workstation, `desktop:package:smoke` completed in about 68 seconds and the Forge `desktop:package` lane took about 412 seconds—roughly 6.2 times faster and nearly six minutes saved. Exact times depend on hardware and caches; the structural saving comes from using the release packager while skipping the alternate Forge pass and NSIS artifact work.
 
-CI runs `check`, `test`, and `desktop:package:smoke`. Because the smoke command already includes `desktop:prepare`, CI does not run preparation as a separate duplicate step.
+CI runs `check`, `test`, and `desktop:package:smoke` as independent workflow steps so a later successful command cannot mask an earlier failure. Because the smoke command already includes `desktop:prepare`, CI does not run preparation as a separate duplicate step.
 
 ## Full Windows candidate
 
 ```powershell
 npm run check
 npm test
+npm audit --audit-level=high
 npm run desktop:make
 ```
 
@@ -40,6 +41,22 @@ Both package lanes place the public `workspace.cmd` launcher, an extensionless `
 The NSIS include adds `<install>\bin` idempotently to the current user's `HKCU\Environment\Path`, broadcasts `WM_SETTINGCHANGE`, and removes only that entry during uninstall. It does not modify any shell profile. The shim normally launches the parent `Workspace.exe`; `WORKSPACE_CLI_APP` and the bounded `WORKSPACE_CLI_TIMEOUT_MS` override exist for unpacked automated tests and should not be set by the installer.
 
 Protocol v1 exposes only read operations (`context`, `spaces list`, `tasks list`, and `capabilities list`). Its request directory is a same-user coordination channel, not an authenticated caller boundary. Do not add mutations to this protocol without caller authorization and an authenticated transport or equivalent per-launch request authentication.
+
+The CLI is an adapter over the shared `WorkspaceKernel`, not a packaging-only utility. See [Workspace management layer](management-layer.md) before changing its snapshots, commands, shims, or broker.
+
+## Candidate outputs
+
+`desktop:make` verifies but does not publish. A successful local candidate places these artifacts under `out/builder`:
+
+| Path | Purpose |
+|---|---|
+| `win-unpacked/Workspace.exe` | Exact unpacked application used to assemble the installer. |
+| `win-unpacked/resources/app-update.yml` | Installed-app GitHub feed configuration. Its presence enables updater controls. |
+| `Workspace-Setup-<version>.exe` | NSIS per-user Windows installer. |
+| `Workspace-Setup-<version>.exe.blockmap` | Differential updater block map. |
+| `latest.yml` | Public updater version, size, path, and SHA-512 metadata. |
+
+The tagged cloud workflow rebuilds these outputs from the tag and adds `SHA256SUMS.txt` before publishing. Local artifacts and cloud artifacts are separate builds and therefore are not expected to be byte-identical; each must verify against its own manifest and signature.
 
 For an unsigned NSIS installer:
 
@@ -57,5 +74,14 @@ For a build signed with the current user's personal certificate:
 The PFX and its DPAPI-protected password are stored in `%USERPROFILE%\.workspace-signing`, never in this repository. The certificate is self-signed and therefore remains untrusted on other computers unless they deliberately trust its public certificate. Replace the two GitHub signing secrets with a certificate-authority-backed PFX when one is available.
 
 Use Node 22.19.0 or newer. On the primary development workstation, `build-signed-windows.ps1` deliberately invokes the bundled Node runtime rather than the older system Node.
+
+## Packaged QA checklist
+
+- Launch the exact `win-unpacked` binary rather than an older installed copy and confirm **About Workspace** reports the candidate version.
+- Exercise Files, Capabilities, Chats, Library, History, Settings, tabs, native menus, close-to-tray, and background-turn continuity.
+- Verify Mica on Windows 11 22H2+ and the solid fallback where reduced transparency or an older host disables it; exercise light, dark, and system themes.
+- Verify unpacked smoke builds report updates as unsupported without a red missing-feed error, while the NSIS candidate contains `resources/app-update.yml` and exposes **Help > Check for Updates…**.
+- Exercise a Space through both its normal path and any available Windows 8.3 short-path alias; the watcher must canonicalize the native watch root without changing the logical policy root.
+- Run `desktop:verify:release`, inspect Authenticode status, and compare installer size/hash to `latest.yml` before handoff.
 
 See [Windows releases and signing](windows-release.md) for the public tag workflow.

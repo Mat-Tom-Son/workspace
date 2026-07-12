@@ -4,6 +4,16 @@ Workspace uses Pi's native capability system. This guide explains how Skills, Ex
 
 The rail exposes one **Capabilities** destination. Its **Installed** view answers what is present, where it came from, which scope owns it, and whether Pi loaded it. Its **Discover** view searches first-party/reference sources and community Pi packages. Skills and Extensions remain distinct item types inside both views because their behavior and risk are different.
 
+## Management visibility
+
+`WorkspaceKernel` exposes a read-only, versioned projection of Pi's authoritative catalog so the renderer, installed CLI, and future scoped adapters see the same Skills, Extensions, tools, packages, prompts, themes, commands, trust state, provenance, and diagnostics. It does not create another capability registry, install or remove resources, activate inactive tools, or grant Space trust.
+
+```powershell
+workspace capabilities list --space "Personal Space" --json
+```
+
+The CLI projection is intentionally compact and content-free. Capability writes continue through Pi's package/import operations and Workspace's trust and concurrency policies. See [Workspace management layer](management-layer.md) for the snapshot and protocol boundary.
+
 ## Library materials are not Pi resources
 
 The word “resource” has two different possible meanings, so Workspace uses different product language:
@@ -134,3 +144,5 @@ For every new Assistant capability, keep these answers visible in code and UI:
 6. How can the person update, disable, remove, or revoke it?
 
 The current catalog and import/install surfaces expose provenance, scope, status, diagnostics, and package update/removal. Fine-grained permissions, per-resource enable/disable, direct-import receipts/removal, and named Anthropic-pack selection remain lifecycle work to complete.
+
+Management adapters must preserve that checklist. Inventory is not authorization: seeing a capability through the kernel or CLI does not grant it to a Chat or permit another actor to mutate it.

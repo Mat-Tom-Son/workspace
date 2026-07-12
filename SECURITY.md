@@ -27,8 +27,18 @@ Workspace separates folder registration from executable project trust, validates
 
 Only install Skills, Extensions, and packages whose source you understand. Review capability provenance and supporting scripts before use, especially when a package can run shell commands or access sensitive folders.
 
+## Local management surfaces
+
+The packaged renderer talks to a loopback-only local API with a per-launch desktop session token and an app-specific allowed origin. That boundary is for the trusted packaged renderer; it is not a network API intended for other local applications. Development mode has different local-origin assumptions and must not be exposed beyond the loopback interface.
+
+The installed `workspace` command uses a separate protocol-v1 file broker under `%APPDATA%\Workspace\cli`. Requests and responses are UUID-named, atomic, size- and age-bounded, path-confined, and rejected when they are symbolic links or unsafe file types. Electron's single-instance host serializes accepted requests and cleans stale files.
+
+That broker is same-Windows-user coordination, not authenticated interprocess communication. Another process running as the same user may be able to submit a request or read its result. Protocol v1 therefore exposes only compact Space names/paths, running-task metadata, and capability provenance/status. It does not return file contents, conversation text, API keys, provider credentials, or signing material.
+
+Do not add mutations to protocol v1. Any future write-capable management surface requires authenticated caller identity, per-action authorization and scope, request freshness/replay protection, confirmation and revocation behavior, durable receipts, and the existing Space trust, History, filesystem, and active-turn checks. See [Workspace management layer](docs/management-layer.md).
+
 ## Release integrity
 
 Public releases are built from version tags and include an installer, blockmap, update manifest, and SHA-256 checksum file. The updater also validates the SHA-512 digest in `latest.yml`.
 
-The project may publish unsigned or self-signed preview builds until a publicly trusted code-signing identity is configured. A self-signed certificate provides artifact continuity for its owner but does not establish public Windows trust. Verify the release source and published checksums, and expect Windows to warn when the publisher is not publicly trusted.
+The project may publish unsigned or self-signed public releases until a publicly trusted code-signing identity is configured. A self-signed certificate provides artifact continuity for its owner but does not establish public Windows trust. Verify the release source and published checksums, and expect Windows to warn when the publisher is not publicly trusted.

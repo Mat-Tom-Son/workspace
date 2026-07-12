@@ -1,10 +1,18 @@
 # Workspace
 
+[![CI](https://github.com/Mat-Tom-Son/workspace/actions/workflows/ci.yml/badge.svg)](https://github.com/Mat-Tom-Son/workspace/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Mat-Tom-Son/workspace)](https://github.com/Mat-Tom-Son/workspace/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Workspace is a local-first Electron app that gives every kind of computer work a place, with a native [Pi](https://pi.dev) assistant built in.
 
 In the product, that place is called a **Space**: an understandable working context backed by an ordinary folder. A person can create a new Space and let Workspace create its folder, or turn an existing folder on their computer into a Space without moving or converting its files. Each Space keeps its portable identity and Chats in a hidden `.workspace/` directory. Executable project capabilities remain separate under `.pi/`; provider credentials, trust, History objects, sessions, ignore rules, and app preferences stay in protected application or Pi storage outside the Space.
 
 The core idea is simple: the folder stays ordinary; Workspace makes it feel like a place you can understand, return to, and work in with an Assistant.
+
+## Get Workspace
+
+[Download the latest Windows release](https://github.com/Mat-Tom-Son/workspace/releases/latest). Workspace currently ships as a Windows x64 installer with GitHub-hosted updates. Releases may be signed with the project's stable personal certificate, but that self-signed identity is not publicly trusted, so Windows or SmartScreen may still show a warning. Current releases attach checksums and updater metadata for independent verification.
 
 ## Product model
 
@@ -42,12 +50,19 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - Global and trusted-Space Pi Extensions.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
 - Assisted Windows installation and GitHub-hosted application updates.
+- A versioned, read-only management layer and installed `workspace` command for inspecting Space context, running work, and Pi capabilities without scraping the UI.
 
 Workspace does not bundle organization-specific tools, instructions, document libraries, or cloud accounts.
 
 Current desktop boundaries: Google Drive works through a Drive-for-desktop folder rather than native cloud mirroring, and first-run provider setup uses API keys. Native OAuth setup and direct Drive API sync are intentionally left for a later provider-adapter release.
 
-For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature interactions this extraction must preserve, while the [visual system](docs/visual-design.md) defines the restrained shell, typography, icon, and layout rules.
+For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For the shared control plane, CLI, and real-agent driver, see [Workspace management layer](docs/management-layer.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature interactions this extraction must preserve, while the [visual system](docs/visual-design.md) defines the restrained shell, typography, icon, and layout rules.
+
+## Management layer
+
+`WorkspaceKernel` is the shared in-process read authority for the product. It resolves an actor to a Space, returns versioned Space and running-task snapshots, and projects Pi's authoritative capability catalog with scope, provenance, trust, package, and diagnostic information. The renderer/local API and the installed CLI use that same kernel instance; writes still go through the domain services that own trust, filesystem, History, and concurrency policy.
+
+This is the first management primitive for a future cross-Space Assistant and controlled Space runtimes, not a hidden mutation API. Protocol v1 is deliberately read-only and exposes no file contents, conversation text, credentials, or provider tokens. See [Workspace management layer](docs/management-layer.md) for the architecture, transport, security boundary, code map, and roadmap.
 
 ## Development
 
@@ -74,7 +89,20 @@ Use `npm run local:dev` for the fast UI loop, `check` and `test` for normal impl
 
 CI runs `check`, `test`, and `desktop:package:smoke`, so every branch verifies the same unpacked Electron Builder layout used by the release lane without paying the NSIS cost.
 
-## Windows command line
+### Developing with Codex or Claude Code
+
+The repository has one contributor contract: [AGENTS.md](AGENTS.md). Codex reads it directly. The tracked [CLAUDE.md](CLAUDE.md) uses Claude Code's `@AGENTS.md` import so both harnesses receive the same product rails, commands, test expectations, and release rules without duplicated prose.
+
+To exercise one real Assistant turn through the same local API, Pi runtime, tools, Skills, Extensions, persistence, and event stream as the desktop app:
+
+```powershell
+npm run workspace:drive -- --workspace C:\path\to\space --prompt "Summarize this Space"
+npm run workspace:drive -- --workspace C:\path\to\space --prompt "..." --json --agent-dir C:\temp\isolated-pi
+```
+
+In-process driver runs use temporary application state unless `WORKSPACE_STATE_DIR` is set. Use `--attach http://127.0.0.1:4327` to drive an already-running development API. This driver performs a real agent turn; it is distinct from the read-only installed management CLI below.
+
+## Workspace CLI
 
 The Windows installer includes a `workspace` command and adds its package-root `bin` directory to the current user's `PATH`. The installer updates the user environment registry directly, broadcasts the Windows environment-change notification, and never edits PowerShell, Command Prompt, or other shell profile files. Open a new terminal if an already-running shell does not see the command immediately. Uninstall removes only Workspace's own `bin` entry and leaves the rest of the user `PATH` unchanged.
 
@@ -83,15 +111,17 @@ The command uses a bounded protocol-v1 handoff under `%APPDATA%\Workspace\cli`: 
 ```powershell
 workspace context --json
 workspace spaces list
-workspace tasks list --space "Personal Workspace"
-workspace capabilities list --space "Personal Workspace" --json
+workspace tasks list --space "Personal Space"
+workspace capabilities list --space "Personal Space" --json
 ```
 
-Protocol v1 is deliberately read-only. It gives people, scripts, and the Assistant a shared way to inspect the Space resolved from the terminal's current folder, the registered Spaces, host-managed running tasks, and installed capabilities. The AppData handoff trusts the current Windows user; mutating commands will require an authenticated transport and an explicit authorization model in a later protocol version.
+Protocol v1 is deliberately read-only. It gives people, scripts, and the Assistant a shared way to inspect the Space resolved from the terminal's current folder, the registered Spaces, host-managed running tasks, and capability inventory—including inactive tools or configured packages that are not currently loaded. The AppData handoff trusts the current Windows user; mutating commands will require an authenticated transport and an explicit authorization model in a later protocol version.
+
+Human-readable output is the default. Use `--json` for automation and `--space <id-or-exact-name>` when the terminal's current folder is not enough context. See [Workspace management layer](docs/management-layer.md) for snapshot fields, resolution rules, broker limits, and the distinction between this CLI and `workspace:drive`.
 
 ## Windows releases
 
-Pushing a version tag such as `v0.1.1` runs the Windows release workflow and publishes the installer plus updater metadata to [GitHub Releases](https://github.com/Mat-Tom-Son/workspace/releases). The installed app checks that public feed shortly after startup, every four hours, and when you choose **Help > Check for Updates…**.
+Pushing an exact version tag such as `v<package version>` runs the Windows release workflow and publishes the installer plus updater metadata to [GitHub Releases](https://github.com/Mat-Tom-Son/workspace/releases). The installed app checks that public feed shortly after startup, every four hours, and when you choose **Help > Check for Updates…**. An unpacked `desktop:package:smoke` build intentionally disables updater controls because Electron Builder does not generate `resources/app-update.yml` for that lane.
 
 The release workflow supports an optional PFX certificate through GitHub secrets. The included personal certificate helper creates a self-signed identity outside the repository; this signs artifacts consistently but does not establish public Windows trust. Until a certificate-authority-backed identity is configured, users may still see Unknown Publisher or SmartScreen warnings.
 
@@ -108,6 +138,15 @@ The user-facing **Library** contains personal materials. Separately, Workspace f
 Npm and git package sources use the corresponding command-line tools on `PATH`; local package paths and Skill imports do not require them. The packaged app uses Pi's normal global agent directory (typically `~/.pi/agent`) for packages and resources, while provider credentials are encrypted by the operating system for Workspace. Internal APIs and code may retain terms such as `workspace`, `project`, and `resource` where they identify existing Pi or storage concepts; those names do not change the user-facing Space, Library, Skill, and Extension model.
 
 See [Assistant capabilities](docs/assistant-capabilities.md) for the product-facing model and [Pi resource compatibility](docs/pi-resources.md) for the compact implementation reference.
+
+## Documentation map
+
+- [Product model and roadmap](docs/product-model.md) — durable nouns, context rules, product rails, and future direction.
+- [Architecture](docs/architecture.md) and [management layer](docs/management-layer.md) — runtime boundaries, shared kernel, CLI, and agent harness.
+- [Assistant capabilities](docs/assistant-capabilities.md) and [Pi compatibility](docs/pi-resources.md) — Skills, Extensions, packages, scopes, and trust.
+- [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
+- [Windows build](docs/windows-build.md) and [release runbook](docs/windows-release.md) — verification lanes, signing, updater, and publishing.
+- [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.
 
 ## Project policies
 

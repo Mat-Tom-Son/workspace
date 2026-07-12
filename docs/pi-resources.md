@@ -4,6 +4,8 @@ Workspace exposes Pi resources directly instead of maintaining a parallel Assist
 
 Start with [Assistant capabilities](assistant-capabilities.md) for the product concepts, safety model, scopes, and package boundary. This page is the compact compatibility reference for implementation and verification.
 
+The [Workspace management layer](management-layer.md) reports this same native catalog through versioned read snapshots and the installed `workspace capabilities list --json` command. That projection includes tools, packages, prompts, themes, commands, trust, scope, provenance, and diagnostics; it is not a second discovery path or an install/activation surface.
+
 In the product navigation, **Capabilities** is the single Space-aware surface for Skills and Extensions. A Skill describes a reusable way of working; an Extension adds an executable capability or connection. Installed and Discover views retain the item type, source, scope, load state, diagnostics, and package lifecycle. Provider and model setup lives under **Settings → Assistant**.
 
 ## Extensions
@@ -30,3 +32,5 @@ Workspace's importer writes personal Skills under the configured Pi agent direct
 Pi packages remain the installation, update, and removal mechanism for npm, git, HTTPS, and local sources. Workspace surfaces Pi's diagnostics, scope, source, resource types, and load state rather than inventing a second package format. Project-scoped mutations require an explicit persistent Pi trust policy, with a negative host override or saved Space decision taking precedence. Capability mutations are rejected while an affected Space has an active turn or Chat compaction so changing the catalog cannot terminate background work.
 
 Packages are distribution plumbing, not a separate top-level user concept. The interface should describe what a person is installing—a Skill, Extension, or mixed capability package—while retaining package source and diagnostic details. The Discover catalog may combine first-party/reference sources with npm packages tagged `pi-package`; popularity and download counts are discovery signals, not security endorsements.
+
+When adding a management consumer, query `WorkspaceKernel` or its adapter rather than scanning `.pi/`, `.agents/`, or package directories independently. Writes must continue through the owning Pi and Workspace domain operations so trust and active-turn protections remain in force.

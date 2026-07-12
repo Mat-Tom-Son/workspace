@@ -9,7 +9,9 @@ Before changing navigation, terminology, storage, trust, or Assistant behavior, 
 - [Product model and roadmap](docs/product-model.md)
 - [Assistant capabilities](docs/assistant-capabilities.md)
 - [Architecture](docs/architecture.md)
-- [Workspace contributor guide](AGENTS.md)
+- [Workspace management layer](docs/management-layer.md)
+- [Workspace contributor guide](AGENTS.md) — the canonical policy for Codex and every contributor.
+- [Claude Code entrypoint](CLAUDE.md) — imports `AGENTS.md` rather than duplicating it.
 
 The central constraint is that a Space remains an ordinary folder. Workspace may register and present that folder, but should not silently move, convert, decorate, upload, or place all of its contents into Assistant context.
 
@@ -32,6 +34,19 @@ npm run local:dev
 
 Keep changes focused and avoid committing generated `dist/`, `out/`, user-data, credential, or signing files.
 
+## Codex and Claude Code parity
+
+Codex reads the root `AGENTS.md` directly. Claude Code reads the tracked root `CLAUDE.md`, which imports `AGENTS.md` with `@AGENTS.md`. Update shared rules only in `AGENTS.md`; do not create a parallel harness-specific build, test, release, terminology, or architecture contract.
+
+Both harnesses can inspect an installed app through `workspace ... --json`. To drive one real Assistant turn through the development local API and native Pi runtime:
+
+```powershell
+npm run workspace:drive -- --workspace C:\path\to\space --prompt "Summarize this Space"
+npm run workspace:drive -- --workspace C:\path\to\space --prompt "..." --json --agent-dir C:\temp\isolated-pi
+```
+
+Use the installed CLI for read-only management snapshots and `workspace:drive` for an end-to-end Pi turn. See [Workspace management layer](docs/management-layer.md) for their different boundaries.
+
 ## Verify a change
 
 Use the smallest relevant lane while working, then promote the change before handoff:
@@ -46,6 +61,8 @@ Use `npm run desktop:package:smoke` when packaged behavior or assets change. It 
 
 Add or update tests for behavior changes. Update README and focused docs when a change affects shipped behavior, terminology, privacy, security, trust, build commands, or the roadmap.
 
+For kernel or CLI changes, update the snapshot/protocol version deliberately and exercise the kernel, adapter, protocol, broker, desktop-host, and installer-packaging tests through `npm test`. Keep the README, management guide, Security, and Privacy output descriptions in sync. Protocol v1 must remain read-only.
+
 ## Pull requests
 
 A useful pull request:
@@ -58,6 +75,8 @@ A useful pull request:
 - Calls out remaining risk or follow-up work without presenting roadmap items as shipped.
 
 Maintainers publish releases from clean version tags. Contributors should not rewrite a released tag or replace artifacts beneath an existing version.
+
+The full maintainer sequence—local candidate, green main CI, exact annotated tag, tagged release workflow, public asset verification, and installed updater smoke—is documented in [Windows releases and signing](docs/windows-release.md).
 
 ## License
 

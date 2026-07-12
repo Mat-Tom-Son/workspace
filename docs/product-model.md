@@ -77,6 +77,14 @@ The **Capabilities** surface unifies discovery and management without erasing th
 
 Packages can distribute Skills, Extensions, prompts, themes, and related Pi resources. They remain installation and lifecycle plumbing; the primary UI should describe the capability a person is gaining, show inspected resource types and lifecycle scripts when registry metadata is available, and label unavailable details as unknown rather than absent. A package that includes Extensions or install scripts is a code-execution decision and must not be presented as a harmless Skill-only import. See [Assistant capabilities](assistant-capabilities.md) for the complete compatibility and safety model.
 
+## Management layer
+
+Workspace also needs a semantic layer above its individual screens so the same product can be understood by the renderer, command line, scripts, Pi, and eventually a higher-level Assistant. `WorkspaceKernel` is that shared in-process read authority. It resolves actor context to the most-specific Space, exposes versioned snapshots of registered Spaces and running Assistant work, and projects Pi's authoritative capability catalog without creating another registry.
+
+The installed `workspace` command is the first adapter over that layer. It can report context, Spaces, active Assistant turns and compactions, and available Skills, Extensions, tools, packages, prompts, themes, and commands in human or stable JSON form. The current protocol is deliberately read-only and content-free. It does not authorize the Assistant to mutate Spaces, files, capabilities, tabs, panes, or application settings.
+
+This is infrastructure over the existing nouns, not a new user-facing concept. A future cross-Space Assistant and controlled Space runtimes should build on the same typed actor, scope, task, and capability contracts instead of scraping renderer state or bypassing domain policy. See [Workspace management layer](management-layer.md) for the exact contract and security boundary.
+
 ## Product rails
 
 When a design is ambiguous, prefer the option that best preserves these properties:
@@ -104,6 +112,8 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Import standard Skills and compatible skill bundles while preserving their supporting files.
 - Install, update, and remove Pi packages at Personal or trusted-Space scope.
 - Customize each Space with a compact banner, paired accent colors, and a searchable Fluent icon catalog without changing its folder.
+- Inspect Space context, registered Spaces, active Assistant/compaction tasks, and Pi capabilities through one versioned `WorkspaceKernel` and the read-only installed `workspace` CLI.
+- Drive one real Pi turn through the local API with the harness-neutral `workspace:drive` test driver.
 - Build a Windows installer and deliver updates through GitHub Releases.
 
 ### Next product layer
@@ -114,6 +124,9 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Add receipts and safe removal for directly imported Skills, independently from package lifecycle.
 - Add named-pack selection for Anthropic marketplace bundles instead of importing every discovered Skill in an archive.
 - Make “what this Chat can see and use” visible before and during a conversation.
+- Add an authenticated, versioned mutation surface with explicit Personal, Space, and Chat scopes, replay protection, confirmations, revocation, and durable action receipts.
+- Add event subscriptions and a scoped cross-Space Assistant that can manage the product only through those authorized contracts.
+- Define controlled Extension primitives for tabs, rail entries, left/right panes, and safe web surfaces before treating a Space as an app-like runtime.
 - Strengthen onboarding, keyboard/accessibility behavior, renderer interaction tests, recovery, export, and diagnostics.
 
 ### Later adapters and distribution maturity

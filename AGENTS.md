@@ -1,6 +1,14 @@
 # Workspace contributor guide
 
-Workspace is a local-first Electron shell around ordinary folders and the native Pi agent runtime. Read [the product model](docs/product-model.md) before changing navigation, terminology, storage, trust, or Assistant behavior. It records the shared product direction; update it when a product decision changes.
+Workspace is a local-first Electron shell around ordinary folders and the native Pi agent runtime. Read [the product model](docs/product-model.md) before changing navigation, terminology, storage, trust, or Assistant behavior, and read [the management layer](docs/management-layer.md) before changing the kernel, CLI, task registry, or an agent-facing adapter. These documents record the shared product and control-plane direction; update them when those decisions change.
+
+## Harness parity
+
+- This `AGENTS.md` is the one canonical contributor contract. Codex reads it directly; Claude Code reads the root `CLAUDE.md`, which imports this file with `@AGENTS.md`.
+- Edit shared policy here instead of copying it into `CLAUDE.md`, `.claude/`, `.codex/`, or harness-specific prose. Keep the root Claude entrypoint thin so the two harnesses cannot drift.
+- Both harnesses use the same checked-in npm scripts, documentation, test suites, and release lanes. Do not create alternate Claude-only or Codex-only build or release commands.
+- `workspace <command> --json`—for example, `workspace context --json`—is the stable installed-product inspection surface for any shell-capable harness. `npm run workspace:drive` is the separate real-Pi-turn test driver; do not conflate it with the read-only management CLI.
+- The harness-loading conventions are documented by [Codex](https://developers.openai.com/codex/guides/agents-md) and [Claude Code](https://code.claude.com/docs/en/memory). Repository behavior is defined here.
 
 ## Product boundaries
 
@@ -34,6 +42,15 @@ The rail starts with the **Space** selector, followed by **Files**, **Capabiliti
 
 See [Assistant capabilities](docs/assistant-capabilities.md) for the scopes, trust model, Anthropic-compatible skill import behavior, package boundary, and distinction between Library materials and Pi resources.
 
+## Workspace management layer
+
+- `WorkspaceKernel` is the shared in-process read authority for versioned Space context, registered Spaces, active Assistant/compaction tasks, and Pi capability snapshots. The renderer/local API and CLI must consume the same semantic source rather than recreate selection or catalog rules.
+- Every query carries an explicit actor. An explicit Space id wins; otherwise context resolves to the deepest registered Space containing the actor's current directory; otherwise it resolves to none.
+- Keep adapters thin. The CLI projection intentionally emits compact, content-free summaries, while domain services continue to own mutations, trust, filesystem policy, History, and concurrency controls.
+- Protocol v1 under `%APPDATA%\Workspace\cli` is same-user coordination, not an authenticated caller boundary. It must remain read-only. Mutations require a separately versioned authenticated transport, authorization and replay design, explicit scope, and durable receipts.
+- Start and finish kernel task records on every Assistant-turn and Chat-compaction path, including errors and abort cleanup. Never leave ghost tasks or let a capability mutation interrupt active work.
+- Treat snapshot versions and `--json` output as compatibility contracts. Update implementation, adapters, tests, [the management guide](docs/management-layer.md), README, security, and privacy documentation together when they change.
+
 ## Development
 
 - Use Node 22.19.0 or newer.
@@ -44,9 +61,10 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the scopes, tru
 - Run `npm run desktop:package:smoke` when packaged behavior or installer-facing assets change. It verifies the canonical Electron Builder layout without spending time on the NSIS installer.
 - Run the slower Forge-based `npm run desktop:package` only when diagnosing or changing that retained package lane.
 - Run `npm run desktop:make` only for an installer/release candidate; it already includes `desktop:verify:release`. Run the verifier alone only when rechecking existing `out/builder` artifacts.
+- When changing the management layer or CLI, run the kernel, adapter, protocol, broker, desktop-host, and packaging suites through `npm test`; add focused coverage for every new snapshot or command.
 - Never commit provider keys, signing material, tokens, or generated user data.
-- Publish Windows releases only from a clean `v<package version>` tag. Required assets are the installer, blockmap, `latest.yml`, and checksums from one build.
+- Publish Windows releases only after the release commit is pushed to `main` and its CI run is green, then create a clean `v<package version>` tag pointing at that exact commit. Required assets are the installer, blockmap, `latest.yml`, and checksums from one build.
 - Keep personal PFX files outside the repository and use only the `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` GitHub secrets. Do not reuse organization signing credentials.
 - Keep README claims and the docs in sync with shipped behavior. In particular, do not claim native Google Drive, provider OAuth, package lifecycle controls, or public signing until the corresponding user path is verified.
 
-The verification ladder and release boundary are documented in [Windows build](docs/windows-build.md) and [Windows releases and signing](docs/windows-release.md).
+The verification ladder and release boundary are documented in [Windows build](docs/windows-build.md) and [Windows releases and signing](docs/windows-release.md). The control-plane boundary and real-agent driver are documented in [Workspace management layer](docs/management-layer.md).

@@ -53,6 +53,13 @@ The translation is intentionally narrow. It does not justify replacing the shell
 - Preserve the command palette, keyboard shortcuts, toast/confirm feedback, onboarding, Space creation/linking, themes, typography, and resizable layout.
 - A dedicated Space selector chooses the root-folder entity. Primary navigation uses `Files`, `Capabilities`, `Chats`, `Library`, and `History`. Capabilities combines Installed and Discover views for Skills and Extensions while retaining scope, provenance, load state, diagnostics, and package lifecycle. Provider, model, API-key, and OAuth setup lives in `Settings → Assistant`.
 
+### Management layer and CLI
+
+- The read-only management layer is additive infrastructure; it must not replace or weaken Space-bound tabs, background continuity, native menus, or the visible trust and capability-management surfaces.
+- The installed `workspace` command resolves the terminal's current folder to the same Space model as the renderer, can report live Assistant/compaction tasks, and exposes compact capability metadata through stable JSON.
+- A headless CLI request must coexist with the running single-instance desktop app, return bounded stdout/stderr/exit status, and avoid opening or stealing focus from the interactive window.
+- Installer PATH integration must be reversible and must not modify shell profile files.
+
 ## Deliberately removed or replaced
 
 - Microsoft/Azure organization authentication and organization-account UI.
@@ -72,12 +79,13 @@ A corrective port is ready for release only when all of the following are true:
 4. Custom menus, close-to-tray, Show, Quit, window-state restore, and updater surfaces have been exercised in packaged Electron.
 5. Type checks, tests, renderer build, desktop compile/preflight, and a packaged smoke build pass on the supported Node runtime.
 6. The app contains no user-facing Kai, Kymanox, Kits, Sources, SharePoint, or Microsoft-login copy except in migration or historical documentation.
-7. No public release is published until the side-by-side product review is accepted.
+7. The packaged CLI resolves context, lists Spaces/tasks/capabilities, coexists with the GUI, and cleans its request/response handoff.
+8. No public release is published until the product review is accepted and the release commit is green on main CI.
 
-## Corrective candidate status
+## Accepted public baseline
 
-The first July 10, 2026 local candidate at commit `71e5fa4` was rejected after real screenshots exposed two release-blocking defects: it called the Files surface “Space,” and several newly written pane structures had no matching styles. That build must not be shipped or treated as visual-parity evidence.
+The first July 10, 2026 local candidate at commit `71e5fa4` was rejected after real screenshots exposed two release-blocking defects: it called the Files surface “Space,” and several newly written pane structures had no matching styles. That build remains historical evidence of why packaged visual review is a release gate.
 
-The corrective candidate must retain the verified desktop behaviors above while also satisfying [the Workspace visual system](visual-design.md). In particular, browser review must cover every primary and Assistant surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must guard the Files/Space distinction, the single Fluent shell-icon contract, compact neutral chrome, and the JSX-to-CSS contracts that were previously missing.
+Workspace 0.2.7 at commit `db5c149` established the accepted public baseline on July 12, 2026. It preserves the interaction contract above, uses the compact Fluent icon-only rail with accessible labels/tooltips, applies supported Windows Mica with a safe fallback, and includes the shared management kernel and installed read-only CLI.
 
-Acceptance item 7 remains intentionally open. The corrected version 0.2.1 candidate has not been pushed, tagged, published, or installed over the existing application.
+Future changes must retain those behaviors while satisfying [the Workspace visual system](visual-design.md), [the management-layer contract](management-layer.md), and the current build/release gates. Browser review must cover every primary and Assistant surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must continue to guard the Files/Space distinction, Space-bound tabs, Fluent shell-icon contract, compact neutral chrome, and JSX-to-CSS contracts.
