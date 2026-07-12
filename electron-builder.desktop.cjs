@@ -37,7 +37,7 @@ module.exports = {
     {
       from: "desktop/cli",
       to: "bin",
-      filter: ["workspace.cmd", "workspace-cli.ps1"],
+      filter: ["workspace", "workspace.cmd", "workspace-cli.ps1"],
     },
   ],
   extraResources: [

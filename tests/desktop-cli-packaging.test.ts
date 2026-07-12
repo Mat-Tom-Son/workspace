@@ -15,7 +15,7 @@ test("Electron Builder packages executable CLI shims outside ASAR and includes P
   assert.deepEqual(builder.extraFiles, [{
     from: "desktop/cli",
     to: "bin",
-    filter: ["workspace.cmd", "workspace-cli.ps1"],
+    filter: ["workspace", "workspace.cmd", "workspace-cli.ps1"],
   }]);
   assert.equal(basename(builder.nsis.include), "cli-path.nsh");
   assert.equal(builder.asar, true);
@@ -29,7 +29,7 @@ test("retained Forge packaging mirrors the package-root CLI bin layout", async (
   const packageRoot = await mkdtemp(join(tmpdir(), "workspace-forge-cli-"));
   try {
     await hooks[0](packageRoot);
-    for (const name of ["workspace.cmd", "workspace-cli.ps1"]) {
+    for (const name of ["workspace", "workspace.cmd", "workspace-cli.ps1"]) {
       assert.equal(
         await readFile(join(packageRoot, "bin", name), "utf8"),
         await readFile(join(rootDir, "desktop", "cli", name), "utf8"),
@@ -41,10 +41,13 @@ test("retained Forge packaging mirrors the package-root CLI bin layout", async (
 });
 
 test("Windows CLI shim uses an atomic bounded protocol-v1 handoff", async () => {
-  const [commandShim, powerShellShim] = await Promise.all([
+  const [shellShim, commandShim, powerShellShim] = await Promise.all([
+    read("desktop/cli/workspace"),
     read("desktop/cli/workspace.cmd"),
     read("desktop/cli/workspace-cli.ps1"),
   ]);
+  assert.match(shellShim, /^#!\/usr\/bin\/env sh/);
+  assert.match(shellShim, /exec "\$script_dir\/workspace\.cmd" "\$@"/);
   assert.match(commandShim, /-NoProfile\s+-NonInteractive/);
   assert.match(commandShim, /workspace-cli\.ps1"\s+%\*/);
   assert.match(commandShim, /exit \/b %ERRORLEVEL%/);
@@ -96,6 +99,7 @@ test("NSIS manages only the current-user PATH and broadcasts changes", async () 
 test("packaged asset verification requires external CLI shims", async () => {
   const verifier = await read("scripts/verify-packaged-app-assets.mjs");
   assert.match(verifier, /join\(packageDir, "bin", "workspace\.cmd"\)/);
+  assert.match(verifier, /join\(packageDir, "bin", "workspace"\)/);
   assert.match(verifier, /join\(packageDir, "bin", "workspace-cli\.ps1"\)/);
   assert.match(verifier, /CLI shim must remain outside app\.asar/);
 });
