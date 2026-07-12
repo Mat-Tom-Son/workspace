@@ -33,6 +33,13 @@ module.exports = {
     buildResources: "desktop/assets",
   },
   files: ["package.json", "LICENSE", "dist/desktop/**/*"],
+  extraFiles: [
+    {
+      from: "desktop/cli",
+      to: "bin",
+      filter: ["workspace.cmd", "workspace-cli.ps1"],
+    },
+  ],
   extraResources: [
     {
       from: "dist/web-local",
@@ -65,6 +72,7 @@ module.exports = {
     },
   },
   nsis: {
+    include: path.join(root, "desktop", "nsis", "cli-path.nsh"),
     artifactName: "Workspace-Setup-${version}.${ext}",
     uninstallDisplayName: "Workspace",
     shortcutName: "Workspace",

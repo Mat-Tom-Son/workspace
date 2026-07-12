@@ -74,6 +74,21 @@ Use `npm run local:dev` for the fast UI loop, `check` and `test` for normal impl
 
 CI runs `check`, `test`, and `desktop:package:smoke`, so every branch verifies the same unpacked Electron Builder layout used by the release lane without paying the NSIS cost.
 
+## Windows command line
+
+The Windows installer includes a `workspace` command and adds its package-root `bin` directory to the current user's `PATH`. The installer updates the user environment registry directly, broadcasts the Windows environment-change notification, and never edits PowerShell, Command Prompt, or other shell profile files. Open a new terminal if an already-running shell does not see the command immediately. Uninstall removes only Workspace's own `bin` entry and leaves the rest of the user `PATH` unchanged.
+
+The command uses a bounded protocol-v1 handoff under `%APPDATA%\Workspace\cli`: it writes one atomic request, starts or contacts `Workspace.exe`, returns the application's stdout, stderr, and exit code, and removes the response. Packaged shims live outside `app.asar` so Windows can execute them even though Electron's `RunAsNode` fuse remains disabled. For unpacked package tests only, `WORKSPACE_CLI_APP` can point the shim at a specific `Workspace.exe`; normal installations resolve the executable beside the packaged `bin` directory.
+
+```powershell
+workspace context --json
+workspace spaces list
+workspace tasks list --space "Personal Workspace"
+workspace capabilities list --space "Personal Workspace" --json
+```
+
+Protocol v1 is deliberately read-only. It gives people, scripts, and the Assistant a shared way to inspect the Space resolved from the terminal's current folder, the registered Spaces, host-managed running tasks, and installed capabilities. The AppData handoff trusts the current Windows user; mutating commands will require an authenticated transport and an explicit authorization model in a later protocol version.
+
 ## Windows releases
 
 Pushing a version tag such as `v0.1.1` runs the Windows release workflow and publishes the installer plus updater metadata to [GitHub Releases](https://github.com/Mat-Tom-Son/workspace/releases). The installed app checks that public feed shortly after startup, every four hours, and when you choose **Help > Check for Updates…**.

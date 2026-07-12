@@ -26,12 +26,10 @@ import {
   type CapabilityType,
 } from "./agent/capability-registry.js";
 import { importPiSkillBundle } from "./agent/skill-import.js";
-import { loadAgentSkillCatalog, type PiCatalogSource, type PiResourceCatalog } from "./agent/skill-catalog.js";
 import {
   getPiSetupStatus,
   installPiPackage,
   isPiProjectMutationTrusted,
-  listPiPackages,
   listPiModels,
   loginPiOAuth,
   removePiPackage,
@@ -59,6 +57,7 @@ import {
   uploadResourceFiles,
 } from "./resources.js";
 import { configureWorkspaceStateRoot } from "./state-paths.js";
+import { WorkspaceKernel } from "./workspace-kernel.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
 import {
   createManagedWorkspace,
@@ -68,7 +67,6 @@ import {
   findExistingWorkspaceFilePaths,
   getWorkspace,
   getWorkspaceEntryInfo,
-  listWorkspaces,
   moveWorkspaceEntry,
   readWorkspaceTextFile,
   renameWorkspaceEntry,
@@ -99,6 +97,7 @@ export interface LocalApiOptions {
   extensionUiBridge?: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
   capabilityRegistry?: CapabilityRegistryService;
+  kernel?: WorkspaceKernel;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   maxBodyBytes?: number;
   loadEnv?: boolean;
@@ -115,6 +114,7 @@ export interface LocalApiOptions {
 export interface LocalApiHandle {
   origin: string;
   port: number;
+  kernel: WorkspaceKernel;
   close: () => Promise<void>;
 }
 
@@ -128,6 +128,7 @@ interface LocalApiState {
   extensionUi: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
   capabilityRegistry: CapabilityRegistryService;
+  kernel: WorkspaceKernel;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   chatStreams: Map<string, Set<ServerResponse>>;
   clients: Map<string, PiConversationClient>;
@@ -168,6 +169,7 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
       return { ...runtime, extensionUi };
     },
   };
+  const kernel = options.kernel ?? new WorkspaceKernel({ runtimeProvider });
   const state: LocalApiState = {
     appMode: options.appMode ?? "dev",
     workspaceBase: options.workspaceBase ? resolve(options.workspaceBase) : undefined,
@@ -178,6 +180,7 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     extensionUi,
     piOAuthHooks: options.piOAuthHooks,
     capabilityRegistry: options.capabilityRegistry ?? new RemoteCapabilityRegistry(),
+    kernel,
     localFolderGrantProvider: options.localFolderGrantProvider,
     chatStreams: new Map(),
     clients: new Map(),
@@ -211,6 +214,7 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
   return {
     origin: `http://${host}:${address.port}`,
     port: address.port,
+    kernel,
     close: async () => {
       extensionUi.off("request", requestListener);
       extensionUi.off("event", eventListener);
@@ -241,7 +245,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   }
 
   if (method === "GET" && url.pathname === "/api/bootstrap") {
-    const workspaces = await listWorkspaces();
+    const workspaces = (await state.kernel.getSpaces({ kind: "renderer" })).spaces;
     const agent = workspaces[0] ? await safeAgentStatus(workspaces[0].rootPath, state.runtimeProvider) : emptyAgentStatus();
     sendJson(res, { workspaces, agent });
     return;
@@ -708,13 +712,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
 
   const catalogMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/agent\/catalog$/);
   if (method === "GET" && catalogMatch) {
-    const workspace = await getWorkspace(catalogMatch[1]);
-    const [catalog, packages, mutationTrusted] = await Promise.all([
-      loadAgentSkillCatalog(workspace.rootPath, state.runtimeProvider),
-      listPiPackages(workspace.rootPath, state.runtimeProvider),
-      isPiProjectMutationTrusted(workspace.rootPath, state.runtimeProvider),
-    ]);
-    sendJson(res, simplifyCatalog(catalog, packages, mutationTrusted));
+    const snapshot = await state.kernel.getCapabilities({ kind: "renderer", workspaceId: catalogMatch[1] });
+    sendJson(res, snapshot.catalog);
     return;
   }
   const trustMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/agent\/trust$/);
@@ -729,12 +728,8 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       () => setPiProjectTrust(workspace.rootPath, body.trusted!, state.runtimeProvider),
       { requireProjectTrust: false },
     );
-    const [catalog, packages, mutationTrusted] = await Promise.all([
-      loadAgentSkillCatalog(workspace.rootPath, state.runtimeProvider),
-      listPiPackages(workspace.rootPath, state.runtimeProvider),
-      isPiProjectMutationTrusted(workspace.rootPath, state.runtimeProvider),
-    ]);
-    sendJson(res, { catalog: simplifyCatalog(catalog, packages, mutationTrusted) });
+    const snapshot = await state.kernel.getCapabilities({ kind: "renderer", workspaceId: workspace.id });
+    sendJson(res, { catalog: snapshot.catalog });
     return;
   }
 
@@ -792,16 +787,23 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     if (state.compactingConversations.has(turnKey)) throw httpError(409, "Wait for the current Chat compaction to finish.");
     if (state.runningTurns.has(turnKey)) throw httpError(409, "Wait for the current agent turn to finish.");
     state.runningTurns.add(turnKey);
+    const task = state.kernel.startTask({
+      kind: "assistant_turn",
+      workspaceId: workspace.id,
+      conversationId,
+      actor: { kind: "assistant", cwd: workspace.rootPath, workspaceId: workspace.id, conversationId },
+    });
     broadcast(state, turnKey, turnStateEvent(conversationId, true));
     const message = { id: randomUUID(), role: "user" as const, content, createdAt: new Date().toISOString() };
     try {
       await appendMessage(workspace.rootPath, conversationId, message);
     } catch (error) {
       state.runningTurns.delete(turnKey);
+      state.kernel.finishTask(task.id);
       broadcast(state, turnKey, turnStateEvent(conversationId, false));
       throw error;
     }
-    void runAgentTurn(state, workspace.id, workspace.rootPath, conversationId, content, contextPaths, selectedPath);
+    void runAgentTurn(state, workspace.id, workspace.rootPath, conversationId, content, contextPaths, selectedPath, task.id);
     sendJson(res, { accepted: true, message }, 202);
     return;
   }
@@ -824,12 +826,19 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     if (state.runningTurns.has(key)) throw httpError(409, "Wait for the current agent turn to finish.");
     if (state.compactingConversations.has(key)) throw httpError(409, "Wait for the current Chat compaction to finish.");
     state.compactingConversations.add(key);
+    const task = state.kernel.startTask({
+      kind: "compaction",
+      workspaceId: workspace.id,
+      conversationId: compactMatch[2],
+      actor: { kind: "assistant", cwd: workspace.rootPath, workspaceId: workspace.id, conversationId: compactMatch[2] },
+    });
     try {
       const client = await getClient(state, workspace.id, workspace.rootPath, compactMatch[2]);
       await client.compact(body.customInstructions?.trim() || undefined);
       broadcast(state, streamKey(workspace.id, compactMatch[2]), { type: "done", conversationId: compactMatch[2] });
     } finally {
       state.compactingConversations.delete(key);
+      state.kernel.finishTask(task.id);
     }
     sendJson(res, { compacted: true });
     return;
@@ -867,6 +876,7 @@ async function runAgentTurn(
   content: string,
   contextPaths: string[],
   selectedPath: string | null,
+  taskId: string,
 ): Promise<void> {
   const key = clientKey(workspaceId, conversationId);
   let client: PiConversationClient | null = null;
@@ -893,6 +903,7 @@ async function runAgentTurn(
   } finally {
     if (promptStarted) await captureTurnCheckpointSafe(state, workspaceId, workspaceRoot, conversationId, "post_turn");
     state.runningTurns.delete(key);
+    state.kernel.finishTask(taskId);
     broadcast(state, key, turnStateEvent(conversationId, false));
     changeTurnCount(state, -1);
   }
@@ -1091,144 +1102,6 @@ function extensionEventMessage(event: PiExtensionUiEvent): string | null {
   if (event.method === "oauthDeviceCode") return `Open ${event.verificationUri} and enter ${event.userCode}.`;
   if (event.method === "unsupported") return `Extension UI feature is not available here: ${event.feature}`;
   return null;
-}
-
-function simplifyCatalog(
-  catalog: PiResourceCatalog,
-  packages: Array<{ source: string; scope: "user" | "project"; filtered: boolean; installedPath?: string }>,
-  mutationTrusted: boolean,
-): Record<string, unknown> {
-  const loadedPackageSources = new Set([
-    ...catalog.skills.map((item) => item.source),
-    ...catalog.extensions.map((item) => item.source),
-    ...catalog.prompts.map((item) => item.source),
-    ...catalog.themes.flatMap((item) => item.source ? [item.source] : []),
-  ].filter((source) => source.origin === "package").map((source) => source.source));
-
-  return {
-    projectTrust: { ...catalog.projectTrust, mutationTrusted },
-    trust: { ...catalog.projectTrust, mutationTrusted },
-    // Compatibility for older renderers. A Space with no gated resources is
-    // runtime-trusted; do not mislabel it as untrusted merely because it has no
-    // saved decision.
-    projectTrusted: catalog.projectTrust.trusted,
-    packages: packages.map((item) => ({
-      source: item.source,
-      scope: item.scope === "project" ? "project" : "global",
-      filtered: item.filtered,
-      ...(item.installedPath ? { installedPath: item.installedPath } : {}),
-      installed: Boolean(item.installedPath),
-      loaded: loadedPackageSources.has(item.source),
-    })),
-    toolManagement: { ...catalog.toolManagement },
-    skills: catalog.skills.map((skill) => ({
-      name: skill.name,
-      description: skill.description,
-      path: skill.path,
-      source: sourceLabel(skill.source),
-      ...capabilitySourceFields(skill.source),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-      ...(skill.content !== undefined ? { content: skill.content } : {}),
-      ...(skill.disableModelInvocation ? { disableModelInvocation: true } : {}),
-    })),
-    extensions: catalog.extensions.map((extension) => ({
-      id: extension.resolvedPath,
-      name: basename(extension.resolvedPath).replace(/\.[^.]+$/, ""),
-      path: extension.path,
-      source: sourceLabel(extension.source),
-      ...capabilitySourceFields(extension.source),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-      commands: extension.commands,
-      tools: extension.tools,
-      flags: extension.flags,
-    })),
-    tools: catalog.tools.map((tool) => ({
-      name: tool.name,
-      label: tool.label,
-      description: tool.description,
-      source: sourceLabel(tool.source),
-      ...capabilitySourceFields(tool.source),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-      active: tool.active,
-      kind: tool.kind,
-      core: tool.core,
-      configurable: tool.configurable,
-      configurationScope: tool.configurationScope,
-    })),
-    prompts: catalog.prompts.map((prompt) => ({
-      name: prompt.name,
-      description: prompt.description,
-      ...(prompt.argumentHint ? { argumentHint: prompt.argumentHint } : {}),
-      path: prompt.path,
-      source: sourceLabel(prompt.source),
-      ...capabilitySourceFields(prompt.source),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-    })),
-    themes: catalog.themes.map((theme) => ({
-      name: theme.name,
-      ...(theme.path ? { path: theme.path } : {}),
-      ...(theme.source ? {
-        source: sourceLabel(theme.source),
-        ...capabilitySourceFields(theme.source),
-      } : {}),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-    })),
-    commands: catalog.commands.map((command) => ({
-      name: command.name,
-      ...(command.description ? { description: command.description } : {}),
-      kind: command.source,
-      ...(command.sourceInfo ? {
-        source: sourceLabel(command.sourceInfo),
-        ...capabilitySourceFields(command.sourceInfo),
-      } : { source: command.source }),
-      enabled: true,
-      loaded: true,
-      status: "loaded",
-    })),
-    diagnostics: catalog.diagnostics.map((diagnostic) => ({
-      type: diagnostic.type === "collision" ? "warning" : diagnostic.type,
-      message: diagnostic.message,
-      ...(diagnostic.path ? { path: diagnostic.path } : {}),
-    })),
-  };
-}
-
-function sourceLabel(source: PiCatalogSource): string {
-  const scope = source.scope === "user" ? "Personal" : source.scope === "project" ? "This Space" : "Temporary";
-  const origin = source.origin === "package"
-    ? source.source
-    : source.source === "auto" ? "standard Pi location" : source.source;
-  return [scope, origin].filter(Boolean).join(" · ");
-}
-
-function capabilitySourceFields(source: PiCatalogSource): Record<string, unknown> {
-  const scope = source.scope === "user" ? "global" : source.scope;
-  const provenance = {
-    label: sourceLabel(source),
-    source: source.source,
-    path: source.path,
-    scope,
-    origin: source.origin,
-    ...(source.baseDir ? { baseDir: source.baseDir } : {}),
-    ...(source.origin === "package" ? { packageSource: source.source } : {}),
-  };
-  return {
-    scope,
-    origin: source.origin,
-    ...(source.origin === "package" ? { packageSource: source.source } : {}),
-    sourceInfo: provenance,
-    provenance,
-  };
 }
 
 function normalizeStatus(status: PiSetupStatus): Record<string, unknown> {

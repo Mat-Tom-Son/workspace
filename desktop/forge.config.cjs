@@ -1,8 +1,17 @@
 const path = require("node:path");
+const { cp } = require("node:fs/promises");
 const { FusesPlugin } = require("@electron-forge/plugin-fuses");
 const { FuseV1Options, FuseVersion } = require("@electron/fuses");
 
 const root = path.resolve(__dirname, "..");
+
+async function copyCliShimsToPackage(buildPath) {
+  await cp(
+    path.join(root, "desktop", "cli"),
+    path.join(buildPath, "bin"),
+    { recursive: true, force: true },
+  );
+}
 
 module.exports = {
   packagerConfig: {
@@ -33,6 +42,9 @@ module.exports = {
       path.join(root, "dist", "web-local"),
       path.join(root, "desktop", "assets"),
     ],
+    // The retained Forge diagnostic lane must match Electron Builder's
+    // package-root bin layout; afterComplete runs after ASAR creation.
+    afterComplete: [copyCliShimsToPackage],
   },
   makers: [
     {

@@ -33,6 +33,8 @@ assertPath(executablePath, "Workspace executable");
 assertPath(asarPath, "app.asar");
 assertPath(join(resourcesDir, "web-local", "index.html"), "renderer index");
 assertPath(join(resourcesDir, "assets", "icon.png"), "desktop icon");
+assertPath(join(packageDir, "bin", "workspace.cmd"), "Workspace CLI command shim");
+assertPath(join(packageDir, "bin", "workspace-cli.ps1"), "Workspace CLI PowerShell helper");
 
 if (existsSync(executablePath) && process.platform === "win32") {
   try {
@@ -69,6 +71,14 @@ if (existsSync(asarPath)) {
     "/node_modules/jszip/package.json",
   ]) {
     if (!entries.has(required)) failures.push(`app.asar is missing ${required}.`);
+  }
+  for (const externalOnly of [
+    "/bin/workspace.cmd",
+    "/bin/workspace-cli.ps1",
+    "/desktop/cli/workspace.cmd",
+    "/desktop/cli/workspace-cli.ps1",
+  ]) {
+    if (entries.has(externalOnly)) failures.push(`CLI shim must remain outside app.asar: ${externalOnly}.`);
   }
 
   try {

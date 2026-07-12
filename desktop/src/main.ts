@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { delimiter, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   app,
@@ -30,7 +30,16 @@ import {
 import { RoutedPiExtensionUiBridge, type PiExtensionUiEvent } from "../../src/local/agent/extension-ui.js";
 import { defaultAgentSdkDir } from "../../src/local/agent/agent-data-dir.js";
 import { startLocalApi } from "../../src/local/server.js";
+import { configureWorkspaceStateRoot } from "../../src/local/state-paths.js";
 import { getWorkspace } from "../../src/local/workspace.js";
+import { WorkspaceCliKernelAdapter } from "../../src/local/workspace-cli-adapter.js";
+import { WorkspaceKernel } from "../../src/local/workspace-kernel.js";
+import {
+  WorkspaceDesktopCliHost,
+  workspaceCliInstanceData,
+  workspaceCliRequestIdFromArgv,
+  workspaceCliRequestIdFromInstanceData,
+} from "./cli-host.js";
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
@@ -54,6 +63,7 @@ const rendererRecoveryBaseDelayMs = 1_000;
 const rendererRecoveryMaxDelayMs = 30_000;
 const resumeRendererHealthDelayMs = 5_000;
 const resumeUpdateCheckDelayMs = 20_000;
+const headlessCliIdleGraceMs = 500;
 const defaultWindowState = { width: 1440, height: 960 };
 const minimumWindowState = { width: 1100, height: 760 };
 const folderGrants = new Map<string, { rootPath: string; expiresAt: number }>();
@@ -83,6 +93,11 @@ let rendererLoadFailed = false;
 let rendererRecoveryFailurePromptShown = false;
 let createWindowPromise: Promise<void> | null = null;
 let rendererMenuState: RendererMenuState = { spaceOpen: false };
+let desktopHostPromise: Promise<DesktopHost> | null = null;
+let interactiveStartupPromise: Promise<void> | null = null;
+let activateRegistered = false;
+let interactiveRequested = false;
+let cliRequestGeneration = 0;
 
 protocol.registerSchemesAsPrivileged([{
   scheme: appProtocol,
@@ -98,27 +113,50 @@ protocol.registerSchemesAsPrivileged([{
 app.setName(productName);
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 
-const ownsInstance = app.requestSingleInstanceLock();
+configureStableUserDataPath();
+let initialCliRequestId: string | null = null;
+let initialCliArgumentError: unknown = null;
+try {
+  initialCliRequestId = workspaceCliRequestIdFromArgv(process.argv);
+} catch (error) {
+  initialCliArgumentError = error;
+}
+interactiveRequested = initialCliRequestId === null && initialCliArgumentError === null;
+const ownsInstance = app.requestSingleInstanceLock(workspaceCliInstanceData(initialCliRequestId));
 if (!ownsInstance) app.quit();
 
 if (ownsInstance) {
-  app.on("second-instance", () => showWindow());
+  app.on("second-instance", (_event, argv, _workingDirectory, additionalData) => {
+    let requestId: string | null = null;
+    try {
+      requestId = workspaceCliRequestIdFromInstanceData(additionalData) ?? workspaceCliRequestIdFromArgv(argv);
+    } catch (error) {
+      console.warn(`${productName} rejected an invalid CLI launch: ${errorMessage(error)}`);
+      return;
+    }
+    if (requestId) {
+      void processWorkspaceCliRequest(requestId).catch((error) => {
+        console.warn(`${productName} could not process CLI request ${requestId}: ${errorMessage(error)}`);
+      });
+      return;
+    }
+    interactiveRequested = true;
+    void startInteractiveApp().then(showWindow).catch(reportStartupError);
+  });
   app.whenReady().then(async () => {
     configureStableUserDataPath();
-    loadDesktopPreferences();
-    registerRendererProtocol();
-    registerIpc();
-    await ensureMainWindow();
-    configureUpdater();
-    createTrayIfSupported();
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) void ensureMainWindow();
-      else showWindow();
-    });
-  }).catch((error) => {
-    dialog.showErrorBox(`${productName} could not start`, errorMessage(error));
-    app.quit();
-  });
+    configureWorkspaceStateRoot(app.getPath("userData"));
+    configurePackagedCliEnvironment();
+    if (initialCliArgumentError) throw initialCliArgumentError;
+    if (initialCliRequestId) {
+      await processWorkspaceCliRequest(initialCliRequestId);
+      if (!interactiveRequested) {
+        await quitAfterCliRequest();
+        return;
+      }
+    }
+    await startInteractiveApp();
+  }).catch(reportStartupError);
 }
 
 app.on("window-all-closed", () => {
@@ -152,6 +190,103 @@ async function finishQuitFlow(): Promise<void> {
   app.quit();
 }
 
+interface DesktopHost {
+  settings: SecureSettingsStore;
+  extensionUi: RoutedPiExtensionUiBridge;
+  runtime: PackagedPiRuntimeProvider;
+  kernel: WorkspaceKernel;
+  cli: WorkspaceDesktopCliHost;
+}
+
+async function ensureDesktopHost(): Promise<DesktopHost> {
+  if (desktopHostPromise) return desktopHostPromise;
+  desktopHostPromise = (async () => {
+    const userData = app.getPath("userData");
+    configureWorkspaceStateRoot(userData);
+    const settings = new SecureSettingsStore(join(userData, "secure-settings.bin"));
+    const extensionUi = new RoutedPiExtensionUiBridge();
+    extensionUi.on("event", (event: PiExtensionUiEvent) => {
+      if (event.method === "openExternal") void openExternal(event.url);
+      else if (event.method === "oauthDeviceCode") void openExternal(event.verificationUri);
+      else if (event.method === "copyText") clipboard.writeText(event.text);
+      else if (event.method === "openSettings") mainWindow?.webContents.send("workspace:agent:open-settings");
+      else if (event.method === "quit") app.quit();
+    });
+    const runtime = new PackagedPiRuntimeProvider({
+      agentDir: defaultAgentSdkDir(),
+      authStorageHost: settings,
+      extensionUi,
+    });
+    const kernel = new WorkspaceKernel({ runtimeProvider: runtime });
+    const cli = new WorkspaceDesktopCliHost({
+      stateRoot: userData,
+      kernel: new WorkspaceCliKernelAdapter(kernel),
+      version: app.getVersion(),
+      productName,
+    });
+    await cli.initialize();
+    secureSettings = settings;
+    piRuntime = runtime;
+    return { settings, extensionUi, runtime, kernel, cli };
+  })();
+  return desktopHostPromise;
+}
+
+async function processWorkspaceCliRequest(requestId: string): Promise<void> {
+  cliRequestGeneration += 1;
+  const host = await ensureDesktopHost();
+  await host.cli.processRequest(requestId);
+}
+
+async function startInteractiveApp(): Promise<void> {
+  interactiveRequested = true;
+  if (interactiveStartupPromise) return interactiveStartupPromise;
+  interactiveStartupPromise = (async () => {
+    await ensureDesktopHost();
+    loadDesktopPreferences();
+    registerRendererProtocol();
+    registerIpc();
+    await ensureMainWindow();
+    configureUpdater();
+    createTrayIfSupported();
+    if (!activateRegistered) {
+      activateRegistered = true;
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) void ensureMainWindow();
+        else showWindow();
+      });
+    }
+  })();
+  return interactiveStartupPromise;
+}
+
+async function quitAfterCliRequest(): Promise<void> {
+  const host = await ensureDesktopHost();
+  while (!interactiveRequested) {
+    const observedGeneration = cliRequestGeneration;
+    await host.cli.whenIdle();
+    await host.runtime.flush();
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, headlessCliIdleGraceMs));
+    if (observedGeneration === cliRequestGeneration) break;
+  }
+  if (interactiveRequested) {
+    await startInteractiveApp();
+    return;
+  }
+  quitting = true;
+  // Exit synchronously after the queue and host-backed auth storage are both
+  // drained so a new process cannot hand work to a half-shutdown primary.
+  quitShutdownComplete = true;
+  app.quit();
+}
+
+function reportStartupError(error: unknown): void {
+  console.error(`${productName} could not start: ${errorMessage(error)}`);
+  if (interactiveRequested) dialog.showErrorBox(`${productName} could not start`, errorMessage(error));
+  quitting = true;
+  app.quit();
+}
+
 async function createMainWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
     showWindow();
@@ -159,21 +294,7 @@ async function createMainWindow(): Promise<void> {
   }
 
   const userData = app.getPath("userData");
-  const settings = new SecureSettingsStore(join(userData, "secure-settings.bin"));
-  secureSettings = settings;
-  const extensionUi = new RoutedPiExtensionUiBridge();
-  extensionUi.on("event", (event: PiExtensionUiEvent) => {
-    if (event.method === "openExternal") void openExternal(event.url);
-    else if (event.method === "oauthDeviceCode") void openExternal(event.verificationUri);
-    else if (event.method === "copyText") clipboard.writeText(event.text);
-    else if (event.method === "openSettings") mainWindow?.webContents.send("workspace:agent:open-settings");
-    else if (event.method === "quit") app.quit();
-  });
-  piRuntime = new PackagedPiRuntimeProvider({
-    agentDir: defaultAgentSdkDir(),
-    authStorageHost: settings,
-    extensionUi,
-  });
+  const host = await ensureDesktopHost();
 
   apiSessionToken = randomUUID();
   const api = await startLocalApi({
@@ -183,8 +304,9 @@ async function createMainWindow(): Promise<void> {
     stateBase: userData,
     sessionToken: apiSessionToken,
     allowedOrigins: [`${appProtocol}://app`],
-    piRuntimeProvider: piRuntime,
-    extensionUiBridge: extensionUi,
+    piRuntimeProvider: host.runtime,
+    extensionUiBridge: host.extensionUi,
+    kernel: host.kernel,
     localFolderGrantProvider: { consumeLocalFolderGrant },
     onAgentTurnActivity: updateAgentPowerState,
   });
@@ -553,6 +675,22 @@ function checkForUpdates(interactive = true): Promise<WorkspaceUpdateStatus> {
 function configureStableUserDataPath(): void {
   const target = join(app.getPath("appData"), productName);
   if (app.getPath("userData") !== target) app.setPath("userData", target);
+}
+
+function configurePackagedCliEnvironment(): void {
+  if (!app.isPackaged || process.platform !== "win32") return;
+  const binDirectory = join(dirnameFromFile(process.execPath), "bin");
+  const pathKey = Object.keys(process.env).find((key) => key.toLocaleLowerCase() === "path") ?? "Path";
+  const currentPath = process.env[pathKey] ?? "";
+  const alreadyPresent = currentPath
+    .split(delimiter)
+    .map((entry) => entry.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean)
+    .some((entry) => samePath(entry, binDirectory));
+  if (!alreadyPresent) process.env[pathKey] = currentPath ? `${binDirectory}${delimiter}${currentPath}` : binDirectory;
+  // Agent shell tools inherit this process environment. Pinning the executable
+  // makes their CLI calls address this exact installed Workspace build.
+  process.env.WORKSPACE_CLI_APP = process.execPath;
 }
 
 function createFolderGrant(rootPath: string): string {

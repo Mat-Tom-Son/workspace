@@ -9,6 +9,7 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { CapabilityRegistryService } from "../src/local/agent/capability-registry.js";
 import { RoutedPiExtensionUiBridge } from "../src/local/agent/extension-ui.js";
 import { startLocalApi } from "../src/local/server.js";
+import { WorkspaceKernel } from "../src/local/workspace-kernel.js";
 
 test("local API covers Space files, the Library, and external restore points", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-api-test-"));
@@ -19,6 +20,7 @@ test("local API covers Space files, the Library, and external restore points", a
     loadEnv: false,
   });
   try {
+    assert.ok(api.kernel instanceof WorkspaceKernel, "startLocalApi must expose its compatible default kernel");
     assert.deepEqual(await json(`${api.origin}/api/bootstrap`), {
       workspaces: [],
       agent: { ready: true, configured: false, provider: null, model: null, piVersion: null, projectTrusted: false, error: null },
@@ -343,6 +345,8 @@ test("registry discovery installs through guarded capability mutations without s
       };
     },
   };
+  const piRuntimeProvider = { async resolveRuntime() { return { agentDir }; } };
+  const kernel = new WorkspaceKernel({ runtimeProvider: piRuntimeProvider });
 
   const api = await startLocalApi({
     port: 0,
@@ -350,7 +354,8 @@ test("registry discovery installs through guarded capability mutations without s
     workspaceBase: join(sandbox, "content"),
     loadEnv: false,
     capabilityRegistry,
-    piRuntimeProvider: { async resolveRuntime() { return { agentDir }; } },
+    kernel,
+    piRuntimeProvider,
   });
   try {
     const discovered = await json(`${api.origin}/api/agent/capabilities/discover?type=skill&sort=name&limit=10`) as any;
@@ -375,6 +380,8 @@ test("registry discovery installs through guarded capability mutations without s
       body: JSON.stringify({ content: "/hold" }),
     });
     assert.equal(activeTurn.status, 202, await activeTurn.text());
+    const runningTasks = await kernel.getTasks({ kind: "system" });
+    assert.equal(runningTasks.tasks.some((task) => task.kind === "assistant_turn" && task.workspaceId === workspaceId && task.conversationId === conversationId), true);
 
     const blockedTrust = await fetch(`${api.origin}/api/workspaces/${workspaceId}/agent/trust`, {
       method: "POST",
@@ -410,6 +417,7 @@ test("registry discovery installs through guarded capability mutations without s
       const transcript = await json(`${api.origin}/api/workspaces/${workspaceId}/conversations/${conversationId}`) as any;
       return transcript.messages.some((message: any) => message.role === "assistant" && message.content === "Command completed.");
     });
+    assert.deepEqual((await kernel.getTasks({ kind: "system" })).tasks, []);
 
     await ok(`${api.origin}/api/workspaces/${workspaceId}/agent/trust`, {
       method: "POST",
@@ -455,23 +463,26 @@ test("capability mutations and explicit Chat compaction are mutually exclusive",
     nextRuntimeBlock = { signalEntered, released };
     return { entered, release };
   };
+  const kernel = new WorkspaceKernel();
+  const piRuntimeProvider = {
+    async resolveRuntime() {
+      const block = nextRuntimeBlock;
+      nextRuntimeBlock = null;
+      if (block) {
+        block.signalEntered();
+        await block.released;
+      }
+      return { agentDir };
+    },
+  };
 
   const api = await startLocalApi({
     port: 0,
     stateBase: join(sandbox, "state"),
     workspaceBase: join(sandbox, "content"),
     loadEnv: false,
-    piRuntimeProvider: {
-      async resolveRuntime() {
-        const block = nextRuntimeBlock;
-        nextRuntimeBlock = null;
-        if (block) {
-          block.signalEntered();
-          await block.released;
-        }
-        return { agentDir };
-      },
-    },
+    kernel,
+    piRuntimeProvider,
   });
   try {
     const created = await json(`${api.origin}/api/workspaces`, {
@@ -491,6 +502,12 @@ test("capability mutations and explicit Chat compaction are mutually exclusive",
       body: JSON.stringify({}),
     });
     await compactBlock.entered;
+    const compactingTasks = await kernel.getTasks({ kind: "system" });
+    assert.deepEqual(compactingTasks.tasks.map((task) => ({ kind: task.kind, workspaceId: task.workspaceId, conversationId: task.conversationId })), [{
+      kind: "compaction",
+      workspaceId,
+      conversationId,
+    }]);
     const mutationDuringCompact = await fetch(`${api.origin}/api/agent/packages/install`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -499,6 +516,7 @@ test("capability mutations and explicit Chat compaction are mutually exclusive",
     assert.equal(mutationDuringCompact.status, 409, await mutationDuringCompact.text());
     compactBlock.release();
     await (await compactPromise).text();
+    assert.deepEqual((await kernel.getTasks({ kind: "system" })).tasks, []);
 
     const mutationBlock = blockNextRuntimeResolution();
     const mutationPromise = fetch(`${api.origin}/api/agent/packages/install`, {
