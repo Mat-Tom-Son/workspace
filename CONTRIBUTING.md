@@ -8,6 +8,8 @@ Before changing navigation, terminology, storage, trust, or Assistant behavior, 
 
 - [Product model and roadmap](docs/product-model.md)
 - [Assistant capabilities](docs/assistant-capabilities.md)
+- [Restricted app runtime](docs/restricted-app-runtime.md)
+- [Restricted app authoring](docs/restricted-app-authoring.md)
 - [Architecture](docs/architecture.md)
 - [Workspace management layer](docs/management-layer.md)
 - [Workspace contributor guide](AGENTS.md) — the canonical policy for Codex and every contributor.
@@ -59,9 +61,13 @@ npm run desktop:prepare
 
 Use `npm run desktop:package:smoke` when packaged behavior or assets change. It verifies the canonical unpacked release layout without building an NSIS installer. Use `npm run desktop:make` only for an installer/release candidate. The purpose of each lane is explained in [Windows build](docs/windows-build.md).
 
+For restricted-app manifest, bridge, broker, sandbox, storage, file, notification, connection, or lifecycle changes, run the focused tests and `npm run desktop:restricted-app:smoke`. That command exercises the real Electron visible and worker sandboxes; browser fixtures or Node-only tests do not prove the security boundary. `desktop:prepare`, the package lanes, and the release lane include this probe.
+
 Add or update tests for behavior changes. Update README and focused docs when a change affects shipped behavior, terminology, privacy, security, trust, build commands, or the roadmap.
 
 For kernel or CLI changes, update the snapshot/protocol version deliberately and exercise the kernel, adapter, protocol, broker, desktop-host, and installer-packaging tests through `npm test`. Keep the README, management guide, Security, and Privacy output descriptions in sync. Protocol v1 must remain read-only.
+
+For restricted-app changes, update the product model, authoring guide, runtime contract, Security, Privacy, example package, and release QA guidance together whenever their behavior changes. Distinguish the normal owning-Chat proposal/review path from the advanced local-package install path, and never describe a proposal or install as granting access.
 
 ## Pull requests
 

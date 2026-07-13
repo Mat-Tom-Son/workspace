@@ -33,4 +33,10 @@ Pi packages remain the installation, update, and removal mechanism for full-trus
 
 Packages are distribution plumbing, not a separate top-level user concept. The interface should describe what a person is installing—a Skill, Extension, or mixed capability package—while retaining package source and diagnostic details. The Discover catalog may combine first-party/reference sources with npm packages tagged `pi-package`; popularity and download counts are discovery signals, not security endorsements.
 
+## Restricted Space apps are not Pi resources
+
+A restricted app is package-shaped because the Assistant needs a portable set of completed web assets, but it is not a Pi package, Skill, Extension, or catalog item. Workspace inspects its `agent-app.json` and files without invoking npm or importing JavaScript, stages the exact reviewed digest in application data, and runs it only through the separate sandbox hosts. Its grants, encrypted connections, storage, background state, notifications, and lifecycle are managed in **Capabilities → Apps in this Space** and are intentionally absent from `workspace capabilities list` protocol v1.
+
+Use [Restricted app authoring](restricted-app-authoring.md) for the package and bridge contract and [Restricted app runtime](restricted-app-runtime.md) for the security boundary. Never add `pi.extensions` to a restricted package or route it through Pi's package manager merely to make it visible to the model; `propose_space_app` is the host-owned review path.
+
 When adding a management consumer, query `WorkspaceKernel` or its adapter rather than scanning `.pi/`, `.agents/`, or package directories independently. Writes must continue through the owning Pi and Workspace domain operations so trust and active-turn protections remain in force.

@@ -24,9 +24,14 @@ flowchart LR
   host --> command["workspace command"]
   api --> driver["workspace:drive test harness"]
   kernel -. "future scoped adapters" .-> future["Meta-Assistant, Extensions, and Space runtimes"]
+  api --> restricted["RestrictedAppService<br/>separate mutation/lifecycle domain"]
+  restricted --> sandboxes["Visible and worker sandbox hosts"]
+  restricted -. "excluded from v1 snapshots" .-> kernel
 ```
 
 Domain services still own writes. The kernel does not bypass folder grants, registered-Space authorization, capability-mutation locks, History behavior, or any other mutation policy.
+
+The dotted restricted-app edge is a boundary, not a data flow into the kernel. Space apps have their own reviewed package, grant, encrypted connection, storage, background, notification, and sandbox-host state. Protocol v1 and `workspace.capabilities` intentionally do not list or mutate that state. Future app inventory belongs in a deliberately versioned kernel snapshot only after its content and authorization contract are designed.
 
 ## Kernel contract
 
@@ -130,7 +135,7 @@ It does **not** yet provide:
 - an authenticated mutation API;
 - a cross-Space meta-Assistant with delegated authority;
 - event subscriptions for all state changes;
-- imperative Extension APIs for dynamically creating or mutating rail items, panes, or tabs beyond the static `surface.json` contribution contract;
+- imperative APIs for full-trust Pi Extensions to dynamically create or mutate rail items, panes, or tabs beyond the static `surface.json` contribution contract (restricted Space apps already have their separate host-owned navigator and tab bridge);
 - a verified registry that binds a Space-local service to a Workspace-launched process generation;
 - host-owned remote subscriptions or arbitrary push adapters for restricted
   apps (static reviewed background notifications are already supported);
@@ -149,5 +154,7 @@ Restricted apps already have an explicit package, permission, lifecycle, sandbox
 | Electron single-instance host | `desktop/src/cli-host.ts`, `desktop/src/main.ts` | `tests/desktop-cli-host.test.ts` |
 | Installer shims and PATH integration | `desktop/cli/`, `desktop/nsis/cli-path.nsh` | `tests/desktop-cli-packaging.test.ts` |
 | Real Pi turn driver | `scripts/workspace-drive.ts` | Exercised against the local API when provider credentials are available. |
+| Restricted app review, grants, lifecycle, and storage | `src/local/agent/restricted-app-*.ts` | `tests/restricted-app-*.test.ts` |
+| Visible and worker sandbox hosts | `desktop/src/restricted-app-host.ts`, `desktop/src/restricted-app-preload.cts` | `npm run desktop:restricted-app:smoke` plus focused host/broker tests. |
 
 See [Architecture](architecture.md) for the surrounding process boundaries, [Product model](product-model.md) for the user-facing mental model, and [Windows build](windows-build.md) for packaging and release verification.

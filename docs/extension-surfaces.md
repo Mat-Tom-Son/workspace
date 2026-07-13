@@ -4,7 +4,15 @@ Workspace can render a controlled application surface contributed by a normal, f
 
 This is a declarative UI contract, not renderer code injection. Workspace parses and bounds the manifest, renders its text and data through host-owned React components, and rejects unsupported block types. The Extension remains an ordinary executable Pi capability with its normal Personal or This Space scope and trust implications.
 
-The checked-in [Connected inbox Pi Extension](../examples/packages/connected-inbox/README.md) demonstrates this compatibility lane. Its code can use the network and runs with the current user's permissions. The separate [restricted connected inbox contract](../examples/packages/restricted-connected-inbox/README.md) demonstrates the package shape intended for agent-created apps; see [Restricted app runtime](restricted-app-runtime.md).
+Do not choose between `surface.json` and a restricted Space app based only on visual complexity:
+
+| Need | Use | Why |
+|---|---|---|
+| A trusted Pi Extension needs a small read-only status surface beside its tools or connection logic. | `surface.json` | Preserves native Pi packaging and keeps visible rendering data-only, but the owning Extension is still full trust. |
+| The Assistant should generate interactive forms, dashboards, inboxes, extractors, or project-service controls for one Space. | Restricted Space app | Runs arbitrary reviewed web UI in a sandbox and requires host-mediated grants for every external power. |
+| The capability needs unrestricted Node, shell, provider, event, or operating-system integration. | Native Pi Extension, optionally with `surface.json` | Those powers are intentionally outside the restricted bridge and require full-current-user trust. |
+
+The checked-in [Connected inbox Pi Extension](../examples/packages/connected-inbox/README.md) demonstrates this compatibility lane. Its code can use the network and runs with the current user's permissions. The separate [restricted Connected inbox app](../examples/packages/restricted-connected-inbox/README.md) demonstrates the agent-created package lane; see [Restricted app authoring](restricted-app-authoring.md) and [Restricted app runtime](restricted-app-runtime.md).
 
 ## Package layout
 

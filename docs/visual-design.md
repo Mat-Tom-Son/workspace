@@ -46,6 +46,15 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - The preload reports `window.material` and `main.tsx` applies `data-window-material="mica"` synchronously before React's first paint. Do not move this to a passive effect that produces a solid-background flash.
 - Older Windows builds and reduced-transparency sessions use a theme-matched solid background. Light, dark, and system theme changes must update native chrome and the renderer together.
 
+## Restricted Space app surfaces
+
+- Installed Space apps occupy the contributed rail region below the five stable primary destinations. They never replace or reorder Files, Capabilities, Chats, Library, or History.
+- Workspace owns the rail target, Space identity header, navigator frame, tab chrome, loading/unavailable states, theme context, and permission/lifecycle UI. The app owns only the sandboxed canvas inside its navigator or work-tab placeholder.
+- A restricted app may render any reviewed local HTML/CSS/JavaScript that fits its task, but it must adapt to both compact navigator and full work-tab placements. Use `workspaceRestrictedApp.context` rather than viewport guesses to select the layout.
+- Permission prompts and connection forms stay in Capabilities, not inside app-controlled pixels. App UI may explain why a power is useful and handle denial, but it must not imitate a Workspace grant dialog or claim access before the host confirms it.
+- App-requested tabs use the same Space-bound tab strip, focus, restore, close, and cross-Space behavior as built-in tabs. Titles should describe the current object or view, not repeat the app name on every tab.
+- Host theme changes are delivered through app context. App content must remain legible in both themes, but it cannot make the shell transparent, recolor structural chrome, or draw over native menus and modals.
+
 ## Visual acceptance
 
 Before a handoff, exercise every primary surface and every Settings section in light and dark themes at 1440×900, 1280×800, and a tall/narrow desktop window. Reject the candidate for:

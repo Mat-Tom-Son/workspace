@@ -1,6 +1,6 @@
 # Architecture
 
-Workspace has three runtime responsibility layers and one shared in-process management plane:
+Workspace has three runtime responsibility layers, one shared in-process management plane, and a separate restricted-app execution lane:
 
 1. The React renderer presents a Space selector plus Files, Capabilities, Chats, Library, and History surfaces, with Assistant configuration in Settings.
 2. The local Node host owns filesystem access, conversations, resource import, Pi sessions, and the domain services that authorize mutations.
@@ -71,6 +71,25 @@ Folders synchronized by Google Drive for desktop or other desktop sync tools can
 
 Creating or registering a Space is the single user action that authorizes Workspace to load executable project configuration from that exact folder. The shared runtime authority is derived from the Space registry, so the renderer, local API, kernel, CLI projection, and Pi sessions cannot drift. Removing the Space revokes Workspace's authorization. Registration is not code review: native Pi Extensions still run with the current user's permissions, and synchronized or source-controlled `.pi` content can change later.
 
+Restricted apps run beside, not inside, the Pi capability catalog and management snapshot:
+
+```mermaid
+flowchart LR
+  chat["Space Chat and propose_space_app"] --> review["Host inspection and digest-pinned review"]
+  capabilities["Capabilities grants, connections, lifecycle"] --> service["RestrictedAppService"]
+  review --> service
+  service --> staged["Content-addressed reviewed assets"]
+  service --> visible["Visible sandboxed WebContentsView"]
+  service --> worker["Hidden sandboxed worker"]
+  visible --> tabs["Host-owned Space tabs"]
+  visible --> brokers["Network, storage, and file brokers"]
+  worker --> brokers
+  worker --> notifications["Static reviewed Windows notifications"]
+  kernel["WorkspaceKernel / CLI v1"] -. "does not project or mutate app state" .-> service
+```
+
+The trusted renderer supplies app identity, placement rectangles, review and permission UI, and shell tab state. It does not execute package JavaScript. Electron main owns installed-revision verification, sandbox creation, sender-to-owner binding, generation-aware lifecycle, brokers, credential injection, and teardown. Package JavaScript sees only the frozen `workspaceRestrictedApp` bridge appropriate to its visible or worker lifecycle.
+
 Agent-created restricted apps use a separate package contract. Workspace parses `agent-app.json`, validates a reviewed HTML entry, optional Assistant/background worker, bounded tool schemas, exact public-HTTPS or numeric-loopback targets, reviewed Space-file needs, static notification categories, and an optional background interval; it rejects native-Pi execution fields and linked or oversized files and installs a reviewed content digest without importing JavaScript. A host-owned Pi tool can turn a completed Space-relative package into a persisted, owning-Chat-bound review receipt; the tool cannot install, grant access, or collect credentials. Visible UI runs in an ephemeral sandboxed `WebContentsView` with sender-bound context, tab, network, bounded storage, storage-invalidation, and file bridges, while optional Assistant/background work uses a separate hidden sandbox. Windows notifications are host-owned, separately granted, static-copy, background-only, and rate-limited. File writes are grant-relative, atomic, and History-covered. Public OAuth PKCE is host-owned and encrypted. Apps own a Space rail navigator and may request normal persistent, Space-owned right tabs; the host derives identity and shell tab ids. Proposal, installation, destination/file/notification grants, connections, and background enablement remain separate. These packages never enter Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md).
 
 ## Packaging
@@ -81,4 +100,4 @@ Electron Builder is the canonical Windows release packager. An unpacked smoke pa
 
 On Windows 11 22H2 or newer, Electron may use Mica when reduced transparency is not requested. The preload reports the selected material before React renders so root chrome can become transparent without a first-paint flash; content surfaces remain opaque. Older Windows builds and reduced-transparency sessions use theme-matched solid backgrounds.
 
-The package does not contain a bundled document library, private Skill catalog, provider key, or signing material. See [Windows build](windows-build.md) and [Windows releases and signing](windows-release.md) for verification and publishing.
+`desktop:prepare` runs the production renderer and Electron compile, native Pi preflight, and a real-Electron restricted-app probe that exercises both sandbox hosts and their lifecycle denial. The package does not contain a bundled document library, private Skill catalog, provider key, or signing material. See [Windows build](windows-build.md) and [Windows releases and signing](windows-release.md) for verification and publishing.

@@ -33,7 +33,7 @@ The Space switcher chooses the active root-folder entity. The stable primary nav
 - **Library**
 - **History**
 
-The Assistant's provider, model, API key, and OAuth connection live in **Settings → Assistant**, rather than adding a setup destination to the primary rail.
+The Assistant's model provider, model, API key, and supported provider OAuth connection live in **Settings → Assistant**, rather than adding a setup destination to the primary rail. A restricted Space app's connection is a different, app-scoped object managed with that app in **Capabilities**.
 
 Each open tab belongs to one Space. Selecting a tab takes the user back to that Space and its identity; selecting a Space restores its most recent tab. A Chat that is working remains alive when another tab is selected, when Workspace is minimized, and when the window is hidden to the tray.
 
@@ -61,8 +61,10 @@ Registering a folder is also the host authorization for its existing local Pi co
 | Attach a file to a Chat | That file is made available to the conversation. | Other Space files are not included automatically. |
 | Install a personal Skill or Extension | It becomes available through the user's Pi scope. | It is not copied into every Space. |
 | Ask the Assistant to build a Space app | The Assistant may write an ordinary restricted-app package and ask Workspace to inspect it for review. | A proposal does not execute or install code, grant network access, or store a credential. |
-| Install a reviewed Space app | The exact reviewed digest becomes available in that Space. | Network and file access remain off, no connection is stored, and background work remains disabled. |
-| Allow an app power | One declared destination, Space file/folder, connection, or background schedule becomes usable. | Other declarations and other Spaces receive no authority. |
+| Install a reviewed Space app | The exact reviewed digest becomes available in that Space. | Network destinations, Space files, notification categories, saved connections, and background work remain off. |
+| Allow one app destination, file root, or notification category | That exact reviewed declaration becomes usable by the installed digest. | Other declarations, saved connections, background work, and other Spaces receive no authority. |
+| Save or remove an app connection | Workspace adds or deletes one operating-system-encrypted credential binding for that Space, app digest, destination, and origin. | Destination access is not implicitly granted, and deleting the local record does not revoke the credential at its provider. |
+| Enable app background work | Workspace may run the reviewed worker on its bounded schedule while Workspace is running. | The worker gains no undeclared destination, file, notification, or connection authority. |
 
 This separation is a core product rail. “Available,” “in this Space,” “in this chat,” and “allowed to execute” must never collapse into one invisible state.
 
@@ -78,6 +80,15 @@ There are two capability scopes:
 The **Capabilities** surface unifies discovery and management without erasing the distinctions that matter. It identifies whether an item is a Skill or Extension, Personal or This Space, active or merely available, direct-imported or package-provided, and healthy or diagnostic-failing. Installed items can be searched, filtered by type and scope, and sorted by name, type, scope, or source. Discover results can be searched, filtered, and sorted by first-party/reference status, downloads, recency, or name.
 
 Packages can distribute Skills, Extensions, prompts, themes, and related Pi resources. They remain installation and lifecycle plumbing; the primary UI should describe the capability a person is gaining, show inspected resource types and lifecycle scripts when registry metadata is available, and label unavailable details as unknown rather than absent. A package that includes Extensions or install scripts is a code-execution decision and must not be presented as a harmless Skill-only import. See [Assistant capabilities](assistant-capabilities.md) for the complete compatibility and safety model.
+
+Workspace has two deliberately different executable lanes inside the broader Extension product concept:
+
+| Lane | Trust and distribution | UI and authority |
+|---|---|---|
+| Native Pi Extension | Standard Pi package/resource locations; full current-user execution after Personal install or Space registration. | May add Pi tools, commands, providers, events, and a static host-rendered `surface.json` contribution. Its code owns its network and operating-system access. |
+| Restricted Space app | A complete, Space-local reviewed-web package proposed by the Assistant or selected through advanced local install. It never enters Pi's package manager or loaded catalog. | Runs reviewed UI and worker code in separate sandboxed Electron hosts. Tabs, network, storage, files, connections, notifications, and background work exist only through narrow host contracts. |
+
+The model experiences either lane as a package-shaped capability, but the product must not flatten their execution boundaries. Native Pi compatibility remains the full-trust ecosystem lane; restricted apps are the flexible app canvas for generated inboxes, dashboards, extractors, project-service panels, and other Space-specific tools. See [Restricted app authoring](restricted-app-authoring.md) and [Restricted app runtime](restricted-app-runtime.md).
 
 ## Management layer
 
@@ -117,7 +128,9 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Inspect Space context, registered Spaces, active Assistant/compaction tasks, and Pi capabilities through one versioned `WorkspaceKernel` and the read-only installed `workspace` CLI.
 - Drive one real Pi turn through the local API with the harness-neutral `workspace:drive` test driver.
 - Render validated declarative `surface.json` contributions from loaded Pi Extensions as a contributed rail destination, left-pane navigator, and Space-bound view tabs without injecting Extension code into the renderer.
-- Let the Assistant submit a completed, Space-relative restricted-app package through a host-owned proposal tool. Workspace persists a Space-and-Chat-bound, digest-pinned review without evaluating JavaScript; only a later human approval installs it, with network and Space-file access off and background work disabled. Capabilities manages grants, connections, background scheduling, local data, lifecycle, and the secondary local-package path. An installed app gets arbitrary reviewed web UI in a sandboxed rail navigator, can request persistent Space-owned right tabs through a host-derived identity, may expose bounded Assistant/background actions through a separate worker sandbox, and can use bounded host-owned storage, History-covered Space-file grants, exact brokered network access, and standards-only OAuth PKCE.
+- Let the Assistant submit a completed, Space-relative restricted-app package through a host-owned proposal tool. Workspace persists a Space-and-Chat-bound, digest-pinned review without evaluating JavaScript; only a later human approval installs it, with network, Space-file, and notification access off, no saved connection, and background work disabled.
+- Give each installed Space app arbitrary reviewed web UI in a sandboxed rail navigator and host-derived persistent Space-owned right tabs, plus optional bounded Assistant/background actions in a separate worker sandbox. Capabilities manages exact network/file/notification grants, host-owned encrypted connections, scheduling, local data, reviewed updates, removal, and the secondary advanced local-package path.
+- Provide bounded host-owned JSON storage with active-visible-view invalidation hints, History-covered Space-file grants, exact public-HTTPS or numeric-loopback requests, API-key/bearer/basic/OAuth PKCE connection adapters, and static reviewed Windows notifications from enabled background work.
 - Build a Windows installer and deliver updates through GitHub Releases.
 
 ### Next product layer
@@ -130,7 +143,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Make “what this Chat can see and use” visible before and during a conversation.
 - Add an authenticated, versioned mutation surface with explicit Personal, Space, and Chat scopes, replay protection, confirmations, revocation, and durable action receipts.
 - Add event subscriptions and a scoped cross-Space Assistant that can manage the product only through those authorized contracts.
-- Add restricted-app remote subscriptions and push adapters, finer web-runtime resource controls, and a verified Space-service registry backed by a trusted launcher, per-instance challenge, and process-generation lifecycle. Static reviewed Windows notifications are already available during separately enabled background work. Raw numeric loopback grants remain useful for development but do not prove which process owns a port.
+- Add restricted-app remote subscriptions and arbitrary push adapters, finer web-runtime resource controls, and a verified Space-service registry backed by a trusted launcher, per-instance challenge, and process-generation lifecycle. Raw numeric loopback grants remain useful for development but do not prove which process owns a port.
 - Strengthen onboarding, keyboard/accessibility behavior, renderer interaction tests, recovery, export, and diagnostics.
 
 ### Later adapters and distribution maturity

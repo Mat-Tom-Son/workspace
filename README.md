@@ -34,7 +34,7 @@ The Space switcher selects the root-folder entity a person is working in. The pr
 - **Library**
 - **History**
 
-Provider, model, API-key, and OAuth setup lives under **Settings → Assistant**.
+Provider, model, API-key, and provider OAuth setup—when a provider flow is supported—lives under **Settings → Assistant**. Connections used by a restricted Space app are configured separately with that app in **Capabilities**.
 
 The folder is an implementation detail, but never a proprietary boundary. Space files remain ordinary files that can be opened in other apps, synchronized by desktop storage tools, backed up, or revealed in the operating system.
 
@@ -49,17 +49,32 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - One Capabilities surface for installed Skills and Extensions, official/reference sources, community Pi packages, provenance, scope, diagnostics, update, and removal.
 - Global and registered-Space Pi Extensions. Native Pi Extensions run with the current user's permissions.
 - Validated declarative Extension surfaces that can contribute an app rail destination, navigator pane, and Space-bound data views without injecting Extension code into the renderer.
-- A [full-trust Connected inbox Pi Extension example](examples/packages/connected-inbox/README.md) and a separate [restricted connected inbox contract](examples/packages/restricted-connected-inbox/README.md).
-- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant/background workers, bounded local app storage, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, and standards-only OAuth PKCE.
+- A [full-trust Connected inbox Pi Extension example](examples/packages/connected-inbox/README.md) and a separate, runnable [restricted Connected inbox Space app](examples/packages/restricted-connected-inbox/README.md).
+- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant/background workers, bounded local app storage with active-view invalidation hints, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, standards-only OAuth PKCE, and static reviewed Windows notifications from enabled background work.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
 - Assisted Windows installation and GitHub-hosted application updates.
 - A versioned, read-only management layer and installed `workspace` command for inspecting Space context, running work, and Pi capabilities without scraping the UI.
 
 Workspace does not bundle organization-specific tools, instructions, document libraries, or cloud accounts.
 
-Current desktop boundaries: Google Drive works through a Drive-for-desktop folder rather than native cloud mirroring, and first-run provider setup uses API keys. Native OAuth setup and direct Drive API sync are intentionally left for a later provider-adapter release.
+Current desktop boundaries: Google Drive works through a Drive-for-desktop folder rather than native cloud mirroring, and first-run model-provider setup uses API keys. General native provider OAuth and direct Drive API sync are intentionally left for later provider-adapter releases. Restricted apps already have a separate, app-scoped OAuth PKCE connection lane for providers that publish compatible public-client metadata.
 
 For the durable design rationale, context rules, and roadmap, see [Product model and roadmap](docs/product-model.md). For the shared control plane, CLI, and real-agent driver, see [Workspace management layer](docs/management-layer.md). For scopes, trust, Skill packs, Extensions, and packages, see [Assistant capabilities](docs/assistant-capabilities.md). The [desktop experience parity contract](docs/ui-parity.md) records the mature interactions this extraction must preserve, while the [visual system](docs/visual-design.md) defines the restrained shell, typography, icon, and layout rules.
+
+## Restricted Space apps
+
+Workspace 0.2.8 ships the first complete lane for an Assistant to build an interactive app for one Space without turning generated code into a full-trust Pi Extension. The app can own a navigator destination in the contributed rail, open and restore persistent right-side work tabs, expose bounded Assistant actions, keep machine-local JSON state, call explicitly reviewed network targets, work inside a separately selected Space file or folder, and run an optional background job while Workspace is running.
+
+The normal creation path begins in a Space Chat:
+
+1. The Assistant writes a complete, already-built package inside the Space and calls the host-owned `propose_space_app` tool with only its Space-relative folder.
+2. Workspace inspects the package without evaluating JavaScript and returns a digest-pinned review to that owning Chat.
+3. The person chooses whether to install that exact revision. Installation grants only bounded app storage; network destinations, files, notification categories, saved connections, and background work remain off.
+4. **Capabilities → Apps in this Space** manages each authority separately. The app itself opens from the contributed rail and may create normal Space-owned tabs in the work area.
+
+Revoking a destination stops brokered requests but does not silently delete a saved credential; **Disconnect** removes the machine-local encrypted record. Provider-side token or API-key revocation remains the provider's responsibility. Updating an app preserves its local JSON storage but resets grants, connections, notification access, and background authority so a new digest cannot inherit old powers.
+
+Start with [Restricted app authoring](docs/restricted-app-authoring.md) to build a package, [Restricted app runtime](docs/restricted-app-runtime.md) for the security and lifecycle contract, and the [Connected inbox example](examples/packages/restricted-connected-inbox/README.md) for a runnable rail, tab, loopback service, storage, background, and notification walkthrough.
 
 ## Management layer
 
@@ -135,7 +150,7 @@ See [Windows builds](docs/windows-build.md) and [Windows releases and signing](d
 The user-facing **Library** contains personal materials. Separately, Workspace follows Pi's native resource locations for Assistant configuration rather than maintaining a parallel tool system:
 
 - User resources: the configured Pi agent directory (normally `~/.pi/agent`).
-- Portable project resources: `.pi/` inside a Space folder that the user has explicitly trusted.
+- Portable project resources: `.pi/` inside a folder the user has registered as a Space. Registration itself is Workspace's authorization to load that exact local Pi configuration.
 - Packages: npm, git, HTTPS, and local package sources supported by Pi, managed as provenance and lifecycle records inside Capabilities.
 
 Npm and git package sources use the corresponding command-line tools on `PATH`; local package paths and Skill imports do not require them. The packaged app uses Pi's normal global agent directory (typically `~/.pi/agent`) for packages and resources, while provider credentials are encrypted by the operating system for Workspace. Internal APIs and code may retain terms such as `workspace`, `project`, and `resource` where they identify existing Pi or storage concepts; those names do not change the user-facing Space, Library, Skill, and Extension model.
@@ -146,7 +161,8 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 
 - [Product model and roadmap](docs/product-model.md) — durable nouns, context rules, product rails, and future direction.
 - [Architecture](docs/architecture.md) and [management layer](docs/management-layer.md) — runtime boundaries, shared kernel, CLI, and agent harness.
-- [Assistant capabilities](docs/assistant-capabilities.md), [Extension surfaces](docs/extension-surfaces.md), [restricted app runtime](docs/restricted-app-runtime.md), and [Pi compatibility](docs/pi-resources.md) — Skills, full-trust Extensions, restricted apps, packages, scopes, and authorization.
+- [Assistant capabilities](docs/assistant-capabilities.md), [Extension surfaces](docs/extension-surfaces.md), [restricted app authoring](docs/restricted-app-authoring.md), [restricted app runtime](docs/restricted-app-runtime.md), and [Pi compatibility](docs/pi-resources.md) — Skills, full-trust Extensions, restricted apps, packages, scopes, authoring, and authorization.
+- [Workspace 0.2.8 release notes](docs/releases/0.2.8.md) — the shipped Space-app foundation, security boundary, example, verification, and known limits.
 - [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
 - [Windows build](docs/windows-build.md) and [release runbook](docs/windows-release.md) — verification lanes, signing, updater, and publishing.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.

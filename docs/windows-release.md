@@ -34,7 +34,11 @@ git diff --check
 
 Use `./scripts/build-signed-windows.ps1` instead of the final `desktop:make` command when building with the current user's personal certificate. `desktop:make` verifies the local NSIS candidate but never publishes it.
 
-Review the complete diff and inspect the exact unpacked application and installer as described in [Windows build](windows-build.md). Confirm the version, Files/Space language, tabs, menus, background work, CLI, Mica/fallback, and updater surface. The local and cloud installers are separate builds, so use local QA to validate behavior rather than expecting byte-for-byte identity.
+`desktop:make` includes `desktop:prepare`; a release candidate therefore must pass both native Pi preflight and the real-Electron restricted-app probe before Electron Builder creates the installer. Do not accept a Node-only sandbox test, a skipped Electron probe, or a package produced after that probe failed.
+
+Review the complete diff and inspect the exact unpacked application and installer as described in [Windows build](windows-build.md). Confirm the version, Files/Space language, tabs, menus, background work, CLI, Mica/fallback, updater surface, and the restricted-app install/review, rail/tab, default-off grant, storage, notification, suspend, and teardown paths. The local and cloud installers are separate builds, so use local QA to validate behavior rather than expecting byte-for-byte identity.
+
+Prepare a complete checked-in release note at `docs/releases/<version>.md`. The tagged workflow can generate comparison metadata, but the public release body must explain material user-facing behavior, authorization and security boundaries, known limitations, upgrade behavior, and verification. Do not leave a feature release with only a generated changelog link.
 
 ### 2. Commit, push, and gate the tag
 
@@ -64,10 +68,12 @@ The tag starts both `CI` and `Windows Release`. The release workflow performs in
 3. source checks;
 4. tests;
 5. high-severity dependency audit;
-6. Windows installer build and release verification;
+6. Windows installer build and release verification, including the real-Electron restricted-app probe inherited from `desktop:prepare`;
 7. SHA-256 checksum generation;
 8. retained workflow-artifact upload; and
 9. draft creation followed by public release publication.
+
+After publication, compare the generated GitHub body with `docs/releases/<version>.md`. Replace the generated-only body with the checked-in release note when needed, retaining a full-changelog link. This is a documentation correction, not permission to replace artifacts or reuse the tag.
 
 Each gate is a separate workflow step so a later successful command cannot mask an earlier test or audit failure. Treat any failed workflow as an unaccepted release. Inspect whether GitHub created a draft or public asset before the failure; if it did, never reuse that version or tag. Diagnose the failure, bump the version, and repeat from a clean commit.
 
@@ -80,7 +86,8 @@ Do not stop at a green workflow badge. Fetch the public release and verify:
 - downloaded `latest.yml`, blockmap, and installer SHA-256 values match `SHA256SUMS.txt`;
 - the downloaded installer's computed SHA-512 matches `latest.yml`;
 - Authenticode contains the expected signer when signing was required; and
-- the public release is neither a draft nor a prerelease.
+- the public release is neither a draft nor a prerelease; and
+- the public release body reflects the checked-in `docs/releases/<version>.md` instead of only linking to a generated comparison.
 
 GitHub's release API exposes asset names, sizes, URLs, and SHA-256 digests for an additional cross-check. Keep downloaded verification files outside the repository and remove them after the audit.
 
@@ -88,12 +95,12 @@ GitHub's release API exposes asset names, sizes, URLs, and SHA-256 digests for a
 
 When possible, keep a lower installed version for the final smoke test:
 
-1. Confirm the installed version and `resources/app-update.yml`.
+1. Confirm the installed version and `resources/app-update.yml`. Record one installed restricted app's reviewed digest, grants, connection status, background setting, and a harmless local-storage value when available.
 2. Open **Help > Check for Updates…**.
 3. Confirm the new version is offered without a missing-feed or network error.
 4. Choose **Update now** to download it.
 5. Confirm Workspace performs its update-specific shutdown and relaunch after the download. If a ready-update prompt appears instead, exercise **Restart now** or choose **Later** and then explicitly quit the app.
-6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, and Pi state.
+6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, Pi state, restricted-app installs and reviewed digests, explicit grants, encrypted connection status, background settings, and local app storage. Reopen the app's owning Space and verify its rail surface and any persistent Space-owned tab still resolve to that Space.
 
 Do not silently install over a user's test environment merely to verify a release; leave the lower installed version available when the user is meant to exercise the update themselves.
 

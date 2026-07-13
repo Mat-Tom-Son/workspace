@@ -6,6 +6,11 @@ HTTPS, a numeric loopback service panel, durable app storage, a reviewed
 Space-folder export, an optional Assistant/background worker, and a reviewed
 static notification category for completed background syncs.
 
+Use the canonical [Restricted app authoring guide](../../../docs/restricted-app-authoring.md)
+for the complete package and bridge contract, and
+[Restricted app runtime](../../../docs/restricted-app-runtime.md) for the
+security architecture.
+
 - `agent-app.json` declares the app identity, reviewed HTML entry, optional
   worker, tools, schemas, and exact network destinations.
 - `index.html`, `styles.css`, and `app.js` form the sandboxed app UI. The same
@@ -21,14 +26,21 @@ static notification category for completed background syncs.
   and service exports use a separately granted Space folder plus History
   safety.
 
-Install the Space-relative folder through **Capabilities → Apps in this
+The normal generated-app path begins in a Space Chat: the Assistant writes the
+completed Space-relative package, proposes it through Workspace's host-owned
+tool, and the person reviews and installs the exact digest in that Chat. For
+this checked-in developer sample, register the repository as a Space or copy
+this directory into one, then use **Capabilities → Installed → Apps in this
 Space → Advanced local install**.
 
-The mail endpoint is intentionally non-functional, while the local service
-panel expects a service on `127.0.0.1:4317`. Both demonstrate that installing
-the app grants nothing: allow each destination under Capabilities before the
-broker will attempt a request. Workspace verifies the loopback address and
-port, but this version does not verify process ownership.
+The mail endpoint is intentionally non-functional and declares API-key or
+bearer authentication. It would need both a destination grant and a host-owned
+connection configured in Capabilities; the example contains no real
+credential. The local `project-service` destination is anonymous and expects a
+service on `127.0.0.1:4317`, but still requires its own destination grant.
+Together they demonstrate that installing an app grants nothing. Workspace
+verifies the loopback address and port, but this version does not verify
+process ownership.
 
 ## Hands-on local service
 

@@ -5,6 +5,10 @@ These apps can render arbitrary reviewed web UI in the left navigator and open
 normal persistent tabs in the work area. They are intentionally separate from
 native Pi Extensions.
 
+For the exact package format, manifest template, bridge methods, worker
+exports, denial handling, and hands-on workflow, use the canonical
+[Restricted app authoring guide](restricted-app-authoring.md).
+
 | Lane | Execution | Intended use |
 |---|---|---|
 | Native Pi Extension | Full current-user permissions; Pi may evaluate it while building the catalog. | Trusted developer capabilities, commands, providers, and compatibility with the Pi ecosystem. |
@@ -65,11 +69,12 @@ connected-inbox/
 ├── index.html
 ├── app.js
 ├── styles.css
-└── worker.js       # optional; required only when tools are declared
+└── worker.js       # optional; required for tools, background, or notifications
 ```
 
 The checked-in [connected inbox app](../examples/packages/restricted-connected-inbox/README.md)
-is an interactive reference package.
+is an interactive reference package with a separate ordinary loopback demo
+service. Workspace does not launch or trust that developer process.
 
 ## Visible app host
 
@@ -135,8 +140,9 @@ close outstanding notifications.
 The real-Electron preparation probe covers both hosts: missing Node globals,
 rejected Node imports, direct loopback HTTP/WebSocket denial, WebRTC and popup
 denial, sender-bound broker failure, bounded results, timeout recovery, visible
-UI loading, durable storage, a History-covered Space-file write, background
-execution, and an app-requested host-owned tab.
+UI loading, durable storage, active-only storage invalidation, a
+History-covered Space-file write, background execution, static notification
+delivery and cleanup, and an app-requested host-owned tab.
 
 ## Network and credentials
 

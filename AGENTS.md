@@ -21,6 +21,7 @@ Workspace is a local-first Electron shell around ordinary folders and the native
 - Keep provider credentials, Space registrations, History objects, Pi sessions, ignore rules, and machine-specific application state outside user content folders. Only the documented portable `.workspace/` records belong in a Space.
 - Treat project Pi resources—including `.pi` and other Pi-supported project locations—as executable configuration. Successfully creating or registering a Space is Workspace's authorization to load that folder's local Pi configuration; removing the Space revokes that Workspace authorization. Do not add a second trust prompt for the same act.
 - Prefer Pi's built-in tools, resource loader, auth storage, model registry, package manager, skills, and extensions over app-specific replacements.
+- Keep agent-created restricted apps in their separate reviewed-web lane. They use `agent-app.json`, digest-pinned installation, sandboxed Electron hosts, and narrow host brokers; they must never be installed through Pi's package manager or merged into Pi's loaded Extension catalog.
 - Do not bundle proprietary tools, instructions, source libraries, or account integrations.
 - Do not describe a desktop-synchronized folder as native cloud integration. Google Drive currently works through Google Drive for desktop; direct Drive APIs and native provider OAuth are future adapter work.
 
@@ -35,12 +36,14 @@ Workspace is a local-first Electron shell around ordinary folders and the native
 - **Background continuity:** inactive Chat tabs stay mounted while their turns run. Tab switches, taskbar minimization, sleep/wake recovery, and close-to-tray must not cancel an accepted turn or lose its persisted result; only an explicit stop or quit may do that.
 - **Native Pi compatibility:** preserve standard `SKILL.md` directories and Pi scopes. Do not fork a Workspace-only skill or extension format.
 - **General computer work:** avoid code-only assumptions in primary UI copy and workflows.
+- **Layered app authority:** proposing, reviewing, installing, granting one destination/file/notification category, saving a connection, and enabling background work are distinct actions. Revocation must stop stale launches before authority changes take effect.
 
 ## Stable information architecture
 
-The rail starts with the **Space** selector, followed by **Files**, **Capabilities**, **Chats**, **Library**, and **History**. **Shortcuts** and **Settings** stay at the bottom. Capabilities combines Skills and Extensions into one Installed/Discover surface; package source, scope, type, load state, diagnostics, update, and removal remain visible inside it. Model-provider, model, API-key, and provider-OAuth setup belongs in **Settings → Assistant**, not in the rail. Restricted-app connection grants and OAuth setup belong with that app in **Capabilities**. User-facing copy uses **Space** and **Library** even where internal routes or types retain `workspace`, `project`, or `resource` for compatibility.
+The rail starts with the **Space** selector, followed by **Files**, **Capabilities**, **Chats**, **Library**, and **History**. **Shortcuts** and **Settings** stay at the bottom. Capabilities combines Skills and Extensions into one Installed/Discover surface; package source, scope, type, load state, diagnostics, update, and removal remain visible inside it. Installed Space apps appear in their contributed rail region, while Capabilities owns their grants, connections, background work, local data, update review, and removal. Model-provider, model, API-key, and provider-OAuth setup belongs in **Settings → Assistant**, not in the rail. Restricted-app connection grants and OAuth setup belong with that app in **Capabilities**. User-facing copy uses **Space** and **Library** even where internal routes or types retain `workspace`, `project`, or `resource` for compatibility.
 
 See [Assistant capabilities](docs/assistant-capabilities.md) for the scopes, trust model, Anthropic-compatible skill import behavior, package boundary, and distinction between Library materials and Pi resources.
+Read [Restricted app runtime](docs/restricted-app-runtime.md) and [Restricted app authoring](docs/restricted-app-authoring.md) before changing `agent-app.json`, app proposals, sandbox hosts, bridges, brokers, credentials, storage, notifications, background scheduling, or contributed app navigation.
 
 ## Workspace management layer
 

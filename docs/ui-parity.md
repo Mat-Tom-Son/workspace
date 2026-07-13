@@ -60,6 +60,15 @@ The translation is intentionally narrow. It does not justify replacing the shell
 - A headless CLI request must coexist with the running single-instance desktop app, return bounded stdout/stderr/exit status, and avoid opening or stealing focus from the interactive window.
 - Installer PATH integration must be reversible and must not modify shell profile files.
 
+### Restricted Space apps
+
+- A reviewed restricted app belongs to exactly one Space and contributes its rail navigator without becoming a full-trust Pi Extension or silently inheriting another Space's identity.
+- App-requested work tabs are ordinary persistent Space-owned tabs. Restoring or activating one restores its owning Space, while removal or a reviewed-digest change cannot leave a stale executable view mounted.
+- Installation, each network destination, each Space-file grant, each notification category, each stored connection, and background execution remain separate, visible controls. Installation grants none of them.
+- Visible UI and optional Assistant/background work use separate sandbox hosts. Direct networking, Node access, arbitrary navigation, and host powers outside an accepted UI/action/background lifecycle remain denied.
+- Machine-local app storage survives a reviewed app update and an application update. Active visible app UI receives bounded invalidation hints; inactive views recover durable state when reopened instead of receiving queued hidden updates.
+- Windows notifications use only reviewed static copy during separately enabled background work. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.
+
 ## Deliberately removed or replaced
 
 - Microsoft/Azure organization authentication and organization-account UI.
@@ -77,10 +86,12 @@ A corrective port is ready for release only when all of the following are true:
 2. Tabs have been exercised for restore, multiple drafts, cross-Space activation, rename, move, delete, close fallback, and keyboard navigation.
 3. File-tree context actions and native open/reveal/drag behavior have been exercised against a disposable Space.
 4. Custom menus, close-to-tray, Show, Quit, window-state restore, and updater surfaces have been exercised in packaged Electron.
-5. Type checks, tests, renderer build, desktop compile/preflight, and a packaged smoke build pass on the supported Node runtime.
+5. Type checks, tests, renderer build, desktop compile/preflight, the real-Electron restricted-app probe, and a packaged smoke build pass on the supported Node runtime.
 6. The app contains no user-facing Kai, Kymanox, Kits, Sources, SharePoint, or Microsoft-login copy except in migration or historical documentation.
 7. The packaged CLI resolves context, lists Spaces/tasks/capabilities, coexists with the GUI, and cleans its request/response handoff.
 8. No public release is published until the product review is accepted and the release commit is green on main CI.
+9. The checked-in restricted Connected inbox example has been exercised in a disposable Space for default-off grants, rail and persistent-tab ownership, storage invalidation/reload, explicit background work, static notification routing, revocation, suspend/resume, and teardown.
+10. An installed-updater smoke preserves restricted-app reviewed digests, grants, encrypted connection status, background settings, local storage, and Space-owned surfaces across the version change.
 
 ## Accepted public baseline
 
@@ -88,4 +99,6 @@ The first July 10, 2026 local candidate at commit `71e5fa4` was rejected after r
 
 Workspace 0.2.7 at commit `db5c149` established the accepted public baseline on July 12, 2026. It preserves the interaction contract above, uses the compact Fluent icon-only rail with accessible labels/tooltips, applies supported Windows Mica with a safe fallback, and includes the shared management kernel and installed read-only CLI.
 
-Future changes must retain those behaviors while satisfying [the Workspace visual system](visual-design.md), [the management-layer contract](management-layer.md), and the current build/release gates. Browser review must cover every primary and Assistant surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must continue to guard the Files/Space distinction, Space-bound tabs, Fluent shell-icon contract, compact neutral chrome, and JSX-to-CSS contracts.
+Workspace 0.2.8 at commit `27aa329` became the accepted public baseline on July 13, 2026. It retains the 0.2.7 shell and management behavior while adding the reviewed restricted-app lifecycle: Space-owned rail and work-tab surfaces, separate visible and worker sandboxes, default-off network/file/notification/background authority, host-owned connections and storage, static background notifications, deterministic teardown, and a release-gating real-Electron probe. Its complete public release notes are checked in at [releases/0.2.8.md](releases/0.2.8.md).
+
+Future changes must retain those behaviors while satisfying [the Workspace visual system](visual-design.md), [the management-layer contract](management-layer.md), and the current build/release gates. Browser review must cover every primary, Assistant, and restricted-app surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must continue to guard the Files/Space distinction, Space-bound tabs, Fluent shell-icon contract, compact neutral chrome, JSX-to-CSS contracts, and the restricted-app runtime boundary.

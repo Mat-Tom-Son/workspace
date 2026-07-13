@@ -4,14 +4,14 @@ Workspace requires Node 22.19.0 or newer. GitHub CI and releases use Node 24; us
 
 ## Feedback ladder
 
-Desktop release builds are intentionally thorough and therefore slow: they rebuild multiple processes, run Pi resource preflight, package Electron, create NSIS/update artifacts, and verify the result. That cost belongs at the release boundary, not in every edit-run cycle.
+Desktop release builds are intentionally thorough and therefore slow: they rebuild multiple processes, run Pi resource preflight and the real-Electron restricted-app runtime probe, package Electron, create NSIS/update artifacts, and verify the result. That cost belongs at the release boundary, not in every edit-run cycle.
 
 Use the smallest lane that exercises the layer you changed:
 
 | Lane | Commands | Use it for |
 |---|---|---|
 | Type and behavior | `npm run check`, then `npm test` | Normal implementation feedback and every behavior handoff. |
-| Desktop integration | `npm run desktop:prepare` | Electron/local API changes, runtime resources, renderer production build, and preflight. |
+| Desktop integration | `npm run desktop:prepare` | Electron/local API changes, runtime resources, renderer production build, native Pi preflight, and the real-Electron restricted-app probe. |
 | Release-layout smoke | `npm run desktop:package:smoke` | Packaged-path behavior, Electron assets, preload/main integration, and local QA without NSIS compression. |
 | Installer/release | `npm run desktop:make` | A versioned Windows release candidate only. |
 
@@ -34,7 +34,7 @@ npm audit --audit-level=high
 npm run desktop:make
 ```
 
-`desktop:prepare` builds the renderer and Electron runtime and runs a native Pi resource smoke test. `desktop:package:smoke` adds Electron Builder's unpacked application plus packaged-asset and fuse verification. `desktop:make` includes preparation and uses Electron Builder as the canonical installer lane so the unpacked app, Electron fuses, NSIS installer, blockmap, `latest.yml`, and embedded `app-update.yml` come from one build.
+`desktop:prepare` builds the renderer and Electron runtime, runs a native Pi resource smoke test, and launches the restricted-app hosts in real Electron. The restricted-app probe verifies sandbox startup and teardown, direct-network and out-of-lifecycle denial, bounded storage and active-view invalidation, History-covered file access, host-owned tabs and notifications, suspend behavior, and termination of a hung worker. A Node process, worker thread, or `vm` is not an equivalent security-boundary test. `desktop:package:smoke` adds Electron Builder's unpacked application plus packaged-asset and fuse verification. `desktop:make` includes preparation and uses Electron Builder as the canonical installer lane so the unpacked app, Electron fuses, NSIS installer, blockmap, `latest.yml`, and embedded `app-update.yml` come from one build.
 
 Both package lanes place the public `workspace.cmd` launcher, an extensionless `workspace` shim for Pi/Git Bash, and the private `workspace-cli.ps1` helper in `<package>\bin`, outside `app.asar`; packaged-asset verification rejects missing or accidentally archived shims. PowerShell and Command Prompt resolve the CMD launcher, which explicitly invokes the private helper with `-ExecutionPolicy Bypass`; POSIX-style shells resolve the extensionless shim and delegate to that same CMD entry point. Electron Builder copies the directory with `extraFiles`, and the retained Forge diagnostic lane mirrors it with an `afterComplete` hook. `RunAsNode` stays disabled—the command communicates with the desktop process through protocol-v1 request and response files instead of executing JavaScript through Electron.
 
@@ -79,6 +79,10 @@ Use Node 22.19.0 or newer. On the primary development workstation, `build-signed
 
 - Launch the exact `win-unpacked` binary rather than an older installed copy and confirm **About Workspace** reports the candidate version.
 - Exercise Files, Capabilities, Chats, Library, History, Settings, tabs, native menus, close-to-tray, and background-turn continuity.
+- Confirm the `desktop:prepare` output reports a passing restricted-app Electron smoke. Treat a skipped, mocked, or Node-only substitute as a failed release gate.
+- In a disposable Space, install the checked-in restricted Connected inbox example through the advanced local-app path. Confirm installation grants no network destination, Space file, notification category, connection, or background execution; then exercise its rail navigator, persistent Space-owned tab, storage refresh, and explicit grant/revoke controls.
+- With background work and the reviewed notification category separately enabled, run the example once. Confirm the durable result reaches the active view, inactive views recover it from storage when reopened, and clicking a Windows notification targets the exact owning Space and app. Windows Focus Assist may suppress presentation, but the host-accepted versus denied outcome must remain honest.
+- Revoke the example's grants, stop or remove it, suspend/resume Windows when practical, and confirm its views, workers, pending notifications, and brokered authority do not survive their lifecycle.
 - Verify Mica on Windows 11 22H2+ and the solid fallback where reduced transparency or an older host disables it; exercise light, dark, and system themes.
 - Verify unpacked smoke builds report updates as unsupported without a red missing-feed error, while the NSIS candidate contains `resources/app-update.yml` and exposes **Help > Check for Updates…**.
 - Exercise a Space through both its normal path and any available Windows 8.3 short-path alias; the watcher must canonicalize the native watch root without changing the logical policy root.
