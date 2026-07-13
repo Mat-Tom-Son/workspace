@@ -47,7 +47,7 @@ test("propose_space_app exposes only a Space-relative path and returns the host-
   const text = result.content.find((item) => item.type === "text")?.text ?? "";
   assert.match(text, /human review/i);
   assert.match(text, /no code was executed or installed/i);
-  assert.match(text, /no network or file access, credential, or background work was granted/i);
+  assert.match(text, /no network, file, or notification access, credential, or background work was granted/i);
 });
 
 test("proposal receipts persist, remain Chat-bound, and install only the exact reviewed revision with grants off", async () => {

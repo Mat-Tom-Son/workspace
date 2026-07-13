@@ -132,7 +132,8 @@ It does **not** yet provide:
 - event subscriptions for all state changes;
 - imperative Extension APIs for dynamically creating or mutating rail items, panes, or tabs beyond the static `surface.json` contribution contract;
 - a verified registry that binds a Space-local service to a Workspace-launched process generation;
-- host-owned remote subscriptions or push notifications for restricted apps;
+- host-owned remote subscriptions or arbitrary push adapters for restricted
+  apps (static reviewed background notifications are already supported);
 - resource isolation comparable to a mobile operating system; the shipped Chromium hosts and brokers do not eliminate renderer exploits or CPU/memory denial-of-service risk.
 
 Restricted apps already have an explicit package, permission, lifecycle, sandbox-host, connection, storage, file-grant, background-work, and UI-surface model. The remaining features should extend those contracts and the kernel's read authority instead of reaching around either boundary.

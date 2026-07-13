@@ -14,6 +14,7 @@ const installed: RestrictedAppInstalled = {
   totalBytes: 1024,
   networkGrants: ["mail-api"],
   fileGrants: [],
+  notificationGrants: [],
   backgroundEnabled: false,
   installedAt: "2026-07-13T00:00:00.000Z",
   updatedAt: "2026-07-13T00:00:00.000Z",
@@ -30,7 +31,7 @@ const installed: RestrictedAppInstalled = {
       inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
       resultSchema: { type: "object", properties: { count: { type: "integer" } }, required: ["count"], additionalProperties: false },
     }],
-    permissions: { network: [{ id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "none" }] }], files: [] },
+    permissions: { network: [{ id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "none" }] }], files: [], notifications: [] },
   },
 };
 

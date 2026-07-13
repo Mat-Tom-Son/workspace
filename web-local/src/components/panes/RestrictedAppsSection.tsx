@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Add16Regular,
+  Alert20Regular,
   ArrowSync16Regular,
   Delete16Regular,
   Dismiss20Regular,
@@ -25,6 +26,7 @@ import {
   setRestrictedAppConnection,
   setRestrictedAppFileGrant,
   setRestrictedAppNetworkGrant,
+  setRestrictedAppNotificationGrant,
 } from "../../lib/restricted-apps";
 import type {
   RestrictedAppAuthDeclaration,
@@ -33,6 +35,7 @@ import type {
   RestrictedAppFilePermission,
   RestrictedAppInstalled,
   RestrictedAppNetworkDestination,
+  RestrictedAppNotificationPermission,
   RestrictedAppReview,
   RestrictedAppStorageUsage,
   WorkspaceSummary,
@@ -106,7 +109,7 @@ export function RestrictedAppsSection({
       setReview(null);
       setSourcePath("");
       setSelectedAppId(app.manifest.id);
-      showToast({ text: `${app.manifest.title} installed with network, file, and background access off.`, tone: "success" });
+      showToast({ text: `${app.manifest.title} installed with network, file, notification, and background access off.`, tone: "success" });
     } catch (caught) {
       if (workspaceIdRef.current === workspaceId) onError(errorText(caught));
     } finally {
@@ -145,7 +148,7 @@ export function RestrictedAppsSection({
         </div>
         {apps.length ? <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={onBuildApp}><Add16Regular />Build with Assistant</button> : null}
       </div>
-      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Installing gives an app bounded local storage, but no network, Space-file, or background access. You approve those powers separately.</p>
+      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Installing gives an app bounded local storage, but no network, Space-file, notification, or background access. You approve those powers separately.</p>
       {loading && !apps.length ? <div className="restricted-apps-loading"><ArrowSync16Regular className="spin" />Loading sandboxed apps</div> : null}
       {apps.length ? (
         <div className="restricted-app-list">
@@ -155,9 +158,9 @@ export function RestrictedAppsSection({
                 <div className="restricted-app-card-title"><strong>{app.manifest.title}</strong><span>Extension · Sandboxed app</span></div>
                 <p>{app.manifest.description || "A Space-bound app running in Workspace's restricted browser runtime."}</p>
                 <div className="restricted-app-card-meta"><span>This Space</span><span>{app.packageName} {app.version}</span><span>Interactive app UI</span></div>
-                <small>{app.manifest.tools.length} {app.manifest.tools.length === 1 ? "action" : "actions"} · {app.networkGrants.length}/{app.manifest.permissions.network.length} network · {app.fileGrants.length}/{app.manifest.permissions.files.length} files{app.manifest.background ? ` · background ${app.backgroundEnabled ? "on" : "off"}` : ""}</small>
+                <small>{app.manifest.tools.length} {app.manifest.tools.length === 1 ? "action" : "actions"} · {app.networkGrants.length}/{app.manifest.permissions.network.length} network · {app.fileGrants.length}/{app.manifest.permissions.files.length} files · {app.notificationGrants.length}/{app.manifest.permissions.notifications.length} notifications{app.manifest.background ? ` · background ${app.backgroundEnabled ? "on" : "off"}` : ""}</small>
               </div>
-              <div className="restricted-app-card-actions"><span className="professional-status-badge enabled">Restricted runtime</span><button className="professional-button professional-button-secondary" type="button" onClick={() => setSelectedAppId(app.manifest.id)}>{app.manifest.permissions.network.length || app.manifest.permissions.files.length || app.manifest.background ? "Manage access" : "Manage"}</button></div>
+              <div className="restricted-app-card-actions"><span className="professional-status-badge enabled">Restricted runtime</span><button className="professional-button professional-button-secondary" type="button" onClick={() => setSelectedAppId(app.manifest.id)}>{app.manifest.permissions.network.length || app.manifest.permissions.files.length || app.manifest.permissions.notifications.length || app.manifest.background ? "Manage access" : "Manage"}</button></div>
             </article>
           ))}
         </div>
@@ -213,8 +216,8 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
       <div className="capability-dialog-body">
         <ReviewDeclarations review={review} />
         <details className="restricted-app-package-details"><summary>Package details</summary><dl className="capability-review-facts"><div><dt>Source</dt><dd>{sourcePath}</dd></div><div><dt>Package</dt><dd>{review.packageName} {review.version}</dd></div><div><dt>Files</dt><dd>{review.fileCount} · {formatBytes(review.totalBytes)}</dd></div><div><dt>Browser entry</dt><dd>{review.manifest.runtime.entry}</dd></div><div><dt>Reviewed revision</dt><dd><code>{shortDigest(review.digest)}</code></dd></div></dl></details>
-        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Installing grants no network destinations, Space files, or background execution; you approve those later in app details.</p></div></aside>
-        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the installed revision</strong><p>The updated app starts with network permissions off and must have its connections approved again.</p></div></aside> : null}
+        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Installing grants no network destinations, Space files, notifications, or background execution; you approve those later in app details.</p></div></aside>
+        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the installed revision</strong><p>The updated app starts with network and notification permissions off and must have its access approved again.</p></div></aside> : null}
         {installDisabled && !busy ? <p className="restricted-app-install-wait">Finish the current Assistant turn before installing this reviewed revision.</p> : null}
       </div>
       <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onClose}>{closeLabel}</button><button className="professional-button professional-button-primary" type="button" disabled={busy || installDisabled} onClick={onInstall}>{busy ? <ArrowSync16Regular className="spin" /> : null}{installLabel ?? (updating ? "Review update" : "Install, then review access")}</button></div>
@@ -224,7 +227,7 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
 
 function ReviewDeclarations({ review }: { review: RestrictedAppReview }) {
   return <div className="restricted-app-review-groups">
-    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.background ? <p>May run its sandboxed worker every {review.manifest.background.intervalMinutes} minutes after you enable it.</p> : <p>No background work requested.</p>}</section>
+    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.permissions.notifications.length ? <div>{review.manifest.permissions.notifications.map((permission) => <article key={permission.id}><strong>Workspace · {review.manifest.title} — {permission.title}</strong><span>{permission.description}</span><small>Static Windows notification · {permission.id}</small></article>)}</div> : <p>No notifications requested.</p>}{review.manifest.background ? <p>May run its sandboxed worker every {review.manifest.background.intervalMinutes} minutes after you enable it.</p> : <p>No background work requested.</p>}</section>
     <section><h3>What it adds</h3><p>Adds an interactive app destination to this Space’s rail. The app can open, update, and close Space-owned work tabs through Workspace.</p>{review.manifest.tools.length ? <div>{review.manifest.tools.map((tool) => <article key={tool.name}><strong>{tool.name}</strong><span>{tool.description}</span><code>{tool.action}</code></article>)}</div> : <p>No background Assistant actions.</p>}</section>
   </div>;
 }
@@ -337,6 +340,26 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     finally { setActionBusy(null); }
   }
 
+  async function changeNotificationGrant(permission: RestrictedAppNotificationPermission, granted: boolean) {
+    if (granted) {
+      const confirmed = await requestConfirm({
+        title: `Allow “${permission.title}” notifications?`,
+        body: `${app.manifest.title} may show this exact notification only during enabled background work while Workspace is running.\n\nTitle: Workspace · ${app.manifest.title} — ${permission.title}\nBody: ${permission.description}`,
+        confirmLabel: "Allow notifications",
+      });
+      if (!confirmed) return;
+    }
+    setActionBusy(`notification:${permission.id}`);
+    try {
+      const updated = fixtureMode
+        ? { ...app, notificationGrants: granted ? [...new Set([...app.notificationGrants, permission.id])] : app.notificationGrants.filter((id) => id !== permission.id) }
+        : await setRestrictedAppNotificationGrant(app.workspaceId, app.manifest.id, permission.id, app.digest, granted);
+      onAppChanged(updated);
+      showToast({ text: granted ? `Notifications allowed for ${permission.title}.` : `Notifications revoked for ${permission.title}.`, tone: "success" });
+    } catch (caught) { onError(errorText(caught)); }
+    finally { setActionBusy(null); }
+  }
+
   async function changeBackground(enabled: boolean) {
     if (enabled) {
       const confirmed = await requestConfirm({
@@ -412,6 +435,18 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
             active={actionBusy === `file:${permission.id}`}
             onChange={(root, granted) => void changeFileGrant(permission, root, granted)}
           />)}
+        </section>
+        <section className="restricted-app-connections" aria-labelledby="restricted-app-notifications-title">
+          <div className="restricted-app-connections-heading"><div><Alert20Regular aria-hidden="true" /><h3 id="restricted-app-notifications-title">Windows notifications</h3></div></div>
+          {!app.manifest.permissions.notifications.length ? <p>This app declares no notifications.</p> : app.manifest.permissions.notifications.map((permission) => {
+            const granted = app.notificationGrants.includes(permission.id);
+            return <article className="restricted-app-destination-card" key={permission.id}>
+              <div className="restricted-app-destination-heading"><div><strong>Workspace · {app.manifest.title} — {permission.title}</strong><span>{permission.description}</span></div><code>{permission.id}</code></div>
+              <div className="restricted-app-destination-states"><span className={granted ? "enabled" : ""}>Access: <strong>{granted ? "Allowed" : "Off"}</strong></span><span>Copy: <strong>Fixed to this reviewed revision</strong></span></div>
+              <div className="restricted-app-destination-actions"><button className={granted ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={Boolean(actionBusy)} onClick={() => void changeNotificationGrant(permission, !granted)}>{actionBusy === `notification:${permission.id}` ? <ArrowSync16Regular className="spin" /> : null}{granted ? "Revoke notifications" : "Allow notifications"}</button></div>
+              <p className="restricted-app-oauth-note">Shown only from enabled background work while Workspace is running. Windows notification settings can still suppress it. Clicking opens this app in its owning Space.</p>
+            </article>;
+          })}
         </section>
         {app.manifest.background ? <section className="restricted-app-lifecycle"><div><h3>Background work</h3><p>Every {app.manifest.background.intervalMinutes} minutes while Workspace is running · {app.backgroundLastRunAt ? `Last ran ${formatTimestamp(app.backgroundLastRunAt)}` : "Not run yet"}{app.backgroundLastError ? ` · Last error: ${app.backgroundLastError}` : ""}</p></div><div className="restricted-app-destination-actions"><button className="professional-button professional-button-secondary" type="button" disabled={Boolean(actionBusy) || !app.backgroundEnabled} onClick={() => void runBackground()}>{actionBusy === "background-run" ? <ArrowSync16Regular className="spin" /> : null}Run now</button><button className={app.backgroundEnabled ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={Boolean(actionBusy)} onClick={() => void changeBackground(!app.backgroundEnabled)}>{actionBusy === "background" ? <ArrowSync16Regular className="spin" /> : null}{app.backgroundEnabled ? "Disable" : "Enable"}</button></div></section> : null}
         <section className="restricted-app-lifecycle"><div><h3>Local app data</h3><p>{storageUsage ? `${formatBytes(storageUsage.usageBytes)} of ${formatBytes(storageUsage.quotaBytes)} · ${storageUsage.keyCount} of ${storageUsage.keyLimit} keys` : "Checking usage…"} · Machine-local and preserved across app updates</p></div><button className="professional-button professional-button-secondary" type="button" disabled={Boolean(actionBusy) || !storageUsage?.keyCount} onClick={() => void clearStorage()}>{actionBusy === "storage" ? <ArrowSync16Regular className="spin" /> : null}Clear data</button></section>
@@ -561,6 +596,7 @@ function fixtureReview(): RestrictedAppReview {
       permissions: {
         network: [{ id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "api-key", header: "x-api-key" }, { kind: "bearer" }] }],
         files: [{ id: "export-folder", target: "directory", access: "read-write" }],
+        notifications: [{ id: "new-messages", title: "New messages", description: "New messages are ready in your connected inbox." }],
       },
     },
   };
@@ -568,5 +604,5 @@ function fixtureReview(): RestrictedAppReview {
 
 function fixtureInstalled(workspaceId: string, review: RestrictedAppReview): RestrictedAppInstalled {
   const now = new Date().toISOString();
-  return { ...review, workspaceId, networkGrants: [], fileGrants: [], backgroundEnabled: false, installedAt: now, updatedAt: now };
+  return { ...review, workspaceId, networkGrants: [], fileGrants: [], notificationGrants: [], backgroundEnabled: false, installedAt: now, updatedAt: now };
 }

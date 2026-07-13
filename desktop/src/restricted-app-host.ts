@@ -26,6 +26,11 @@ import {
   RestrictedAppStorageError,
   type RestrictedAppStorageMutationResult,
 } from "../../src/local/agent/restricted-app-storage.js";
+import {
+  RestrictedAppNotificationBroker,
+  RestrictedAppNotificationError,
+  type RestrictedAppNotificationOpenRequest,
+} from "../../src/local/agent/restricted-app-notifications.js";
 import { createWorkspaceMutationCheckpoint, discardWorkspaceCheckpoint } from "../../src/local/history.js";
 import type { RestrictedAppOAuthPkceClient } from "../../src/local/agent/restricted-app-oauth.js";
 import {
@@ -45,12 +50,14 @@ const contextChannel = "workspace:restricted-app:context";
 const storageChannel = "workspace:restricted-app:storage";
 const storageChangedChannel = "workspace:restricted-app:storage-changed";
 const filesChannel = "workspace:restricted-app:files";
+const notificationsChannel = "workspace:restricted-app:notifications";
 const indexPath = "/__workspace/index.html";
 const bootstrapPath = "/__workspace/bootstrap.js";
 const maxInvocationBytes = 256 * 1024;
 const maxNetworkEnvelopeBytes = 160 * 1024;
 const maxStorageEnvelopeBytes = 160 * 1024;
 const maxFileEnvelopeBytes = 800 * 1024;
+const maxNotificationEnvelopeBytes = 4 * 1024;
 const defaultInvocationTimeoutMs = 5_000;
 const workerIdleTimeoutMs = 30_000;
 
@@ -62,9 +69,11 @@ export interface RestrictedAppHostOptions {
   oauth?: RestrictedAppOAuthPkceClient;
   storage: FileRestrictedAppStorage;
   fileBroker?: RestrictedAppFileBroker;
+  notifications: RestrictedAppNotificationBroker;
   resolveWorkspaceRoot: (workspaceId: string) => Promise<string | null>;
   onTabCommand?: (command: RestrictedAppTabCommand) => void;
   onUiState?: (state: RestrictedAppUiState) => void;
+  onNotificationOpen?: (request: RestrictedAppNotificationOpenRequest) => void;
 }
 
 export interface RestrictedAppTabCommand {
@@ -107,7 +116,7 @@ interface RestrictedAppInstance {
   snapshot: RestrictedAppPackageSnapshot;
   window: BrowserWindow;
   session: Session;
-  pending: boolean;
+  pendingOperation: { kind: "action" | "background"; id: string } | null;
   idleTimer?: NodeJS.Timeout;
   crashed: boolean;
   abortController: AbortController;
@@ -148,6 +157,13 @@ interface RestrictedAppUiInstance {
 
 type RestrictedAppNetworkInstance = RestrictedAppInstance | RestrictedAppUiInstance;
 
+interface PendingStorageEvent {
+  revision: number;
+  keys: Set<string>;
+  reset: boolean;
+  timer: NodeJS.Timeout;
+}
+
 export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   readonly #connections: RestrictedAppConnectionStore;
   readonly #preloadPath: string;
@@ -155,14 +171,19 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   readonly #network: RestrictedAppNetworkBroker;
   readonly #storage: FileRestrictedAppStorage;
   readonly #files: RestrictedAppFileBroker;
+  readonly #notifications: RestrictedAppNotificationBroker;
   readonly #resolveWorkspaceRoot: RestrictedAppHostOptions["resolveWorkspaceRoot"];
   readonly #onTabCommand?: RestrictedAppHostOptions["onTabCommand"];
   readonly #onUiState?: RestrictedAppHostOptions["onUiState"];
+  readonly #onNotificationOpen?: RestrictedAppHostOptions["onNotificationOpen"];
   readonly #instances = new Map<string, RestrictedAppInstance>();
   readonly #uiInstances = new Map<string, RestrictedAppUiInstance>();
   readonly #instancesByWebContents = new Map<number, RestrictedAppNetworkInstance>();
   readonly #launches = new Map<string, RestrictedAppLaunch>();
   readonly #generations = new Map<string, number>();
+  readonly #pendingStorageEvents = new Map<string, PendingStorageEvent>();
+  readonly #storageLastEmittedAt = new Map<string, number>();
+  #notificationsSuspended = false;
   #closed = false;
 
   constructor(options: RestrictedAppHostOptions) {
@@ -172,12 +193,15 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     this.#network = options.networkBroker ?? new RestrictedAppNetworkBroker({ credentials: options.connections, oauth: options.oauth });
     this.#storage = options.storage;
     this.#files = options.fileBroker ?? new RestrictedAppFileBroker();
+    this.#notifications = options.notifications;
     this.#resolveWorkspaceRoot = options.resolveWorkspaceRoot;
     this.#onTabCommand = options.onTabCommand;
     this.#onUiState = options.onUiState;
+    this.#onNotificationOpen = options.onNotificationOpen;
     ipcMain.handle(networkChannel, (event, value) => this.#handleNetwork(event, value));
     ipcMain.handle(storageChannel, (event, value) => this.#handleStorage(event, value));
     ipcMain.handle(filesChannel, (event, value) => this.#handleFiles(event, value));
+    ipcMain.handle(notificationsChannel, (event, value) => this.#handleNotification(event, value));
     ipcMain.handle(tabCommandChannel, (event, value) => this.#handleTabCommand(event, value));
   }
 
@@ -193,8 +217,8 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
     }
     const instance = await this.#instance(app);
-    if (instance.pending) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling an action.");
-    instance.pending = true;
+    if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling an action.");
+    instance.pendingOperation = { kind: "action", id: randomUUID() };
     const serializedInput = JSON.stringify(input);
     const expression = `globalThis.__workspaceInvoke(${JSON.stringify(action)},JSON.parse(${JSON.stringify(serializedInput)}))`;
     try {
@@ -217,7 +241,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       }
       throw new RestrictedAppError("APP_ERROR", safeRendererError(error));
     } finally {
-      instance.pending = false;
+      instance.pendingOperation = null;
       this.#scheduleWorkerIdle(instance);
     }
   }
@@ -232,8 +256,8 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     }
     assertBoundedJson(event, "Restricted app background event", maxInvocationBytes);
     const instance = await this.#instance(app);
-    if (instance.pending) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling work.");
-    instance.pending = true;
+    if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling work.");
+    instance.pendingOperation = { kind: "background", id: randomUUID() };
     const serializedEvent = JSON.stringify(event);
     const expression = `globalThis.__workspaceRunBackground(JSON.parse(${JSON.stringify(serializedEvent)}))`;
     try {
@@ -250,7 +274,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       }
       throw new RestrictedAppError("APP_ERROR", safeRendererError(error));
     } finally {
-      instance.pending = false;
+      instance.pendingOperation = null;
       this.#scheduleWorkerIdle(instance);
     }
   }
@@ -263,6 +287,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   ): Promise<{ mounted: true; digest: string }> {
     this.#assertOpen();
     const request = parseUiMountRequest(value);
+    const generation = this.#generation(app.workspaceId, app.manifest.id);
     const key = uiMountKey(owner.id, request.mountId);
     const current = this.#uiInstances.get(key);
     if (current) {
@@ -285,6 +310,12 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       manifest: structuredClone(app.manifest),
     };
     const snapshot = await snapshotRestrictedAppPackage(receipt);
+    try {
+      this.#assertLaunchCurrent(app, generation);
+    } catch (error) {
+      this.#onUiState?.({ ownerWebContentsId: owner.id, mountId: request.mountId, state: "stopped" });
+      throw error;
+    }
     if (owner.isDestroyed() || parent.isDestroyed()) throw new RestrictedAppError("APP_UNAVAILABLE", "The Workspace window is not available.");
 
     const token = randomUUID().replace(/-/g, "");
@@ -352,21 +383,24 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       crashed: false,
       abortController: new AbortController(),
     };
-    this.#uiInstances.set(key, instance);
-    this.#instancesByWebContents.set(view.webContents.id, instance);
-    this.#configureUiContents(instance);
     try {
+      this.#assertLaunchCurrent(app, generation);
+      this.#uiInstances.set(key, instance);
+      this.#instancesByWebContents.set(view.webContents.id, instance);
+      this.#configureUiContents(instance);
       this.#applyUiLayout(instance, request.bounds);
       await withDeadline(
         view.webContents.loadURL(`${origin}${entryPath}`),
         this.#invocationTimeoutMs,
         () => { throw new RestrictedAppError("APP_TIMEOUT", "Restricted app UI load timed out."); },
       );
+      this.#assertLaunchCurrent(app, generation);
       if (this.#uiInstances.get(key) !== instance || instance.crashed) throw new RestrictedAppError("APP_UNAVAILABLE", "The app view was closed before it finished loading.");
       this.#emitUiState(instance, "ready");
       return { mounted: true, digest: app.digest };
     } catch (error) {
-      await this.#destroyUi(instance, "crashed", safeRendererError(error));
+      const invalidated = this.#closed || this.#generation(app.workspaceId, app.manifest.id) !== generation;
+      await this.#destroyUi(instance, invalidated ? "stopped" : "crashed", invalidated ? undefined : safeRendererError(error));
       if (error instanceof RestrictedAppError) throw error;
       throw new RestrictedAppError("APP_ERROR", `Restricted app UI could not start: ${safeRendererError(error)}`);
     }
@@ -393,18 +427,34 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
 
   async stop(workspaceId: string, appId: string, digest?: string): Promise<void> {
     this.#advanceGeneration(workspaceId, appId);
+    this.#notifications.closeApp({ workspaceId, appId }, digest);
+    this.#clearPendingStorageEvent(workspaceId, appId);
+    this.#storageLastEmittedAt.delete(storageEventKey(workspaceId, appId));
+    const workerDisposals: Promise<void>[] = [];
     for (const instance of [...this.#instances.values()]) {
       if (instance.app.workspaceId !== workspaceId || instance.app.manifest.id !== appId || (digest && instance.app.digest !== digest)) continue;
-      await this.#destroy(instance);
+      workerDisposals.push(this.#destroy(instance));
     }
+    const uiDisposals: Promise<void>[] = [];
     for (const instance of [...this.#uiInstances.values()]) {
       if (instance.app.workspaceId !== workspaceId || instance.app.manifest.id !== appId || (digest && instance.app.digest !== digest)) continue;
-      await this.#destroyUi(instance, "stopped");
+      uiDisposals.push(this.#destroyUi(instance, "stopped"));
     }
+    this.#clearPendingStorageEvent(workspaceId, appId);
+    await Promise.all([...workerDisposals, ...uiDisposals]);
     const launching = [...this.#launches.values()]
       .filter((item) => item.workspaceId === workspaceId && item.appId === appId)
       .map((item) => item.promise);
     await Promise.allSettled(launching);
+  }
+
+  suspend(): void {
+    this.#notificationsSuspended = true;
+    this.#notifications.closeAll();
+  }
+
+  resume(): void {
+    this.#notificationsSuspended = false;
   }
 
   async close(): Promise<void> {
@@ -413,7 +463,12 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     ipcMain.removeHandler(networkChannel);
     ipcMain.removeHandler(storageChannel);
     ipcMain.removeHandler(filesChannel);
+    ipcMain.removeHandler(notificationsChannel);
     ipcMain.removeHandler(tabCommandChannel);
+    for (const event of this.#pendingStorageEvents.values()) clearTimeout(event.timer);
+    this.#pendingStorageEvents.clear();
+    this.#storageLastEmittedAt.clear();
+    this.#notifications.dispose();
     for (const instance of this.#instances.values()) this.#advanceGeneration(instance.app.workspaceId, instance.app.manifest.id);
     await Promise.allSettled([...this.#launches.values()].map((item) => item.promise));
     await Promise.allSettled([...this.#instances.values()].map((instance) => this.#destroy(instance)));
@@ -520,7 +575,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         snapshot,
         window,
         session: isolatedSession,
-        pending: false,
+        pendingOperation: null,
         crashed: false,
         abortController: new AbortController(),
       };
@@ -692,7 +747,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
 
   async #handleStorage(event: IpcMainInvokeEvent, value: unknown): Promise<unknown> {
     const instance = this.#ownedInstance(event.sender, ipcFromMainFrame(event));
-    if (!instance || ("window" in instance && !instance.pending)) {
+    if (!instance || ("window" in instance && !instance.pendingOperation)) {
       return hostError("STORAGE_FAILED", "The storage caller is not an active restricted app.");
     }
     try {
@@ -728,7 +783,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       } else {
         throw new RestrictedAppStorageError("STORAGE_INVALID", "Restricted app storage operation is unsupported.");
       }
-      if (mutation?.changed) this.#emitStorageChanged(instance, mutation);
+      if (mutation?.changed) this.#queueStorageChanged(instance, mutation);
       return { ok: true, value: result };
     } catch (error) {
       const code = error instanceof RestrictedAppStorageError ? error.code : "STORAGE_FAILED";
@@ -773,13 +828,89 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     }
   }
 
-  #emitStorageChanged(source: RestrictedAppNetworkInstance, mutation: RestrictedAppStorageMutationResult): void {
-    const event = { revision: mutation.revision, keys: [...mutation.changedKeys] };
-    for (const instance of this.#instancesByWebContents.values()) {
-      if (instance.app.workspaceId !== source.app.workspaceId || instance.app.manifest.id !== source.app.manifest.id) continue;
-      const contents = "window" in instance ? instance.window.webContents : instance.view.webContents;
-      if (!contents.isDestroyed()) contents.send(storageChangedChannel, event);
+  async #handleNotification(event: IpcMainInvokeEvent, value: unknown): Promise<unknown> {
+    const instance = this.#ownedInstance(event.sender, ipcFromMainFrame(event));
+    if (!instance || !("window" in instance) || instance.pendingOperation?.kind !== "background" || this.#notificationsSuspended) {
+      return hostError("NOTIFICATION_DENIED", "Notifications are available only during enabled background work.");
     }
+    try {
+      const request = jsonEnvelope(value, maxNotificationEnvelopeBytes, "notification");
+      const result = this.#notifications.show({
+        workspaceId: instance.app.workspaceId,
+        appId: instance.app.manifest.id,
+        digest: instance.app.digest,
+        appTitle: instance.app.manifest.title,
+        declarations: instance.app.manifest.permissions.notifications,
+        grants: instance.app.notificationGrants,
+        backgroundEnabled: instance.app.backgroundEnabled,
+        invocationId: instance.pendingOperation.id,
+      }, request, (owner) => this.#onNotificationOpen?.(owner));
+      return { ok: true, value: result };
+    } catch (error) {
+      const code = error instanceof RestrictedAppNotificationError ? error.code : "NOTIFICATION_FAILED";
+      return hostError(code, errorMessage(error));
+    }
+  }
+
+  #queueStorageChanged(source: RestrictedAppNetworkInstance, mutation: RestrictedAppStorageMutationResult): void {
+    if (this.#closed || this.#instancesByWebContents.get(source.webContentsId) !== source) return;
+    const hasActiveOwnerView = [...this.#instancesByWebContents.values()].some((instance) => (
+      "view" in instance
+      && instance.app.workspaceId === source.app.workspaceId
+      && instance.app.manifest.id === source.app.manifest.id
+      && this.#uiIsActive(instance)
+    ));
+    if (!hasActiveOwnerView) return;
+    const key = storageEventKey(source.app.workspaceId, source.app.manifest.id);
+    const pending = this.#pendingStorageEvents.get(key);
+    const now = Date.now();
+    if (pending) {
+      pending.revision = Math.max(pending.revision, mutation.revision);
+      if (!pending.reset) {
+        for (const changedKey of mutation.changedKeys) pending.keys.add(changedKey);
+        if (pending.keys.size > 128) {
+          pending.keys.clear();
+          pending.reset = true;
+        }
+      }
+      return;
+    }
+    const keys = new Set(mutation.changedKeys);
+    const reset = keys.size > 128;
+    if (reset) keys.clear();
+    const lastEmittedAt = this.#storageLastEmittedAt.get(key) ?? 0;
+    const delay = Math.max(100, lastEmittedAt + 100 - now);
+    const timer = setTimeout(() => this.#flushStorageChanged(source.app.workspaceId, source.app.manifest.id), delay);
+    timer.unref?.();
+    this.#pendingStorageEvents.set(key, { revision: mutation.revision, keys, reset, timer });
+  }
+
+  #flushStorageChanged(workspaceId: string, appId: string): void {
+    const key = storageEventKey(workspaceId, appId);
+    const pending = this.#pendingStorageEvents.get(key);
+    if (!pending) return;
+    this.#pendingStorageEvents.delete(key);
+    this.#storageLastEmittedAt.set(key, Date.now());
+    const event = {
+      revision: pending.revision,
+      keys: pending.reset ? [] : [...pending.keys].sort(),
+      reset: pending.reset,
+    };
+    for (const instance of this.#instancesByWebContents.values()) {
+      if (!("view" in instance) || instance.app.workspaceId !== workspaceId || instance.app.manifest.id !== appId
+        || !this.#uiIsActive(instance)) continue;
+      const bounds = instance.view.getBounds();
+      if (bounds.width <= 0 || bounds.height <= 0 || instance.view.webContents.isDestroyed()) continue;
+      instance.view.webContents.send(storageChangedChannel, event);
+    }
+  }
+
+  #clearPendingStorageEvent(workspaceId: string, appId: string): void {
+    const key = storageEventKey(workspaceId, appId);
+    const pending = this.#pendingStorageEvents.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.#pendingStorageEvents.delete(key);
   }
 
   #ownedInstance(sender: WebContents, isMainFrame: boolean): RestrictedAppNetworkInstance | null {
@@ -796,7 +927,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   #ownedPowerInstance(sender: WebContents, isMainFrame: boolean): RestrictedAppNetworkInstance | null {
     const instance = this.#ownedInstance(sender, isMainFrame);
     if (!instance) return null;
-    if ("window" in instance) return instance.pending ? instance : null;
+    if ("window" in instance) return instance.pendingOperation ? instance : null;
     return this.#uiIsActive(instance) ? instance : null;
   }
 
@@ -806,7 +937,10 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   }
 
   #uiIsActive(instance: RestrictedAppUiInstance): boolean {
-    return instance.active && !instance.occluded && !instance.parent.isDestroyed()
+    if (this.#closed || this.#instancesByWebContents.get(instance.webContentsId) !== instance
+      || instance.view.webContents.isDestroyed() || !instance.view.getVisible()) return false;
+    const bounds = instance.view.getBounds();
+    return bounds.width > 0 && bounds.height > 0 && instance.active && !instance.occluded && !instance.parent.isDestroyed()
       && instance.parent.isVisible() && !instance.parent.isMinimized();
   }
 
@@ -907,9 +1041,12 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
 
   #scheduleWorkerIdle(instance: RestrictedAppInstance): void {
     if (instance.idleTimer) clearTimeout(instance.idleTimer);
+    instance.idleTimer = undefined;
+    if (this.#closed || instance.crashed || this.#instances.get(instance.key) !== instance
+      || instance.window.isDestroyed() || instance.window.webContents.isDestroyed()) return;
     const timer = setTimeout(() => {
       instance.idleTimer = undefined;
-      if (!instance.pending) void this.#destroy(instance);
+      if (!instance.pendingOperation) void this.#destroy(instance);
     }, workerIdleTimeoutMs);
     timer.unref?.();
     instance.idleTimer = timer;
@@ -1298,6 +1435,10 @@ function instanceKey(workspaceId: string, appId: string, digest: string): string
 }
 
 function appScopeKey(workspaceId: string, appId: string): string {
+  return JSON.stringify([workspaceId, appId]);
+}
+
+function storageEventKey(workspaceId: string, appId: string): string {
   return JSON.stringify([workspaceId, appId]);
 }
 

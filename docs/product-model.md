@@ -130,7 +130,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Make “what this Chat can see and use” visible before and during a conversation.
 - Add an authenticated, versioned mutation surface with explicit Personal, Space, and Chat scopes, replay protection, confirmations, revocation, and durable action receipts.
 - Add event subscriptions and a scoped cross-Space Assistant that can manage the product only through those authorized contracts.
-- Add restricted-app subscriptions and host-owned notifications, finer web-runtime resource controls, and a verified Space-service registry backed by a trusted launcher, per-instance challenge, and process-generation lifecycle. Raw numeric loopback grants remain useful for development but do not prove which process owns a port.
+- Add restricted-app remote subscriptions and push adapters, finer web-runtime resource controls, and a verified Space-service registry backed by a trusted launcher, per-instance challenge, and process-generation lifecycle. Static reviewed Windows notifications are already available during separately enabled background work. Raw numeric loopback grants remain useful for development but do not prove which process owns a port.
 - Strengthen onboarding, keyboard/accessibility behavior, renderer interaction tests, recovery, export, and diagnostics.
 
 ### Later adapters and distribution maturity

@@ -61,6 +61,13 @@ interface WorkspaceRestrictedAppViewState {
   message?: string;
 }
 
+interface WorkspaceRestrictedAppOwner {
+  workspaceId: string;
+  appId: string;
+  digest: string;
+  permissionId: string;
+}
+
 declare global {
   interface Window {
     workspaceDesktop?: {
@@ -98,6 +105,7 @@ declare global {
         unmountView: (mountId: string) => Promise<void>;
         onTabCommand: (listener: (command: WorkspaceRestrictedAppTabCommand) => void) => () => void;
         onViewState: (listener: (state: WorkspaceRestrictedAppViewState) => void) => () => void;
+        onOpenRequest: (listener: (owner: WorkspaceRestrictedAppOwner) => void) => () => void;
       };
       window: {
         material: "mica" | "none";

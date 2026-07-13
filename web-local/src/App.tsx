@@ -33,6 +33,7 @@ import { contributedSurfaces, resolveSurfaceForKey, surfaceMatchesTab } from "./
 import { hasNativeFiles, hasWorkspacePathDrag } from "./lib/file-actions";
 import { formatItemCount } from "./lib/format";
 import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
+import { resolveRestrictedAppOpenRequest, restrictedAppRailMode } from "./lib/restricted-app-navigation";
 import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry, removeTreeEntries } from "./lib/tree";
 import { normalizeWorkspaceCustomizations } from "./lib/workspace-customization";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "./lib/workspace-identity";
@@ -295,6 +296,16 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
       }
     });
   }, [restrictedAppsState.appsByWorkspace, tabs, workspaces]);
+  useEffect(() => {
+    const desktop = window.workspaceDesktop?.restrictedApps;
+    if (!desktop) return;
+    return desktop.onOpenRequest((request) => {
+      const target = resolveRestrictedAppOpenRequest(request, workspaces);
+      if (!target) return;
+      if (target.workspace.id !== workspace.id) onSwitchWorkspace(target.workspace);
+      setActiveMode(target.mode);
+    });
+  }, [onSwitchWorkspace, workspace.id, workspaces]);
   useEffect(() => {
     // A temporarily missing or moved folder is not the same thing as an
     // explicit Space removal. Keep appearance keyed by the portable Space id
@@ -875,10 +886,6 @@ function normalizeMode(value: string | null): WorkspaceRailMode {
 
 function extensionSurfaceIdForMode(mode: WorkspaceRailMode): string | null {
   return mode.startsWith("app:") && !mode.startsWith("app:restricted:") ? mode.slice(4) : null;
-}
-
-function restrictedAppRailMode(workspaceId: string, appId: string): WorkspaceRailMode {
-  return `app:restricted:${workspaceId}:${appId}`;
 }
 
 function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {

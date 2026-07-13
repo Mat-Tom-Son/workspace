@@ -12,6 +12,7 @@ import {
 } from "../dist/desktop/desktop/src/restricted-app-host.js";
 import { stageRestrictedAppPackage } from "../dist/desktop/src/local/agent/restricted-app-package.js";
 import { FileRestrictedAppStorage } from "../dist/desktop/src/local/agent/restricted-app-storage.js";
+import { RestrictedAppNotificationBroker } from "../dist/desktop/src/local/agent/restricted-app-notifications.js";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -68,12 +69,24 @@ async function runSmoke() {
     const connections = new EmptyConnections();
     const storage = new FileRestrictedAppStorage(join(sandbox, "app-data"));
     const tabCommands = [];
+    const shownNotifications = [];
+    const notificationBroker = new RestrictedAppNotificationBroker({
+      sink: {
+        isSupported: () => true,
+        show: (notification, callbacks) => {
+          const handle = { close: () => callbacks.onClose() };
+          shownNotifications.push({ notification, callbacks, handle });
+          return handle;
+        },
+      },
+    });
     host = new RestrictedAppHost({
       connections,
       storage,
       resolveWorkspaceRoot: (workspaceId) => workspaceId === "ws-electron-smoke" ? workspaceRoot : undefined,
       preloadPath: join(rootDir, "dist", "desktop", "desktop", "src", "restricted-app-preload.cjs"),
       invocationTimeoutMs: 2_000,
+      notifications: notificationBroker,
       onTabCommand: (command) => tabCommands.push(command),
     });
     const descriptor = {
@@ -84,6 +97,7 @@ async function runSmoke() {
       manifest: receipt.manifest,
       networkGrants: ["escape"],
       fileGrants: [{ id: "exports", declarationId: "exports", root: "exports", access: "read-write" }],
+      notificationGrants: ["background-update", "post-return", "suspend-probe"],
       backgroundEnabled: true,
       fileCount: receipt.fileCount,
       totalBytes: receipt.totalBytes,
@@ -108,6 +122,11 @@ async function runSmoke() {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
     assert.equal(hits, 0, "the restricted renderer must not reach the loopback listener directly");
 
+    assert.deepEqual(await host.invoke(descriptor, "notification", {}), {
+      workerTopLevelNotificationDenied: true,
+      actionNotificationDenied: true,
+    });
+
     await assert.rejects(host.invoke(descriptor, "frame", {}), (error) => error?.code === "APP_CRASHED");
     const afterFrame = await host.invoke(descriptor, "probe", { text: "Frame recovery", escapeUrl });
     assert.equal(afterFrame.echoed, "Frame recovery");
@@ -127,10 +146,39 @@ async function runSmoke() {
       reason: "manual",
       scheduledAt: "2026-07-13T00:00:00.000Z",
     });
+    assert.deepEqual(shownNotifications.map((item) => item.notification), [{
+      workspaceId: descriptor.workspaceId,
+      appId: descriptor.manifest.id,
+      digest: descriptor.digest,
+      permissionId: "background-update",
+      title: "Workspace · Restricted Electron smoke — Background update",
+      body: "New sandboxed app data is ready.",
+    }]);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
+    assert.equal(shownNotifications.length, 1, "notification calls after handleBackground returns are denied");
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "worker-storage-events"), 0);
+    const suspendedRun = host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:00:30.000Z" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    host.suspend();
+    await assert.rejects(suspendedRun, (error) => error?.code === "APP_ERROR");
+    assert.equal(shownNotifications.length, 1, "suspend denies an in-flight background notification");
+    host.resume();
     await mark("background-complete");
 
     const parent = new BrowserWindow({ show: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
     await parent.loadURL("data:text/html,<main>Workspace owner</main>");
+    const staleMount = host.mountUi(descriptor, parent.webContents, parent, {
+      mountId: "00000000-0000-4000-8000-000000000000",
+      placement: "navigator",
+      route: "/",
+      sequence: 0,
+      bounds: { x: 0, y: 0, width: 320, height: 500 },
+      active: true,
+      occluded: false,
+      theme: "dark",
+    });
+    await host.stop(descriptor.workspaceId, descriptor.manifest.id, descriptor.digest);
+    await assert.rejects(staleMount, (error) => error?.code === "APP_UNAVAILABLE", "stop invalidates an in-flight stale UI mount");
     const mountId = "11111111-1111-4111-8111-111111111111";
     await host.mountUi(descriptor, parent.webContents, parent, {
       mountId,
@@ -157,6 +205,12 @@ async function runSmoke() {
         state: { directFetchBlocked: true, stored: "visible-ui", file: "host-brokered" },
       },
     }]);
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "ui-notification-denied"), true);
+    await host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:01:00.000Z" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "active-storage-event"), true, "background storage changes reach the active owning UI");
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "reset-storage-event"), true, "more than 128 coalesced keys produce a bounded reset hint");
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "background-storage-event-count"), 1, "coalesced background mutations emit once");
     host.layoutUi(parent.webContents.id, {
       mountId,
       placement: "navigator",
@@ -174,6 +228,9 @@ async function runSmoke() {
       networkDenied: true,
     });
     assert.equal(hits, 0, "an inactive app view must not retain file or network powers");
+    await host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:02:00.000Z" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "inactive-storage-event"), undefined, "inactive app views receive no storage event or replay");
     await host.unmountUi(parent.webContents.id, mountId);
     parent.destroy();
     await mark("ui-complete");
@@ -211,7 +268,23 @@ async function writeSmokePackage(root, loopbackPort) {
     writeFile(join(root, "ui.js"), `
 const bridge = globalThis.workspaceRestrictedApp;
 const context = bridge.context.get();
+let currentActive = context.active;
+let backgroundStorageEventCount = 0;
+bridge.storage.onChanged(async (event) => {
+  if (event.reset) {
+    backgroundStorageEventCount += 1;
+    await bridge.storage.set("reset-storage-event", true);
+    await bridge.storage.set("background-storage-event-count", backgroundStorageEventCount);
+    await bridge.storage.set(currentActive ? "active-storage-event" : "inactive-storage-event", true);
+    return;
+  }
+  if (!event.keys.includes("background")) return;
+  backgroundStorageEventCount += 1;
+  await bridge.storage.set("background-storage-event-count", backgroundStorageEventCount);
+  await bridge.storage.set(currentActive ? "active-storage-event" : "inactive-storage-event", true);
+});
 bridge.context.onChanged(async (next) => {
+  currentActive = next.active;
   if (next.active) return;
   let fileDenied = false;
   let networkDenied = false;
@@ -219,6 +292,9 @@ bridge.context.onChanged(async (next) => {
   try { await bridge.request({ destinationId: "escape", method: "GET", path: "/escape" }); } catch { networkDenied = true; }
   await bridge.storage.set("inactive-powers", { fileDenied, networkDenied });
 });
+let uiNotificationDenied = false;
+try { await bridge.notifications.show({ permissionId: "background-update" }); } catch { uiNotificationDenied = true; }
+await bridge.storage.set("ui-notification-denied", uiNotificationDenied);
 let directFetchBlocked = false;
 try { await fetch(context.state.escapeUrl); } catch { directFetchBlocked = true; }
 await bridge.storage.set("visible", "visible-ui");
@@ -232,8 +308,19 @@ await bridge.tabs.open({ tabId: "smoke-tab", title: "Sandbox ready", route: "/re
 let workerTopLevelStorageDenied = false;
 try { await globalThis.workspaceRestrictedApp.storage.set("worker-top-level", true); }
 catch { workerTopLevelStorageDenied = true; }
+let workerTopLevelNotificationDenied = false;
+try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" }); }
+catch { workerTopLevelNotificationDenied = true; }
+let workerStorageEvents = 0;
+globalThis.workspaceRestrictedApp.storage.onChanged(() => { workerStorageEvents += 1; });
 
 export async function handleAction(action, input) {
+  if (action === "notification") {
+    let actionNotificationDenied = false;
+    try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" }); }
+    catch { actionNotificationDenied = true; }
+    return { workerTopLevelNotificationDenied, actionNotificationDenied };
+  }
   if (action === "huge") return "x".repeat(300000);
   if (action === "cyclic") { const value = {}; value.self = value; return value; }
   if (action === "frame") { document.body.append(document.createElement("iframe")); return null; }
@@ -276,7 +363,24 @@ export async function handleAction(action, input) {
 }
 
 export async function handleBackground(event) {
+  if (event.scheduledAt === "2026-07-13T00:00:30.000Z") {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "suspend-probe" });
+    return;
+  }
   await globalThis.workspaceRestrictedApp.storage.set("background", event);
+  if (event.scheduledAt === "2026-07-13T00:01:00.000Z") {
+    await globalThis.workspaceRestrictedApp.storage.transaction({
+      set: Array.from({ length: 128 }, (_, index) => ({ key: "bulk-" + String(index).padStart(3, "0"), value: index })),
+    });
+  }
+  await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await globalThis.workspaceRestrictedApp.storage.set("worker-storage-events", workerStorageEvents);
+  setTimeout(async () => {
+    try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "post-return" }); }
+    catch {}
+  }, 200);
 }
 `, "utf8"),
   ]);
@@ -322,6 +426,21 @@ function smokeManifest(loopbackPort) {
           additionalProperties: false,
         },
       },
+      {
+        name: "notification",
+        description: "Verify action notification denial.",
+        action: "notification",
+        inputSchema: emptyInput,
+        resultSchema: {
+          type: "object",
+          properties: {
+            workerTopLevelNotificationDenied: { type: "boolean" },
+            actionNotificationDenied: { type: "boolean" },
+          },
+          required: ["workerTopLevelNotificationDenied", "actionNotificationDenied"],
+          additionalProperties: false,
+        },
+      },
       { name: "huge", description: "Return an oversized result.", action: "huge", inputSchema: emptyInput, resultSchema: { type: "string" } },
       { name: "cyclic", description: "Return a cyclic result.", action: "cyclic", inputSchema: emptyInput, resultSchema: { type: "object", properties: {}, required: [], additionalProperties: false } },
       { name: "frame", description: "Try to create a child frame.", action: "frame", inputSchema: emptyInput, resultSchema: { type: "null" } },
@@ -330,6 +449,11 @@ function smokeManifest(loopbackPort) {
     ],
     permissions: {
       files: [{ id: "exports", target: "directory", access: "read-write" }],
+      notifications: [
+        { id: "background-update", title: "Background update", description: "New sandboxed app data is ready." },
+        { id: "post-return", title: "Post-return probe", description: "This notification must never be shown." },
+        { id: "suspend-probe", title: "Suspend probe", description: "This notification must never survive suspend." },
+      ],
       network: [
         { id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "none" }] },
         { id: "escape", target: { kind: "loopback-http", host: "127.0.0.1", port: loopbackPort }, methods: ["GET"], auth: [{ kind: "none" }] },

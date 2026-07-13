@@ -90,6 +90,19 @@ export async function setRestrictedAppFileGrant(
   })).app;
 }
 
+export async function setRestrictedAppNotificationGrant(
+  workspaceId: string,
+  appId: string,
+  permissionId: string,
+  expectedDigest: string,
+  granted: boolean,
+): Promise<RestrictedAppInstalled> {
+  return (await api<{ app: RestrictedAppInstalled }>(`${appPath(workspaceId, appId)}/permissions/notifications/${encodeURIComponent(permissionId)}`, {
+    method: granted ? "PUT" : "DELETE",
+    body: { expectedDigest },
+  })).app;
+}
+
 export async function setRestrictedAppBackgroundEnabled(
   workspaceId: string,
   appId: string,

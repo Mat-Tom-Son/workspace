@@ -25,4 +25,9 @@ export async function handleBackground(event) {
     scheduledAt: event.scheduledAt,
     status: response.status,
   });
+  try {
+    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "new-messages" });
+  } catch {
+    // Notification access is optional and must not fail the completed sync.
+  }
 }

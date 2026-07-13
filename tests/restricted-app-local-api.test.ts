@@ -64,7 +64,7 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.equal(inspected.review.manifest.id, "mail-app");
 
-    const installed = await request<{ app: { digest: string; networkGrants: string[]; fileGrants: unknown[]; backgroundEnabled: boolean } }>(
+    const installed = await request<{ app: { digest: string; networkGrants: string[]; fileGrants: unknown[]; notificationGrants: string[]; backgroundEnabled: boolean } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps`,
       { method: "POST", body: { sourcePath, expectedDigest: inspected.review.digest } },
@@ -72,6 +72,7 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     assert.equal(installed.app.digest, inspected.review.digest);
     assert.deepEqual(installed.app.networkGrants, []);
     assert.deepEqual(installed.app.fileGrants, []);
+    assert.deepEqual(installed.app.notificationGrants, []);
     assert.equal(installed.app.backgroundEnabled, false);
 
     const granted = await request<{ app: { networkGrants: string[] } }>(
@@ -87,6 +88,19 @@ test("restricted app API keeps review, install, grants, connections, invocation,
       { method: "PUT", body: { expectedDigest: inspected.review.digest, root: "reports" } },
     );
     assert.deepEqual(fileGranted.app.fileGrants, [{ id: "exports", declarationId: "exports", root: "reports", access: "read-write" }]);
+
+    const notificationsGranted = await request<{ app: { notificationGrants: string[] } }>(
+      api.origin,
+      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/permissions/notifications/new-mail`,
+      { method: "PUT", body: { expectedDigest: inspected.review.digest } },
+    );
+    assert.deepEqual(notificationsGranted.app.notificationGrants, ["new-mail"]);
+    const notificationsRevoked = await request<{ app: { notificationGrants: string[] } }>(
+      api.origin,
+      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/permissions/notifications/new-mail`,
+      { method: "DELETE", body: { expectedDigest: inspected.review.digest } },
+    );
+    assert.deepEqual(notificationsRevoked.app.notificationGrants, []);
 
     const background = await request<{ app: { backgroundEnabled: boolean } }>(
       api.origin,
@@ -291,6 +305,7 @@ async function writePackage(root: string): Promise<void> {
       background: { intervalMinutes: 30 },
       permissions: {
         files: [{ id: "exports", target: "directory", access: "read-write" }],
+        notifications: [{ id: "new-mail", title: "New mail", description: "New messages are ready." }],
         network: [{
           id: "mail-api",
           target: { kind: "public-https", origin: "https://mail.example.com" },

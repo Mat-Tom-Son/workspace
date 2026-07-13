@@ -58,6 +58,13 @@
         "target": "directory",
         "access": "read-write"
       }
+    ],
+    "notifications": [
+      {
+        "id": "new-messages",
+        "title": "New messages",
+        "description": "New messages are ready in your connected inbox."
+      }
     ]
   }
 }

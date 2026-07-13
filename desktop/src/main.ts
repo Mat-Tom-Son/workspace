@@ -42,6 +42,7 @@ import { WorkspaceCliKernelAdapter } from "../../src/local/workspace-cli-adapter
 import { WorkspaceKernel } from "../../src/local/workspace-kernel.js";
 import { RestrictedAppService } from "../../src/local/agent/restricted-app-service.js";
 import { FileRestrictedAppStorage } from "../../src/local/agent/restricted-app-storage.js";
+import { RestrictedAppNotificationBroker } from "../../src/local/agent/restricted-app-notifications.js";
 import { restrictedAppRoot } from "../../src/local/state-paths.js";
 import {
   WorkspaceDesktopCliHost,
@@ -251,10 +252,24 @@ async function ensureDesktopHost(): Promise<DesktopHost> {
     const restrictedConnections = createRestrictedAppConnectionStore(join(userData, "restricted-app-connections.bin"));
     const restrictedOAuth = createRestrictedAppOAuthClient(restrictedConnections, (url) => shell.openExternal(url));
     const restrictedStorage = new FileRestrictedAppStorage(join(restrictedAppRoot(), "data"));
+    const restrictedNotifications = new RestrictedAppNotificationBroker({
+      sink: {
+        isSupported: () => Notification.isSupported(),
+        show: (display, callbacks) => {
+          const notification = new Notification({ title: display.title, body: display.body });
+          notification.on("click", callbacks.onClick);
+          notification.on("close", callbacks.onClose);
+          notification.show();
+          return { close: () => notification.close() };
+        },
+      },
+    });
+    let restrictedApps!: RestrictedAppService;
     const restrictedRuntime = new RestrictedAppHost({
       connections: restrictedConnections,
       oauth: restrictedOAuth,
       storage: restrictedStorage,
+      notifications: restrictedNotifications,
       resolveWorkspaceRoot: async (workspaceId) => (await listWorkspaces()).find((workspace) => workspace.id === workspaceId)?.rootPath ?? null,
       preloadPath: resolveRestrictedAppPreloadPath(),
       onTabCommand: (command) => {
@@ -265,8 +280,16 @@ async function ensureDesktopHost(): Promise<DesktopHost> {
         if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.id !== state.ownerWebContentsId) return;
         mainWindow.webContents.send("workspace:restricted-app-view:state", state);
       },
+      onNotificationOpen: (request) => {
+        void restrictedApps.runtimeDescriptor(request.workspaceId, request.appId, request.digest).then((current) => {
+          if (!current.backgroundEnabled || !current.notificationGrants.includes(request.permissionId)
+            || !current.manifest.permissions.notifications.some((item) => item.id === request.permissionId)) return;
+          showWindow();
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          mainWindow.webContents.send("workspace:restricted-app-view:open-request", request);
+        }).catch(() => undefined);
+      },
     });
-    let restrictedApps: RestrictedAppService;
     try {
       restrictedApps = await RestrictedAppService.create({
         rootPath: restrictedAppRoot(),

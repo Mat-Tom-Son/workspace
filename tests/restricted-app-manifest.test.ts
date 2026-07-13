@@ -29,6 +29,7 @@ function manifest(overrides: Record<string, unknown> = {}) {
     }],
     permissions: {
       files: [{ id: "exports", target: "directory", access: "read-write" }],
+      notifications: [{ id: "new-mail", title: "New mail", description: "New messages are ready." }],
       network: [{
         id: "inbox-api",
         target: { kind: "public-https", origin: "https://mail.example.com" },
@@ -60,6 +61,7 @@ test("restricted app manifests normalize a bounded sandbox, tool, and connection
     scopes: ["mail.read", "mail.send"],
   }]);
   assert.deepEqual(parsed.permissions.files, [{ id: "exports", target: "directory", access: "read-write" }]);
+  assert.deepEqual(parsed.permissions.notifications, [{ id: "new-mail", title: "New mail", description: "New messages are ready." }]);
   assert.deepEqual(parsed.background, { intervalMinutes: 30 });
 });
 
@@ -120,6 +122,25 @@ test("restricted app file and background powers are explicit and bounded", () =>
     tools: [],
     background: { intervalMinutes: 30 },
   })), /must declare a sandboxed worker/);
+});
+
+test("restricted app notifications require scheduled workers and safe static single-line copy", () => {
+  assert.throws(() => parseRestrictedAppManifest(manifest({
+    runtime: { kind: "sandboxed-web", entry: "index.html" },
+    tools: [],
+    background: undefined,
+  })), /notifications must declare a sandboxed background worker and schedule/);
+  for (const title of ["New\nmail", "New\u202email"]) {
+    assert.throws(() => parseRestrictedAppManifest(manifest({
+      permissions: { network: [], files: [], notifications: [{ id: "new-mail", title, description: "New messages are ready." }] },
+    })), /plain single-line text/);
+  }
+  assert.throws(() => parseRestrictedAppManifest(manifest({
+    permissions: { network: [], files: [], notifications: [{ id: "new-mail", title: "New mail", description: "Ready\u0007now" }] },
+  })), /plain single-line text/);
+  for (const title of ["Connected\ninbox", "Connected\u202einbox"]) {
+    assert.throws(() => parseRestrictedAppManifest(manifest({ title })), /plain single-line text/);
+  }
 });
 
 test("restricted app tool schemas reject executable or open-ended schema features", () => {

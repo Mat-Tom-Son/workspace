@@ -39,6 +39,12 @@ export function RestrictedAppViewport({
       } else if (event.state === "crashed") {
         setMessage(event.message ?? "The app view stopped unexpectedly.");
         setViewState("crashed");
+      } else if (event.state === "stopped") {
+        mountIdRef.current = crypto.randomUUID();
+        sequenceRef.current = 0;
+        setMessage("");
+        setViewState("loading");
+        setGeneration((value) => value + 1);
       }
     });
   }, [desktop]);
@@ -71,12 +77,12 @@ export function RestrictedAppViewport({
     setMessage("");
     const initial = viewRequest(element, mountId, sequenceRef.current++, latestRef.current);
     void desktop.mountView(initial).then(() => {
-      if (disposed) return;
+      if (disposed || mountId !== mountIdRef.current) return;
       mounted = true;
       setViewState("ready");
       schedule();
     }).catch((error) => {
-      if (disposed) return;
+      if (disposed || mountId !== mountIdRef.current) return;
       setMessage(error instanceof Error ? error.message : "The app view could not start.");
       setViewState("crashed");
     });

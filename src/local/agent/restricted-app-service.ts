@@ -32,6 +32,7 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   workspaceId: string;
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
+  notificationGrants: string[];
   backgroundEnabled: boolean;
   backgroundLastRunAt?: string;
   backgroundLastError?: string;
@@ -46,6 +47,8 @@ export interface RestrictedAppRuntimeDescriptor extends RestrictedAppInstalled {
 export interface RestrictedAppRuntimeHost {
   invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown>;
   runBackground?(app: RestrictedAppRuntimeDescriptor, event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string }): Promise<void>;
+  suspend?(): void;
+  resume?(): void;
   stop(workspaceId: string, appId: string, digest?: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -72,6 +75,7 @@ interface RestrictedAppRegistryEntry {
   manifest: RestrictedAppManifest;
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
+  notificationGrants: string[];
   backgroundEnabled: boolean;
   backgroundLastRunAt?: string;
   backgroundLastError?: string;
@@ -183,6 +187,7 @@ export class RestrictedAppService {
         manifest: structuredClone(staged.manifest),
         networkGrants: [],
         fileGrants: [],
+        notificationGrants: [],
         backgroundEnabled: false,
         fileCount: staged.fileCount,
         totalBytes: staged.totalBytes,
@@ -226,7 +231,7 @@ export class RestrictedAppService {
     await this.#mutate(async () => {
       const removed = this.#registry.apps.filter((item) => item.workspaceId === workspaceId);
       if (!removed.length) return;
-      for (const app of removed) await this.#runtimeHost?.stop(workspaceId, app.manifest.id, app.digest);
+      await Promise.all(removed.map((app) => this.#runtimeHost?.stop(workspaceId, app.manifest.id, app.digest)));
       for (const app of removed) this.#clearBackground(workspaceId, app.manifest.id);
       await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.filter((item) => item.workspaceId !== workspaceId) });
       for (const app of removed) {
@@ -331,6 +336,14 @@ export class RestrictedAppService {
     return await this.#setFileGrant(input, false);
   }
 
+  async grantNotifications(input: { workspaceId: string; appId: string; expectedDigest: string; permissionId: string }): Promise<RestrictedAppInstalled> {
+    return await this.#setNotificationGrant(input, true);
+  }
+
+  async revokeNotifications(input: { workspaceId: string; appId: string; expectedDigest: string; permissionId: string }): Promise<RestrictedAppInstalled> {
+    return await this.#setNotificationGrant(input, false);
+  }
+
   async setBackgroundEnabled(input: { workspaceId: string; appId: string; expectedDigest: string; enabled: boolean }): Promise<RestrictedAppInstalled> {
     return await this.#mutate(async () => {
       const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
@@ -359,6 +372,7 @@ export class RestrictedAppService {
 
   suspendBackground(): void {
     this.#backgroundSuspended = true;
+    this.#runtimeHost?.suspend?.();
     for (const timer of this.#backgroundTimers.values()) clearTimeout(timer);
     this.#backgroundTimers.clear();
   }
@@ -366,6 +380,7 @@ export class RestrictedAppService {
   resumeBackground(): void {
     if (!this.#backgroundSuspended || this.#closed) return;
     this.#backgroundSuspended = false;
+    this.#runtimeHost?.resume?.();
     this.#scheduleAllBackgroundApps(true);
   }
 
@@ -376,9 +391,12 @@ export class RestrictedAppService {
   }
 
   async clearStorage(workspaceId: string, appId: string, expectedDigest: string): Promise<RestrictedAppStorageUsage> {
-    const app = this.#installed(workspaceId, appId, expectedDigest);
-    if (!this.#storage) throw new RestrictedAppError("APP_UNAVAILABLE", "Restricted app storage requires the Workspace desktop host.");
-    return await this.#storage.clear({ workspaceId: app.workspaceId, appId: app.manifest.id });
+    return await this.#mutate(async () => {
+      const app = this.#installed(workspaceId, appId, expectedDigest);
+      if (!this.#storage) throw new RestrictedAppError("APP_UNAVAILABLE", "Restricted app storage requires the Workspace desktop host.");
+      await this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest);
+      return await this.#storage.clear({ workspaceId: app.workspaceId, appId: app.manifest.id });
+    });
   }
 
   async close(): Promise<void> {
@@ -469,6 +487,32 @@ export class RestrictedAppService {
     });
   }
 
+  async #setNotificationGrant(
+    input: { workspaceId: string; appId: string; expectedDigest: string; permissionId: string },
+    granted: boolean,
+  ): Promise<RestrictedAppInstalled> {
+    return await this.#mutate(async () => {
+      const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
+      const permission = app.manifest.permissions.notifications.find((item) => item.id === input.permissionId);
+      if (!permission) throw new RestrictedAppError("INPUT_INVALID", "The app did not declare this notification category.");
+      const currentlyGranted = app.notificationGrants.includes(permission.id);
+      if (currentlyGranted === granted) return app;
+      const existing = this.#registry.apps.find((item) => item.workspaceId === app.workspaceId && item.manifest.id === app.manifest.id)!;
+      await this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest);
+      const next: RestrictedAppRegistryEntry = {
+        ...existing,
+        notificationGrants: granted
+          ? [...existing.notificationGrants, permission.id].sort()
+          : existing.notificationGrants.filter((id) => id !== permission.id),
+      };
+      await this.#writeRegistry({
+        schemaVersion: 1,
+        apps: this.#registry.apps.map((item) => item === existing ? next : item),
+      });
+      return copyInstalled(next);
+    });
+  }
+
   #scheduleAllBackgroundApps(catchUp = false): void {
     for (const app of this.#registry.apps) this.#scheduleBackground(app, catchUp);
   }
@@ -511,7 +555,7 @@ export class RestrictedAppService {
     try {
       const current = this.#installed(workspaceId, appId, digest);
       if (!current.backgroundEnabled || this.#backgroundSuspended) return;
-      await this.#runtimeHost.runBackground({ ...app, stagedRoot: this.#digestRoot(app.digest) }, { reason, scheduledAt });
+      await this.#runtimeHost.runBackground({ ...current, stagedRoot: this.#digestRoot(current.digest) }, { reason, scheduledAt });
     } catch (error) {
       failure = errorMessage(error).slice(0, 300);
     } finally {
@@ -641,6 +685,13 @@ function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntr
   if (new Set(fileGrants.map((grant) => grant.id)).size !== fileGrants.length) {
     throw new Error("Restricted app registry has invalid file grants.");
   }
+  const notificationGrants = Array.isArray(item.notificationGrants)
+    ? item.notificationGrants.map((grant) => nonempty(grant, "Restricted app notification grant", 64))
+    : [];
+  if (new Set(notificationGrants).size !== notificationGrants.length
+    || notificationGrants.some((grant) => !manifest.permissions.notifications.some((item) => item.id === grant))) {
+    throw new Error("Restricted app registry has invalid notification grants.");
+  }
   const backgroundEnabled = item.backgroundEnabled === true;
   if (backgroundEnabled && !manifest.background) throw new Error("Restricted app registry enables undeclared background work.");
   const backgroundLastRunAt = item.backgroundLastRunAt === undefined
@@ -657,6 +708,7 @@ function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntr
     manifest,
     networkGrants,
     fileGrants,
+    notificationGrants,
     backgroundEnabled,
     ...(backgroundLastRunAt ? { backgroundLastRunAt } : {}),
     ...(backgroundLastError ? { backgroundLastError } : {}),
@@ -708,6 +760,7 @@ function copyInstalled(item: RestrictedAppRegistryEntry): RestrictedAppInstalled
     manifest: item.manifest,
     networkGrants: item.networkGrants,
     fileGrants: item.fileGrants,
+    notificationGrants: item.notificationGrants,
     backgroundEnabled: item.backgroundEnabled,
     ...(item.backgroundLastRunAt ? { backgroundLastRunAt: item.backgroundLastRunAt } : {}),
     ...(item.backgroundLastError ? { backgroundLastError: item.backgroundLastError } : {}),

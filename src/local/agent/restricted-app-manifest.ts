@@ -70,6 +70,12 @@ export interface RestrictedAppFileDeclaration {
   access: "read" | "read-write";
 }
 
+export interface RestrictedAppNotificationDeclaration {
+  id: string;
+  title: string;
+  description: string;
+}
+
 export interface RestrictedAppBackgroundDeclaration {
   intervalMinutes: number;
 }
@@ -92,6 +98,7 @@ export interface RestrictedAppManifest {
   permissions: {
     network: RestrictedAppNetworkDeclaration[];
     files: RestrictedAppFileDeclaration[];
+    notifications: RestrictedAppNotificationDeclaration[];
   };
 }
 
@@ -171,7 +178,7 @@ export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifes
     : parseBackground(manifest.background);
   if (background && !worker) throw new Error("Restricted apps that run in the background must declare a sandboxed worker entry.");
 
-  const permissions = objectValue(manifest.permissions, "Restricted app permissions", ["network", "files"]);
+  const permissions = objectValue(manifest.permissions, "Restricted app permissions", ["network", "files", "notifications"]);
   const network = arrayValue(permissions.network, "Restricted app network permissions", 0, 16)
     .map((destination, index) => parseNetworkDestination(destination, index));
   assertUnique(network.map((destination) => destination.id), "Restricted app network permission id");
@@ -180,18 +187,26 @@ export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifes
     : arrayValue(permissions.files, "Restricted app file permissions", 0, 16)
       .map((declaration, index) => parseFileDeclaration(declaration, index));
   assertUnique(files.map((declaration) => declaration.id), "Restricted app file permission id");
+  const notifications = permissions.notifications === undefined
+    ? []
+    : arrayValue(permissions.notifications, "Restricted app notification permissions", 0, 8)
+      .map((declaration, index) => parseNotificationDeclaration(declaration, index));
+  assertUnique(notifications.map((declaration) => declaration.id), "Restricted app notification permission id");
+  if (notifications.length && (!background || !worker)) {
+    throw new Error("Restricted apps that request notifications must declare a sandboxed background worker and schedule.");
+  }
 
   const description = optionalStringValue(manifest.description, "Restricted app description", 280);
   return {
     version: restrictedAppManifestVersion,
     id: idValue(manifest.id, "Restricted app id"),
-    title: stringValue(manifest.title, "Restricted app title", 80),
+    title: notificationTextValue(manifest.title, "Restricted app title", 80),
     ...(description ? { description } : {}),
     runtime: { kind: restrictedAppRuntimeKind, entry, ...(worker ? { worker } : {}) },
     ui: { ...(icon ? { icon } : {}) },
     tools,
     ...(background ? { background } : {}),
-    permissions: { network, files },
+    permissions: { network, files, notifications },
   };
 }
 
@@ -218,6 +233,24 @@ function parseFileDeclaration(value: unknown, index: number): RestrictedAppFileD
     target: declaration.target,
     access: declaration.access,
   };
+}
+
+function parseNotificationDeclaration(value: unknown, index: number): RestrictedAppNotificationDeclaration {
+  const label = `Restricted app notification permission ${index + 1}`;
+  const declaration = objectValue(value, label, ["id", "title", "description"]);
+  return {
+    id: idValue(declaration.id, `${label} id`),
+    title: notificationTextValue(declaration.title, `${label} title`, 80),
+    description: notificationTextValue(declaration.description, `${label} description`, 160),
+  };
+}
+
+function notificationTextValue(value: unknown, label: string, maxLength: number): string {
+  const result = stringValue(value, label, maxLength);
+  if (/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(result)) {
+    throw new Error(`${label} must be plain single-line text without control or direction-override characters.`);
+  }
+  return result;
 }
 
 function parseTool(value: unknown, index: number): RestrictedAppToolDeclaration {

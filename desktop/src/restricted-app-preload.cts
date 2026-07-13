@@ -6,6 +6,7 @@ const contextChannel = "workspace:restricted-app:context";
 const storageChannel = "workspace:restricted-app:storage";
 const storageChangedChannel = "workspace:restricted-app:storage-changed";
 const filesChannel = "workspace:restricted-app:files";
+const notificationsChannel = "workspace:restricted-app:notifications";
 const maximumEnvelopeBytes = 160 * 1024;
 const maximumFileEnvelopeBytes = 800 * 1024;
 const encoder = new TextEncoder();
@@ -71,13 +72,19 @@ async function invokeHost(channel: string, request: unknown, maximum: number, fa
 const networkRequest = (request: unknown) => invokeHost(networkChannel, request, maximumEnvelopeBytes, "NETWORK_FAILED");
 const storageRequest = (operation: string, fields: Record<string, unknown> = {}) => invokeHost(storageChannel, { operation, ...fields }, maximumEnvelopeBytes, "STORAGE_FAILED");
 const fileRequest = (operation: string, request: unknown) => invokeHost(filesChannel, { operation, request }, maximumFileEnvelopeBytes, "FILE_FAILED");
+const notificationRequest = (request: unknown) => invokeHost(notificationsChannel, request, 4 * 1024, "NOTIFICATION_FAILED");
 
-const storageListeners = new Set<(event: { revision: number; keys: string[] }) => void>();
+const storageListeners = new Set<(event: { revision: number; keys: string[]; reset: boolean }) => void>();
 ipcRenderer.on(storageChangedChannel, (_event, value: unknown) => {
   if (!value || typeof value !== "object") return;
-  const candidate = value as { revision?: unknown; keys?: unknown };
-  if (!Number.isSafeInteger(candidate.revision) || !Array.isArray(candidate.keys) || candidate.keys.some((key) => typeof key !== "string")) return;
-  const event = Object.freeze({ revision: candidate.revision as number, keys: Object.freeze([...(candidate.keys as string[])]) as unknown as string[] });
+  const candidate = value as { revision?: unknown; keys?: unknown; reset?: unknown };
+  if (!Number.isSafeInteger(candidate.revision) || !Array.isArray(candidate.keys) || candidate.keys.length > 128
+    || candidate.keys.some((key) => typeof key !== "string") || typeof candidate.reset !== "boolean") return;
+  const event = Object.freeze({
+    revision: candidate.revision as number,
+    keys: Object.freeze([...(candidate.keys as string[])]) as unknown as string[],
+    reset: candidate.reset,
+  });
   for (const listener of storageListeners) {
     try { listener(event); } catch { /* app callback errors stay inside the app */ }
   }
@@ -94,7 +101,7 @@ contextBridge.exposeInMainWorld("workspaceRestrictedApp", Object.freeze({
     delete: (key: string) => storageRequest("delete", { key }),
     clear: () => storageRequest("clear"),
     transaction: (transaction: unknown) => storageRequest("transaction", { transaction }),
-    onChanged: (listener: (event: { revision: number; keys: string[] }) => void) => {
+    onChanged: (listener: (event: { revision: number; keys: string[]; reset: boolean }) => void) => {
       if (typeof listener !== "function") throw new TypeError("Storage listener must be a function.");
       storageListeners.add(listener);
       return () => storageListeners.delete(listener);
@@ -104,6 +111,9 @@ contextBridge.exposeInMainWorld("workspaceRestrictedApp", Object.freeze({
     list: (request: unknown) => fileRequest("list", request),
     read: (request: unknown) => fileRequest("read", request),
     write: (request: unknown) => fileRequest("write", request),
+  }),
+  notifications: Object.freeze({
+    show: (request: { permissionId: string }) => notificationRequest(request),
   }),
   context: Object.freeze({
     get: () => context,

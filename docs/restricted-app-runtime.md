@@ -26,6 +26,7 @@ restricted execution boundary before the app opened.
 - bounded Assistant tool declarations using a closed JSON Schema subset; and
 - exact broker destinations, methods, and acceptable authentication modes;
 - reviewed Space-file needs (`file` or `directory`, `read` or `read-write`);
+- optional static notification categories, each with reviewed title and body;
   and
 - an optional bounded background interval.
 
@@ -93,8 +94,11 @@ The preload exposes only `workspaceRestrictedApp`:
 - `tabs.open(...)` asks Workspace to create or activate a Space-owned work tab;
 - a tab may update or close itself;
 - `request(...)` sends a declared request through the network broker;
-- `storage` provides Space-and-app-owned JSON data; and
-- `files` lists, reads, or writes only through current reviewed grants.
+- `storage` provides Space-and-app-owned JSON data and active-UI invalidation
+  hints;
+- `files` lists, reads, or writes only through current reviewed grants; and
+- `notifications.show({ permissionId })` selects reviewed static copy, only
+  during an enabled background invocation with a separate category grant.
 
 An app supplies a local `appTabId`, title, route, and JSON state. It never
 supplies the owning Space, app id, digest, or shell tab id. Workspace derives
@@ -116,6 +120,17 @@ manifest background schedule starts disabled and requires the worker to export
 interval, a two-job global concurrency limit, bounded worker execution, and at
 most one staggered catch-up after resume. It records the last run and failure;
 disabling or updating the app stops and revokes the schedule.
+
+Notifications are host-owned Windows notifications, not arbitrary renderer
+UI. The manifest title and category copy are single-line reviewed text; the
+runtime cannot add dynamic copy, actions, or URLs. A category grant and enabled
+background schedule are both required. The host limits each invocation,
+category frequency, hourly app volume, and outstanding notifications. Rate
+history is keyed by Space and app so renderer restarts, permission churn, and
+digest updates cannot reset the anti-spam budget. Clicking revalidates the
+current digest, declaration, grant, and background authority before opening
+the exact owning Space and app. Suspend, disable, update, removal, and shutdown
+close outstanding notifications.
 
 The real-Electron preparation probe covers both hosts: missing Node globals,
 rejected Node imports, direct loopback HTTP/WebSocket denial, WebRTC and popup
@@ -152,6 +167,14 @@ atomic transactions with revision checks. It survives renderer replacement and
 reviewed digest updates, is never placed in the Space, and is deleted when the
 app or Space is removed.
 
+Active visible UI may subscribe to bounded `storage.onChanged` invalidation
+hints. The host coalesces keys, caps the list (falling back to `reset: true`),
+and emits at most ten times per second. Hints are briefly coalesced in memory,
+never durably queued or replayed, and are never delivered to workers, inactive
+or occluded views, minimized windows,
+or a view owned by another Space. Apps re-read storage after a hint; event data
+is not a second state channel.
+
 A file declaration grants nothing by itself. In Capabilities, the person maps
 it to a relative file or folder inside that app's Space. The sandbox sends only
 the grant id and a grant-relative path; the host derives Space/app/digest and
@@ -172,12 +195,12 @@ worker, permission, storage, file, tab, background, and OAuth declaration
 contract, so app generation does not depend on a source checkout or hidden
 Workspace-only skill.
 
-Human approval installs the receipt's exact revision with network and file
-access off and background work disabled. Source changes require a new review.
-**Capabilities → Installed → Apps in this Space** manages destination and file
-grants, connections, background scheduling, local data, and removal; advanced
+Human approval installs the receipt's exact revision with network, file, and
+notification access off and background work disabled. Source changes require a new review.
+**Capabilities → Installed → Apps in this Space** manages destination, file,
+and notification grants, connections, background scheduling, local data, and removal; advanced
 local install remains a recovery/developer path. A reviewed update preserves
-app storage but resets network grants, file grants, connections, and background
+app storage but resets network grants, file grants, notification grants, connections, and background
 authority. Removing or updating an app stops its UI views and worker before
 changing staged bytes.
 
@@ -192,7 +215,8 @@ The web canvas and tab model are intentionally general; new product powers
 should be narrow host services rather than additions to a fixed widget schema.
 The main gaps are:
 
-- subscriptions and host-owned notification delivery;
+- host-owned remote subscriptions and arbitrary push adapters (static reviewed
+  background notifications are available);
 - a Space-service registry that can verify process ownership and lifecycle,
   replacing raw loopback-port grants for managed project services; and
 - finer resource controls for long-running or memory-heavy web apps.

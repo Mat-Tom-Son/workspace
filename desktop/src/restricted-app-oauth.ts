@@ -71,6 +71,7 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
           auth: [{ kind: "none" }],
         }],
         files: [],
+        notifications: [],
       },
     };
     const response = await broker.request({

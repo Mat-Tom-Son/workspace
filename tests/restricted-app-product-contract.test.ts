@@ -4,11 +4,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 const root = process.cwd();
-const [capabilities, apps, chat, workspaceApp] = await Promise.all([
+const [capabilities, apps, chat, workspaceApp, viewport] = await Promise.all([
   read("web-local/src/components/panes/CapabilitiesPane.tsx"),
   read("web-local/src/components/panes/RestrictedAppsSection.tsx"),
   read("web-local/src/components/chat/ChatPanel.tsx"),
   read("web-local/src/App.tsx"),
+  read("web-local/src/components/panes/RestrictedAppViewport.tsx"),
 ]);
 
 test("Apps product hierarchy starts with the Assistant and keeps local package install advanced", () => {
@@ -26,7 +27,7 @@ test("review prioritizes requested access and visible contribution over collapse
   assert.ok(access >= 0 && contribution > access);
   assert.match(apps, /<ReviewDeclarations review=\{review\} \/>[\s\S]*?<details className="restricted-app-package-details"><summary>Package details/);
   assert.match(apps, /Install, then review access/);
-  assert.match(apps, /Installing grants no network destinations, Space files, or background execution/);
+  assert.match(apps, /Installing grants no network destinations, Space files, notifications, or background execution/);
 });
 
 test("Capabilities owns access, connection, and lifecycle management without credential-erasure jargon", () => {
@@ -42,7 +43,22 @@ test("Capabilities owns access, connection, and lifecycle management without cre
   assert.match(apps, /App writes create History checkpoints/);
   assert.match(apps, /Background work/);
   assert.match(apps, /Local app data/);
+  assert.match(apps, /Windows notifications/);
+  assert.match(apps, /Workspace · \{app\.manifest\.title\} — \{permission\.title\}/);
+  assert.match(apps, /Allow notifications/);
+  assert.match(apps, /Revoke notifications/);
   assert.doesNotMatch(apps, /Delete credential|Credential saved|Credential needed/);
+});
+
+test("notification clicks target their exact Space and stopped native views remount", () => {
+  assert.match(workspaceApp, /desktop\.onOpenRequest/);
+  assert.match(workspaceApp, /resolveRestrictedAppOpenRequest\(request, workspaces\)/);
+  assert.match(workspaceApp, /onSwitchWorkspace\(target\.workspace\)/);
+  assert.match(workspaceApp, /setActiveMode\(target\.mode\)/);
+  assert.match(viewport, /event\.state === "stopped"/);
+  assert.match(viewport, /mountIdRef\.current = crypto\.randomUUID\(\)/);
+  assert.match(viewport, /setGeneration\(\(value\) => value \+ 1\)/);
+  assert.match(viewport, /disposed \|\| mountId !== mountIdRef\.current/);
 });
 
 test("owning Chat renders digest review, defers install while running, and opens the installed interactive app", () => {

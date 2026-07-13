@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
       ipcRenderer.on("workspace:restricted-app-view:state", listener);
       return () => ipcRenderer.removeListener("workspace:restricted-app-view:state", listener);
     },
+    onOpenRequest: (callback: (owner: unknown) => void) => {
+      const listener = (_event: unknown, owner: unknown) => callback(owner);
+      ipcRenderer.on("workspace:restricted-app-view:open-request", listener);
+      return () => ipcRenderer.removeListener("workspace:restricted-app-view:open-request", listener);
+    },
   },
   window: {
     material: windowMaterial,

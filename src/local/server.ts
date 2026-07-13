@@ -486,6 +486,24 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     return;
   }
 
+  const restrictedNotificationGrantMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/permissions\/notifications\/([^/]+)$/);
+  if (restrictedNotificationGrantMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedNotificationGrantMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const operation = method === "PUT"
+      ? state.restrictedApps.grantNotifications.bind(state.restrictedApps)
+      : state.restrictedApps.revokeNotifications.bind(state.restrictedApps);
+    const app = await runRestrictedAppMutation(state, workspace.id, () => operation({
+      workspaceId: workspace.id,
+      appId: restrictedNotificationGrantMatch[2],
+      permissionId: restrictedNotificationGrantMatch[3],
+      expectedDigest: body.expectedDigest!,
+    }));
+    sendJson(res, { app });
+    return;
+  }
+
   const restrictedBackgroundRunMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/background\/run$/);
   if (restrictedBackgroundRunMatch && method === "POST") {
     const workspace = await getWorkspace(restrictedBackgroundRunMatch[1]);

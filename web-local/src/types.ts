@@ -373,6 +373,12 @@ export interface RestrictedAppFileGrant {
   access: "read" | "read-write";
 }
 
+export interface RestrictedAppNotificationPermission {
+  id: string;
+  title: string;
+  description: string;
+}
+
 export interface RestrictedAppManifest {
   version: 1;
   id: string;
@@ -385,6 +391,7 @@ export interface RestrictedAppManifest {
   permissions: {
     network: RestrictedAppNetworkDestination[];
     files: RestrictedAppFilePermission[];
+    notifications: RestrictedAppNotificationPermission[];
   };
 }
 
@@ -401,6 +408,7 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   workspaceId: string;
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
+  notificationGrants: string[];
   backgroundEnabled: boolean;
   backgroundLastRunAt?: string;
   backgroundLastError?: string;

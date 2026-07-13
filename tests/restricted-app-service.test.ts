@@ -17,9 +17,11 @@ import {
   type RestrictedAppRuntimeHost,
 } from "../src/local/agent/restricted-app-service.js";
 import { FileRestrictedAppStorage } from "../src/local/agent/restricted-app-storage.js";
+import { RestrictedAppNotificationBroker } from "../src/local/agent/restricted-app-notifications.js";
 
 const spaceOne = "ws-1111111111111111";
 const spaceTwo = "ws-2222222222222222";
+const spaceThree = "ws-3333333333333333";
 
 test("RestrictedAppService inspects reviewed bytes and requires the expected digest before installation", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-review-"));
@@ -53,6 +55,7 @@ test("RestrictedAppService inspects reviewed bytes and requires the expected dig
     assert.equal(installed.workspaceId, spaceOne);
     assert.deepEqual(installed.networkGrants, [], "installation reviews code but does not implicitly grant network access");
     assert.deepEqual(installed.fileGrants, [], "installation does not implicitly grant Space files");
+    assert.deepEqual(installed.notificationGrants, [], "installation does not implicitly grant notifications");
     assert.equal(installed.backgroundEnabled, false, "installation does not implicitly enable background work");
     assert.equal("stagedRoot" in installed, false, "app-data staging paths must remain internal");
     assert.equal(existsSync(join(rootPath, "staged", review.digest, "worker.js")), true);
@@ -252,7 +255,7 @@ test("RestrictedAppService delegates declared actions with the installed owner a
   }
 });
 
-test("RestrictedAppService keeps storage across reviewed updates while resetting file and background authority", async () => {
+test("RestrictedAppService keeps storage across reviewed updates while resetting file, notification, and background authority", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-powers-"));
   const workspaceRoot = join(sandbox, "space");
   const sourceRoot = join(workspaceRoot, "apps", "inbox");
@@ -286,6 +289,13 @@ test("RestrictedAppService keeps storage across reviewed updates while resetting
       root: "reports",
     });
     assert.deepEqual(withFiles.fileGrants, [{ id: "exports", declarationId: "exports", root: "reports", access: "read-write" }]);
+    const withNotifications = await service.grantNotifications({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      permissionId: "new-mail",
+    });
+    assert.deepEqual(withNotifications.notificationGrants, ["new-mail"]);
     const enabled = await service.setBackgroundEnabled({
       workspaceId: spaceOne,
       appId: "connected-inbox",
@@ -296,12 +306,14 @@ test("RestrictedAppService keeps storage across reviewed updates while resetting
     const ran = await service.runBackgroundNow({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest });
     assert.equal(runtime.backgroundRuns.length, 1);
     assert.equal(runtime.backgroundRuns[0]?.event.reason, "manual");
+    assert.deepEqual(runtime.backgroundRuns[0]?.app.notificationGrants, ["new-mail"]);
     assert.ok(ran.backgroundLastRunAt);
 
     await writePackage(sourceRoot, { version: "0.2.0", appSource: "export async function handleAction() { return { count: 2 }; }\nexport async function handleBackground() {}\n" });
     const nextReview = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     const updated = await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: nextReview.digest });
     assert.deepEqual(updated.fileGrants, []);
+    assert.deepEqual(updated.notificationGrants, []);
     assert.equal(updated.backgroundEnabled, false);
     assert.deepEqual(await storage.get(owner, "view"), { folder: "inbox" }, "same app storage survives a reviewed digest update");
 
@@ -337,6 +349,60 @@ test("RestrictedAppService removes machine-local app state for only the removed 
     await service.removeWorkspace(spaceTwo);
     assert.equal((await storage.usage({ workspaceId: spaceTwo, appId: "connected-inbox" })).keyCount, 0);
     assert.equal(existsSync(join(rootPath, "staged", review.digest)), false);
+    await service.close();
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService re-reads notification grants after a queued background run acquires a global slot", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-background-slot-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const runtime = new QueuedNotificationRuntimeHost();
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    for (const workspaceId of [spaceOne, spaceTwo, spaceThree]) {
+      await service.install({ workspaceId, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+      await service.grantNotifications({ workspaceId, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
+      await service.setBackgroundEnabled({ workspaceId, appId: "connected-inbox", expectedDigest: review.digest, enabled: true });
+    }
+    const first = service.runBackgroundNow({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest });
+    const second = service.runBackgroundNow({ workspaceId: spaceTwo, appId: "connected-inbox", expectedDigest: review.digest });
+    await runtime.waitForStarts(2);
+    const queued = service.runBackgroundNow({ workspaceId: spaceThree, appId: "connected-inbox", expectedDigest: review.digest });
+    await service.revokeNotifications({ workspaceId: spaceThree, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
+    runtime.releaseOne();
+    await assert.rejects(queued, /notification category is not granted/i);
+    runtime.releaseOne();
+    await Promise.all([first, second]);
+    assert.deepEqual(runtime.notificationsShown.sort(), [spaceOne, spaceTwo]);
+    assert.deepEqual(runtime.notificationsDenied, [spaceThree]);
+    await service.close();
+  } finally {
+    runtime.closeBroker();
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService starts every Space app stop together and preserves state if any stop fails", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-remove-failure-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const runtime = new RejectingStopRuntimeHost("second-inbox");
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    await writePackage(join(workspaceRoot, "apps", "second"), { packageName: "second-inbox", appId: "second-inbox" });
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    for (const sourcePath of ["apps/inbox", "apps/second"]) {
+      const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath });
+      await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath, expectedDigest: review.digest });
+    }
+    await assert.rejects(service.removeWorkspace(spaceOne), /stop failed/);
+    assert.deepEqual(runtime.stops.sort(), ["connected-inbox", "second-inbox"]);
+    assert.deepEqual((await service.list(spaceOne)).map((app) => app.manifest.id).sort(), ["connected-inbox", "second-inbox"]);
     await service.close();
   } finally {
     await rm(sandbox, { recursive: true, force: true });
@@ -421,6 +487,65 @@ class RecordingRuntimeHost implements RestrictedAppRuntimeHost {
   }
 }
 
+class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
+  readonly notificationsShown: string[] = [];
+  readonly notificationsDenied: string[] = [];
+  readonly #releases: Array<() => void> = [];
+  readonly #broker = new RestrictedAppNotificationBroker({
+    sink: {
+      isSupported: () => true,
+      show: (notification, callbacks) => {
+        this.notificationsShown.push(notification.workspaceId);
+        return { close: callbacks.onClose };
+      },
+    },
+  });
+  #started = 0;
+
+  async invoke(): Promise<unknown> { return {}; }
+
+  async runBackground(app: RestrictedAppRuntimeDescriptor): Promise<void> {
+    this.#started += 1;
+    if (this.#started <= 2) await new Promise<void>((resolvePromise) => this.#releases.push(resolvePromise));
+    try {
+      this.#broker.show({
+        workspaceId: app.workspaceId,
+        appId: app.manifest.id,
+        digest: app.digest,
+        appTitle: app.manifest.title,
+        declarations: app.manifest.permissions.notifications,
+        grants: app.notificationGrants,
+        backgroundEnabled: app.backgroundEnabled,
+        invocationId: `background-${app.workspaceId}`,
+      }, { permissionId: "new-mail" }, () => undefined);
+    } catch (error) {
+      this.notificationsDenied.push(app.workspaceId);
+      throw error;
+    }
+  }
+
+  async waitForStarts(count: number): Promise<void> {
+    for (let attempt = 0; this.#started < count && attempt < 100; attempt += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    assert.equal(this.#started, count);
+  }
+
+  releaseOne(): void { this.#releases.shift()?.(); }
+  async stop(): Promise<void> {}
+  async close(): Promise<void> {}
+  closeBroker(): void { this.#broker.dispose(); }
+}
+
+class RejectingStopRuntimeHost implements RestrictedAppRuntimeHost {
+  readonly stops: string[] = [];
+  constructor(readonly rejectedAppId: string) {}
+  async invoke(): Promise<unknown> { return {}; }
+  async stop(_workspaceId: string, appId: string): Promise<void> {
+    this.stops.push(appId);
+    if (appId === this.rejectedAppId) throw new Error("stop failed");
+  }
+  async close(): Promise<void> {}
+}
+
 class MemoryConnectionStore implements RestrictedAppConnectionStore {
   readonly records = new Map<string, RestrictedAppCredential>();
   readonly setBindings: Array<{ binding: RestrictedAppConnectionBinding; credential: RestrictedAppCredential }> = [];
@@ -491,6 +616,7 @@ async function writePackage(root: string, options: {
     background: { intervalMinutes: 30 },
     permissions: {
       files: [{ id: "exports", target: "directory", access: "read-write" }],
+      notifications: [{ id: "new-mail", title: "New mail", description: "New messages are ready." }],
       network: [{
         id: "mail-api",
         target: { kind: "public-https", origin: "https://mail.example.com" },
