@@ -216,7 +216,14 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     } catch (error) {
       throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
     }
-    const instance = await this.#instance(app);
+    const generation = this.#generation(app.workspaceId, app.manifest.id);
+    const instance = await this.#instance(app, generation);
+    try {
+      this.#assertLaunchCurrent(app, generation);
+    } catch (error) {
+      await this.#destroy(instance);
+      throw error;
+    }
     if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling an action.");
     instance.pendingOperation = { kind: "action", id: randomUUID() };
     const serializedInput = JSON.stringify(input);
@@ -255,7 +262,17 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose background work.");
     }
     assertBoundedJson(event, "Restricted app background event", maxInvocationBytes);
-    const instance = await this.#instance(app);
+    const generation = this.#generation(app.workspaceId, app.manifest.id);
+    const instance = await this.#instance(app, generation);
+    // #instance may await cleanup before registering a replacement launch. A
+    // grant/update/remove stop during that await must invalidate this caller's
+    // authority instead of letting it capture the post-stop generation.
+    try {
+      this.#assertLaunchCurrent(app, generation);
+    } catch (error) {
+      await this.#destroy(instance);
+      throw error;
+    }
     if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling work.");
     instance.pendingOperation = { kind: "background", id: randomUUID() };
     const serializedEvent = JSON.stringify(event);
@@ -475,26 +492,30 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     await Promise.allSettled([...this.#uiInstances.values()].map((instance) => this.#destroyUi(instance, "stopped")));
   }
 
-  async #instance(app: RestrictedAppRuntimeDescriptor): Promise<RestrictedAppInstance> {
+  async #instance(app: RestrictedAppRuntimeDescriptor, expectedGeneration: number): Promise<RestrictedAppInstance> {
     const key = instanceKey(app.workspaceId, app.manifest.id, app.digest);
     const scopeKey = appScopeKey(app.workspaceId, app.manifest.id);
     const existing = this.#instances.get(key);
     if (existing && !existing.crashed && !existing.window.isDestroyed() && !existing.window.webContents.isDestroyed()) {
+      this.#assertLaunchCurrent(app, expectedGeneration);
       if (existing.idleTimer) clearTimeout(existing.idleTimer);
       existing.idleTimer = undefined;
       return existing;
     }
     const launching = this.#launches.get(scopeKey);
     if (launching) {
-      if (launching.digest === app.digest) return await launching.promise;
+      if (launching.digest === app.digest) {
+        this.#assertLaunchCurrent(app, expectedGeneration);
+        return await launching.promise;
+      }
       this.#advanceGeneration(app.workspaceId, app.manifest.id);
       await launching.promise.catch(() => undefined);
     }
     for (const instance of [...this.#instances.values()]) {
       if (instance.app.workspaceId === app.workspaceId && instance.app.manifest.id === app.manifest.id) await this.#destroy(instance);
     }
-    const generation = this.#generation(app.workspaceId, app.manifest.id);
-    const promise = this.#launch(app, key, generation).finally(() => {
+    this.#assertLaunchCurrent(app, expectedGeneration);
+    const promise = this.#launch(app, key, expectedGeneration).finally(() => {
       if (this.#launches.get(scopeKey)?.promise === promise) this.#launches.delete(scopeKey);
     });
     this.#launches.set(scopeKey, { workspaceId: app.workspaceId, appId: app.manifest.id, digest: app.digest, promise });

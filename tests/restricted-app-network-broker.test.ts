@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -11,6 +14,7 @@ import {
   type RestrictedAppCredential,
   type RestrictedAppRuntimeOwner,
 } from "../src/local/agent/restricted-app-connections.js";
+import { EncryptedRestrictedAppConnectionStore } from "../src/local/agent/restricted-app-connection-store.js";
 import {
   parseRestrictedAppManifest,
   type RestrictedAppAuthDeclaration,
@@ -118,10 +122,10 @@ function isRestrictedError(code: RestrictedAppError["code"]): (error: unknown) =
 }
 
 test("network broker derives the exact digest and origin credential binding", async () => {
-  const connections = new MemoryConnections();
+  const connections = new MemoryConnections({ kind: "bearer", token: "binding-token" });
   const broker = new RestrictedAppNetworkBroker({ credentials: connections, fetch: successfulFetch() });
 
-  await broker.request(owner, manifest(), {
+  await broker.request(owner, manifest({ auth: [{ kind: "bearer" }] }), {
     destinationId: "mail-api",
     method: "GET",
     path: "/messages?unread=true",
@@ -356,7 +360,15 @@ test("network broker reaches an exact loopback service and denies its redirects"
     const address = server.address();
     assert.ok(address && typeof address === "object");
     assert.ok(address.port >= 1_024);
-    const broker = new RestrictedAppNetworkBroker({ credentials: new MemoryConnections() });
+    const productionConnections = new EncryptedRestrictedAppConnectionStore(
+      join(tmpdir(), `workspace-loopback-composition-${randomUUID()}.bin`),
+      {
+        isAvailable: () => true,
+        encrypt: (plaintext) => Buffer.from(plaintext, "utf8"),
+        decrypt: (ciphertext) => Buffer.from(ciphertext).toString("utf8"),
+      },
+    );
+    const broker = new RestrictedAppNetworkBroker({ credentials: productionConnections });
     const localOwner = { ...owner, networkGrants: ["local-api"] };
     const app = loopbackManifest(address.port);
 

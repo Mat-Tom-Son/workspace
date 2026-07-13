@@ -14,20 +14,39 @@ export async function handleAction(action, input) {
 }
 
 export async function handleBackground(event) {
-  const response = await globalThis.workspaceRestrictedApp.request({
-    destinationId: "mail-api",
-    method: "GET",
-    path: "/messages?limit=20",
-    headers: { accept: "application/json" },
-  });
+  let network;
+  try {
+    const response = await globalThis.workspaceRestrictedApp.request({
+      destinationId: "mail-api",
+      method: "GET",
+      path: "/messages?limit=20",
+      headers: { accept: "application/json" },
+    });
+    network = response.status >= 200 && response.status < 300
+      ? { state: "connected", status: response.status }
+      : { state: "http-error", status: response.status };
+  } catch (error) {
+    network = { state: "unavailable", code: errorCode(error, "NETWORK_FAILED") };
+  }
+
+  let notification;
+  try {
+    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "inbox-check-finished" });
+    notification = { state: "requested" };
+  } catch (error) {
+    notification = { state: "not-shown", code: errorCode(error, "NOTIFICATION_FAILED") };
+  }
+
   await globalThis.workspaceRestrictedApp.storage.set("last-background-sync", {
+    version: 1,
     reason: event.reason,
     scheduledAt: event.scheduledAt,
-    status: response.status,
+    completedAt: new Date().toISOString(),
+    network,
+    notification,
   });
-  try {
-    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "new-messages" });
-  } catch {
-    // Notification access is optional and must not fail the completed sync.
-  }
+}
+
+function errorCode(error, fallback) {
+  return error && typeof error === "object" && typeof error.code === "string" ? error.code : fallback;
 }

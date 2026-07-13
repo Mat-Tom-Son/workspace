@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
@@ -41,7 +42,58 @@ test("checked-in restricted app example stays valid for the staged contract", as
   const inspection = await inspectRestrictedAppPackage(join(process.cwd(), "examples", "packages", "restricted-connected-inbox"));
   assert.equal(inspection.manifest.id, "restricted-connected-inbox");
   assert.deepEqual(inspection.manifest.permissions.network[0]?.target, { kind: "public-https", origin: "https://mail.example.com" });
+  assert.deepEqual(inspection.manifest.permissions.notifications, [{
+    id: "inbox-check-finished",
+    title: "Inbox check finished",
+    description: "The background inbox check finished. Open Workspace to review the connection result.",
+  }]);
   assert.equal(inspection.manifest.runtime.entry, "index.html");
+});
+
+test("checked-in example records failed background network checks after requesting its static notification", async () => {
+  type ExampleBridge = {
+    request: () => Promise<never>;
+    notifications: { show: (request: { permissionId: string }) => Promise<void> };
+    storage: { set: (key: string, value: unknown) => Promise<void> };
+  };
+  const runtime = globalThis as typeof globalThis & { workspaceRestrictedApp?: ExampleBridge };
+  const previousBridge = runtime.workspaceRestrictedApp;
+  const operations: string[] = [];
+  const writes: Array<{ key: string; value: unknown }> = [];
+  runtime.workspaceRestrictedApp = {
+    request: async () => {
+      operations.push("network");
+      throw Object.assign(new Error("Network access is off."), { code: "NETWORK_DENIED" });
+    },
+    notifications: {
+      show: async ({ permissionId }) => {
+        operations.push(`notification:${permissionId}`);
+      },
+    },
+    storage: {
+      set: async (key, value) => {
+        operations.push(`storage:${key}`);
+        writes.push({ key, value });
+      },
+    },
+  };
+
+  try {
+    const workerUrl = pathToFileURL(join(process.cwd(), "examples", "packages", "restricted-connected-inbox", "worker.js"));
+    workerUrl.searchParams.set("test", String(Date.now()));
+    const worker = await import(workerUrl.href) as { handleBackground: (event: { reason: string; scheduledAt: string }) => Promise<void> };
+    await worker.handleBackground({ reason: "manual", scheduledAt: "2026-07-13T12:00:00.000Z" });
+
+    assert.deepEqual(operations, ["network", "notification:inbox-check-finished", "storage:last-background-sync"]);
+    assert.equal(writes.length, 1);
+    assert.deepEqual((writes[0]?.value as { network: unknown }).network, { state: "unavailable", code: "NETWORK_DENIED" });
+    assert.deepEqual((writes[0]?.value as { notification: unknown }).notification, { state: "requested" });
+    assert.equal((writes[0]?.value as { reason: unknown }).reason, "manual");
+    assert.match((writes[0]?.value as { completedAt: string }).completedAt, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    if (previousBridge === undefined) delete runtime.workspaceRestrictedApp;
+    else runtime.workspaceRestrictedApp = previousBridge;
+  }
 });
 
 test("restricted app package preflight rejects native Pi and package-manager execution paths", async () => {

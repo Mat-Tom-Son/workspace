@@ -177,7 +177,10 @@ export class RestrictedAppService {
         throw new RestrictedAppError("REVISION_CHANGED", errorMessage(error));
       }
       if (staged.digest !== expectedDigest) throw new RestrictedAppError("REVISION_CHANGED", "The package changed while it was being staged.");
-      if (existing) await this.#runtimeHost?.stop(input.workspaceId, existing.manifest.id, existing.digest);
+      if (existing) {
+        await this.#runtimeHost?.stop(input.workspaceId, existing.manifest.id, existing.digest);
+        await this.#invalidateOAuthApp(existing);
+      }
       const timestamp = this.#now().toISOString();
       const entry: RestrictedAppRegistryEntry = {
         workspaceId: input.workspaceId,
@@ -215,6 +218,7 @@ export class RestrictedAppService {
         throw new RestrictedAppError("REVISION_CHANGED", "The installed app revision changed. Refresh before removing it.");
       }
       await this.#runtimeHost?.stop(input.workspaceId, appId, existing.digest);
+      await this.#invalidateOAuthApp(existing);
       this.#clearBackground(input.workspaceId, appId);
       await this.#writeRegistry({
         schemaVersion: 1,
@@ -232,6 +236,7 @@ export class RestrictedAppService {
       const removed = this.#registry.apps.filter((item) => item.workspaceId === workspaceId);
       if (!removed.length) return;
       await Promise.all(removed.map((app) => this.#runtimeHost?.stop(workspaceId, app.manifest.id, app.digest)));
+      await Promise.all(removed.map((app) => this.#invalidateOAuthApp(app)));
       for (const app of removed) this.#clearBackground(workspaceId, app.manifest.id);
       await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.filter((item) => item.workspaceId !== workspaceId) });
       for (const app of removed) {
@@ -268,35 +273,43 @@ export class RestrictedAppService {
   }
 
   async setConnection(input: { workspaceId: string; appId: string; expectedDigest: string; destinationId: string; credential: unknown }): Promise<RestrictedAppConnectionStatus> {
-    this.#assertOpen();
-    if (!this.#connections) throw new RestrictedAppError("APP_UNAVAILABLE", "Encrypted app connections require the Workspace desktop host.");
-    const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
-    const destination = app.manifest.permissions.network.find((item) => item.id === input.destinationId);
-    if (!destination) throw new RestrictedAppError("NETWORK_DENIED", "The app did not declare this connection destination.");
-    let credential: RestrictedAppCredential;
-    try {
-      credential = normalizeRestrictedAppCredential(input.credential);
-    } catch (error) {
-      throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
-    }
-    if (credential.kind === "oauth2-pkce") throw new RestrictedAppError("INPUT_INVALID", "OAuth tokens can be created only by Workspace's browser sign-in flow.");
-    if (!destination.auth.some((item) => item.kind === credential.kind)) throw new RestrictedAppError("AUTH_REQUIRED", "This connection type is not accepted by the app revision.");
-    await this.#connections.set({ ...ownerFromEntry(app), destinationId: destination.id, origin: restrictedAppNetworkOrigin(destination) }, credential);
-    return { destinationId: destination.id, kind: credential.kind, configured: true };
+    return await this.#mutate(async () => {
+      if (!this.#connections) throw new RestrictedAppError("APP_UNAVAILABLE", "Encrypted app connections require the Workspace desktop host.");
+      const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
+      const destination = app.manifest.permissions.network.find((item) => item.id === input.destinationId);
+      if (!destination) throw new RestrictedAppError("NETWORK_DENIED", "The app did not declare this connection destination.");
+      let credential: RestrictedAppCredential;
+      try {
+        credential = normalizeRestrictedAppCredential(input.credential);
+      } catch (error) {
+        throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
+      }
+      if (credential.kind === "oauth2-pkce") throw new RestrictedAppError("INPUT_INVALID", "OAuth tokens can be created only by Workspace's browser sign-in flow.");
+      if (!destination.auth.some((item) => item.kind === credential.kind)) throw new RestrictedAppError("AUTH_REQUIRED", "This connection type is not accepted by the app revision.");
+      await this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest);
+      await this.#invalidateOAuthDestination(app, destination);
+      await this.#connections.set({ ...ownerFromEntry(app), destinationId: destination.id, origin: restrictedAppNetworkOrigin(destination) }, credential);
+      return { destinationId: destination.id, kind: credential.kind, configured: true };
+    });
   }
 
   async deleteConnection(input: { workspaceId: string; appId: string; expectedDigest: string; destinationId: string }): Promise<boolean> {
-    this.#assertOpen();
-    if (!this.#connections) return false;
-    const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
-    const destination = app.manifest.permissions.network.find((item) => item.id === input.destinationId);
-    if (!destination) return false;
-    return await this.#connections.delete({ ...ownerFromEntry(app), destinationId: destination.id, origin: restrictedAppNetworkOrigin(destination) });
+    return await this.#mutate(async () => {
+      if (!this.#connections) return false;
+      const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
+      const destination = app.manifest.permissions.network.find((item) => item.id === input.destinationId);
+      if (!destination) return false;
+      await this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest);
+      const oauthRemoved = await this.#invalidateOAuthDestination(app, destination);
+      if (oauthRemoved !== undefined) return oauthRemoved;
+      return await this.#connections.delete({ ...ownerFromEntry(app), destinationId: destination.id, origin: restrictedAppNetworkOrigin(destination) });
+    });
   }
 
   async connectOAuth(input: { workspaceId: string; appId: string; expectedDigest: string; destinationId: string }): Promise<RestrictedAppConnectionStatus> {
     this.#assertOpen();
     if (!this.#oauth) throw new RestrictedAppError("APP_UNAVAILABLE", "OAuth browser sign-in requires the Workspace desktop host.");
+    await this.#queue.catch(() => undefined);
     const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
     const destination = app.manifest.permissions.network.find((item) => item.id === input.destinationId);
     const declaration = destination?.auth.find((item) => item.kind === "oauth2-pkce");
@@ -546,18 +559,31 @@ export class RestrictedAppService {
   }
 
   async #executeBackground(workspaceId: string, appId: string, digest: string, reason: "scheduled" | "manual" | "resume"): Promise<void> {
-    if (this.#closed || !this.#runtimeHost?.runBackground) return;
-    const app = this.#installed(workspaceId, appId, digest);
-    if (!app.backgroundEnabled || !app.manifest.background) return;
+    const runBackground = this.#runtimeHost?.runBackground?.bind(this.#runtimeHost);
+    if (this.#closed || !runBackground) return;
     const scheduledAt = this.#now().toISOString();
     let failure: string | undefined;
     await this.#acquireBackgroundSlot();
     try {
-      const current = this.#installed(workspaceId, appId, digest);
-      if (!current.backgroundEnabled || this.#backgroundSuspended) return;
-      await this.#runtimeHost.runBackground({ ...current, stagedRoot: this.#digestRoot(current.digest) }, { reason, scheduledAt });
-    } catch (error) {
-      failure = errorMessage(error).slice(0, 300);
+      let execution: Promise<void> | undefined;
+      await this.#mutate(async () => {
+        const current = this.#installed(workspaceId, appId, digest);
+        if (!current.backgroundEnabled || !current.manifest.background || this.#backgroundSuspended) return;
+        // Starting the host promise while still holding the service queue makes
+        // launch linearizable with stop+grant/update/remove mutations. A later
+        // mutation either precedes this snapshot or observes and stops the
+        // registered host launch; no stale launch can enter after stop.
+        execution = runBackground(
+          { ...current, stagedRoot: this.#digestRoot(current.digest) },
+          { reason, scheduledAt },
+        );
+      });
+      if (!execution) return;
+      try {
+        await execution;
+      } catch (error) {
+        failure = errorMessage(error).slice(0, 300);
+      }
     } finally {
       this.#releaseBackgroundSlot();
     }
@@ -572,6 +598,30 @@ export class RestrictedAppService {
       await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.map((item) => item === existing ? next : item) });
     });
     if (failure) throw new RestrictedAppError("APP_ERROR", failure);
+  }
+
+  async #invalidateOAuthApp(app: RestrictedAppInstalled): Promise<void> {
+    if (!this.#oauth) return;
+    for (const destination of app.manifest.permissions.network) {
+      await this.#invalidateOAuthDestination(app, destination);
+    }
+  }
+
+  async #invalidateOAuthDestination(
+    app: RestrictedAppInstalled,
+    destination: RestrictedAppManifest["permissions"]["network"][number],
+  ): Promise<boolean | undefined> {
+    if (!this.#oauth || !destination.auth.some((item) => item.kind === "oauth2-pkce")) return undefined;
+    try {
+      return await this.#oauth.disconnect({
+        ...ownerFromEntry(app),
+        destinationId: destination.id,
+        origin: restrictedAppNetworkOrigin(destination),
+      });
+    } catch (error) {
+      if (!(error instanceof RestrictedAppOAuthError)) throw error;
+      throw new RestrictedAppError(error.code === "STORAGE_FAILED" ? "STORAGE_FAILED" : "AUTH_REQUIRED", error.message);
+    }
   }
 
   async #acquireBackgroundSlot(): Promise<void> {

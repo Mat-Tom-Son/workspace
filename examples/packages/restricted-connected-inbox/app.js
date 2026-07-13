@@ -1,5 +1,6 @@
 const bridge = globalThis.workspaceRestrictedApp;
 const root = document.querySelector("#app");
+const backgroundSyncKey = "last-background-sync";
 
 const messages = [
   { id: "release", sender: "Mira Chen", subject: "Release checklist", preview: "The last two desktop checks are green…", time: "9:42", folder: "inbox", unread: true, body: "The last two desktop checks are green. I left the service smoke test assigned to you and added the updater notes to the release checklist." },
@@ -10,16 +11,23 @@ const messages = [
 
 let context = bridge.context.get();
 let query = await bridge.storage.get("search-query").catch(() => "") || "";
+let lastBackgroundSync = await bridge.storage.get(backgroundSyncKey).catch(() => null);
+let lastBackgroundStorageEvent = null;
 bridge.context.onChanged((next) => {
   context = next;
   document.documentElement.dataset.theme = next.theme;
   render();
+});
+bridge.storage.onChanged((event) => {
+  if (!event.reset && !event.keys.includes(backgroundSyncKey)) return;
+  void refreshBackgroundSync(event);
 });
 document.documentElement.dataset.theme = context.theme;
 
 function render() {
   if (context.placement === "navigator") renderNavigator();
   else renderTab();
+  updateBackgroundSyncStatus();
 }
 
 function renderNavigator() {
@@ -33,6 +41,7 @@ function renderNavigator() {
         <button class="folder" data-open-folder="drafts"><span>Drafts</span><small>1</small></button>
         <button class="folder" data-open-service><span>Project service</span><i class="status-dot"></i></button>
       </nav>
+      ${backgroundSyncStatusMarkup()}
       <div class="section-heading"><span>Recent</span><button data-open-folder="inbox">View all</button></div>
       <div class="message-list">${filtered.map(messageRow).join("") || `<p class="empty">No matching messages</p>`}</div>
       <footer><button class="secondary" data-refresh>Refresh connection</button><span id="connection-state">Demo data</span></footer>
@@ -52,7 +61,7 @@ function renderTab() {
 
 function renderInbox(folder) {
   const filtered = messages.filter((message) => message.folder === folder && `${message.sender} ${message.subject}`.toLowerCase().includes(query.toLowerCase()));
-  root.innerHTML = `<section class="tab-shell"><header class="tab-header"><div><span class="eyebrow">CONNECTED INBOX</span><h1>${folder === "drafts" ? "Drafts" : "Inbox"}</h1><p>${filtered.length} messages in this Space</p></div><button class="primary" data-open-compose>Compose</button></header><div class="tab-toolbar"><label class="search"><span>⌕</span><input type="search" value="${escapeAttribute(query)}" placeholder="Filter messages"></label><button class="secondary" data-refresh>Sync</button></div><div class="wide-message-list">${filtered.map(messageCard).join("") || `<p class="empty">Nothing here yet</p>`}</div><p id="connection-state" class="connection-state">Showing local demo data. Approve mail-api in Capabilities to connect.</p></section>`;
+  root.innerHTML = `<section class="tab-shell"><header class="tab-header"><div><span class="eyebrow">CONNECTED INBOX</span><h1>${folder === "drafts" ? "Drafts" : "Inbox"}</h1><p>${filtered.length} messages in this Space</p></div><button class="primary" data-open-compose>Compose</button></header><div class="tab-toolbar"><label class="search"><span>⌕</span><input type="search" value="${escapeAttribute(query)}" placeholder="Filter messages"></label><button class="secondary" data-refresh>Sync</button></div>${backgroundSyncStatusMarkup()}<div class="wide-message-list">${filtered.map(messageCard).join("") || `<p class="empty">Nothing here yet</p>`}</div><p id="connection-state" class="connection-state">Showing local demo data. Approve mail-api in Capabilities to connect.</p></section>`;
   root.querySelector("input")?.addEventListener("input", (event) => { query = event.target.value; void bridge.storage.set("search-query", query); renderInbox(folder); });
   wireOpenActions();
   root.querySelector("[data-refresh]")?.addEventListener("click", refreshMail);
@@ -131,6 +140,74 @@ async function refreshMail() {
   } catch (error) {
     if (status) status.textContent = friendlyConnectionError(error);
   }
+}
+
+async function refreshBackgroundSync(event) {
+  lastBackgroundStorageEvent = event;
+  lastBackgroundSync = await bridge.storage.get(backgroundSyncKey).catch(() => null);
+  updateBackgroundSyncStatus();
+}
+
+function updateBackgroundSyncStatus() {
+  const summary = summarizeBackgroundSync();
+  root.querySelectorAll("[data-background-sync]").forEach((element) => {
+    element.dataset.state = summary.state;
+    const title = element.querySelector("[data-background-sync-title]");
+    const detail = element.querySelector("[data-background-sync-detail]");
+    if (title) title.textContent = summary.title;
+    if (detail) detail.textContent = summary.detail;
+  });
+}
+
+function summarizeBackgroundSync() {
+  if (!lastBackgroundSync || typeof lastBackgroundSync !== "object") {
+    const source = lastBackgroundStorageEvent
+      ? `Live storage ${lastBackgroundStorageEvent.reset ? "reset" : "update"} · revision ${lastBackgroundStorageEvent.revision}`
+      : "Waiting for the first background check";
+    return { state: "idle", title: "Background check has not run", detail: `${source}. Use Run now in Capabilities.` };
+  }
+
+  const network = lastBackgroundSync.network && typeof lastBackgroundSync.network === "object" ? lastBackgroundSync.network : {};
+  const notification = lastBackgroundSync.notification && typeof lastBackgroundSync.notification === "object" ? lastBackgroundSync.notification : {};
+  let title = "Remote check result unavailable";
+  let state = "warning";
+  if (network.state === "connected") {
+    title = `Remote check connected · HTTP ${safeStatus(network.status)}`;
+    state = "success";
+  } else if (network.state === "http-error") {
+    title = `Remote check returned HTTP ${safeStatus(network.status)}`;
+  } else if (network.code === "NETWORK_DENIED") {
+    title = "Remote check blocked · mail-api access is off";
+  } else if (network.code === "AUTH_REQUIRED") {
+    title = "Remote check blocked · connection required";
+  } else if (network.state === "unavailable") {
+    title = "Remote check finished · fake endpoint unavailable";
+  }
+
+  const eventLabel = lastBackgroundStorageEvent
+    ? `Live storage ${lastBackgroundStorageEvent.reset ? "reset" : "update"} · revision ${lastBackgroundStorageEvent.revision}`
+    : "Loaded from app storage";
+  const completedLabel = formatBackgroundTime(lastBackgroundSync.completedAt);
+  const notificationLabel = notification.state === "requested"
+    ? "Windows notification requested"
+    : notification.code === "NOTIFICATION_DENIED"
+      ? "notification access is off"
+      : "Windows notification unavailable";
+  return { state, title, detail: `${eventLabel} · ${completedLabel} · ${notificationLabel}` };
+}
+
+function backgroundSyncStatusMarkup() {
+  return `<aside class="background-sync-status" data-background-sync data-state="idle" aria-live="polite"><span class="background-sync-dot" aria-hidden="true"></span><span><strong data-background-sync-title>Background check has not run</strong><small data-background-sync-detail>Use Run now in Capabilities.</small></span></aside>`;
+}
+
+function safeStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : "unknown";
+}
+
+function formatBackgroundTime(value) {
+  if (typeof value !== "string") return "time unavailable";
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? "time unavailable" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
 
 function wireOpenActions() {

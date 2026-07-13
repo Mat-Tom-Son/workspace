@@ -12,11 +12,14 @@ static notification category for completed background syncs.
   code adapts to the rail navigator and app-owned work tabs using
   `workspaceRestrictedApp.context`.
 - `worker.js` exposes an Assistant action and a user-enabled background sync;
-  that sync may select the separately granted `new-messages` notification.
+  that sync records its remote result and may select the separately granted
+  `inbox-check-finished` notification.
 - Network calls and tab creation go through the narrow
   `workspaceRestrictedApp` bridge; the app has no Node, filesystem, process,
-  or direct network access. Search state uses the host storage bridge, and
-  service exports use a separately granted Space folder plus History safety.
+  or direct network access. Search and background-check state use the host
+  storage bridge, active visible UI re-reads after bounded invalidation hints,
+  and service exports use a separately granted Space folder plus History
+  safety.
 
 Install the Space-relative folder through **Capabilities → Apps in this
 Space → Advanced local install**.
@@ -27,10 +30,50 @@ the app grants nothing: allow each destination under Capabilities before the
 broker will attempt a request. Workspace verifies the loopback address and
 port, but this version does not verify process ownership.
 
+## Hands-on local service
+
+From the repository root, start the dependency-free demo service in an
+ordinary terminal:
+
+```powershell
+node examples/services/restricted-app-demo-service.mjs
+```
+
+It binds only `127.0.0.1:4317` and implements `GET /health` plus
+`POST /jobs/refresh`. Allow **project-service** for this app in Capabilities,
+open **Project service**, then use **Check health** or **Run refresh job**.
+
+This helper is an ordinary developer process outside the restricted app
+package. Workspace and the sandboxed app do not execute, install, stop, or
+trust it. Workspace verifies only the reviewed numeric loopback address and
+port before brokering a request; it does not verify that this particular
+process owns the port. Stop the helper from its terminal when testing is done.
+
 Notifications are separately off after installation. If allowed, they can be
 shown only during enabled background work while Workspace is running, using
 the exact title and body reviewed in `agent-app.json`; app code cannot supply
 dynamic notification copy, actions, or URLs.
+
+## Hands-on background check
+
+1. Open this app and choose **View all** so its Inbox work tab remains selected
+   on the right.
+2. Open **Capabilities** on the left, expand this app, enable background work,
+   and choose **Allow notifications** for **Inbox check finished**. The
+   `mail-api` network grant may remain off.
+3. Choose **Run now**. The selected Inbox tab updates its background-check card
+   from a live `storage.onChanged` hint, including the storage revision and the
+   honest network outcome. A granted notification is also requested even when
+   the fake endpoint is denied or unavailable.
+4. If the app view was inactive during the run, return to it to see the same
+   durable result loaded from app storage. Invalidation hints are intentionally
+   not queued or replayed for inactive views.
+
+Windows can suppress a requested notification through Focus Assist or system
+notification settings. The status card distinguishes a host-accepted request
+from notification access being off or the Windows notification host failing.
+The notification says only that the check finished; it never claims new mail
+when the example endpoint could not be reached.
 
 No credential belongs in this directory. Auth declarations describe the
 host-owned connection adapters the app accepts; they are never tokens or

@@ -509,11 +509,11 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const workspace = await getWorkspace(restrictedBackgroundRunMatch[1]);
     const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
     if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
-    const app = await state.restrictedApps.runBackgroundNow({
+    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.runBackgroundNow({
       workspaceId: workspace.id,
       appId: restrictedBackgroundRunMatch[2],
-      expectedDigest: body.expectedDigest,
-    });
+      expectedDigest: body.expectedDigest!,
+    }));
     sendJson(res, { app });
     return;
   }

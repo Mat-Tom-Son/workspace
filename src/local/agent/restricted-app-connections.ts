@@ -157,7 +157,12 @@ export class RestrictedAppNetworkBroker {
       destinationId: destination.id,
       origin,
     };
-    const credential = await this.#credentials.get(binding);
+    // Anonymous destinations never need the encrypted credential namespace.
+    // This is also required for loopback destinations: their reviewed binding
+    // is intentionally HTTP, while persisted credentials accept HTTPS origins
+    // only because secrets must never be sent to loopback services.
+    const anonymous = destination.auth.length === 1 && destination.auth[0]?.kind === "none";
+    const credential = anonymous ? undefined : await this.#credentials.get(binding);
     if (credential?.kind === "oauth2-pkce") {
       const declaration = destination.auth.find((item) => item.kind === "oauth2-pkce");
       if (!declaration || !this.#oauth) throw new RestrictedAppError("AUTH_REQUIRED", "Renew this app's browser connection before using it.");

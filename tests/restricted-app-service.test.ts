@@ -18,6 +18,12 @@ import {
 } from "../src/local/agent/restricted-app-service.js";
 import { FileRestrictedAppStorage } from "../src/local/agent/restricted-app-storage.js";
 import { RestrictedAppNotificationBroker } from "../src/local/agent/restricted-app-notifications.js";
+import {
+  RestrictedAppOAuthError,
+  RestrictedAppOAuthPkceClient,
+  type RestrictedAppOAuthConnection,
+  type RestrictedAppOAuthPublicHttpsTransport,
+} from "../src/local/agent/restricted-app-oauth.js";
 
 const spaceOne = "ws-1111111111111111";
 const spaceTwo = "ws-2222222222222222";
@@ -234,7 +240,8 @@ test("RestrictedAppService delegates declared actions with the installed owner a
     assert.deepEqual(runtime.stops, [
       { workspaceId: spaceOne, appId: "connected-inbox", digest: review.digest },
       { workspaceId: spaceOne, appId: "connected-inbox", digest: review.digest },
-    ], "grant and revoke both stop the old runtime owner before changing its permissions");
+      { workspaceId: spaceOne, appId: "connected-inbox", digest: review.digest },
+    ], "credential replacement, grant, and revoke stop the old runtime owner before changing its authority");
     assert.equal(await service.deleteConnection({
       workspaceId: spaceOne,
       appId: "connected-inbox",
@@ -360,9 +367,10 @@ test("RestrictedAppService re-reads notification grants after a queued backgroun
   const workspaceRoot = join(sandbox, "space");
   const rootPath = join(sandbox, "state", "restricted-apps");
   const runtime = new QueuedNotificationRuntimeHost();
+  let service: RestrictedAppService | undefined;
   try {
     await writePackage(join(workspaceRoot, "apps", "inbox"));
-    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     for (const workspaceId of [spaceOne, spaceTwo, spaceThree]) {
       await service.install({ workspaceId, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
@@ -381,8 +389,155 @@ test("RestrictedAppService re-reads notification grants after a queued backgroun
     assert.deepEqual(runtime.notificationsShown.sort(), [spaceOne, spaceTwo]);
     assert.deepEqual(runtime.notificationsDenied, [spaceThree]);
     await service.close();
+    service = undefined;
   } finally {
+    runtime.releaseAll();
+    await service?.close().catch(() => undefined);
     runtime.closeBroker();
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService serializes a background launch started by stop behind the grant mutation", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-background-stop-race-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const runtime = new StopRaceRuntimeHost();
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    await service.grantNotifications({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
+    await service.setBackgroundEnabled({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, enabled: true });
+
+    runtime.startBackgroundWhenStopped(service, review.digest);
+    await service.revokeNotifications({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
+    assert.ok(runtime.backgroundRun);
+    await runtime.backgroundRun;
+
+    assert.equal(runtime.backgroundRuns.length, 1);
+    assert.deepEqual(runtime.backgroundRuns[0]?.notificationGrants, [], "the post-stop launch must re-read the committed grant state");
+    await service.close();
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService uses OAuth generation invalidation so disconnect cannot be undone by an in-flight refresh", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-oauth-disconnect-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const connections = new MemoryConnectionStore();
+  const runtime = new RecordingRuntimeHost();
+  const configuration = { issuer: "https://identity.example.com", clientId: "workspace-public-client", scopes: ["mail.read"] };
+  let refreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const started = new Promise<void>((resolvePromise) => { refreshStarted = resolvePromise; });
+  const release = new Promise<void>((resolvePromise) => { releaseRefresh = resolvePromise; });
+  const transport: RestrictedAppOAuthPublicHttpsTransport = {
+    async getJson() {
+      return {
+        status: 200,
+        body: {
+          issuer: configuration.issuer,
+          authorization_endpoint: "https://identity.example.com/authorize",
+          token_endpoint: "https://identity.example.com/token",
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        },
+      };
+    },
+    async postForm() {
+      refreshStarted();
+      await release;
+      return { status: 200, body: { access_token: "resurrected-access", token_type: "Bearer", expires_in: 3_600 } };
+    },
+  };
+  const oauth = oauthClient(connections, transport, new Date("2026-07-13T12:00:00.000Z"));
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"), { networkAuth: [{ kind: "oauth2-pkce", ...configuration }] });
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime, connections, oauth });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    const binding = {
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      digest: review.digest,
+      destinationId: "mail-api",
+      origin: "https://mail.example.com",
+    };
+    await connections.set(binding, {
+      kind: "oauth2-pkce",
+      issuer: configuration.issuer,
+      clientId: configuration.clientId,
+      requestedScopes: configuration.scopes,
+      grantedScopes: configuration.scopes,
+      tokenType: "Bearer",
+      accessToken: "expiring-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2026-07-13T12:00:30.000Z",
+      connectedAt: "2026-07-12T12:00:00.000Z",
+    });
+
+    const authorization = oauth.authorize(binding, configuration, new Headers());
+    await started;
+    assert.equal(await service.deleteConnection({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      destinationId: "mail-api",
+    }), true);
+    releaseRefresh();
+
+    await assert.rejects(authorization, (error: unknown) => error instanceof RestrictedAppOAuthError && error.code === "AUTH_REQUIRED");
+    assert.equal(await connections.get(binding), undefined);
+    assert.equal(connections.setBindings.length, 1, "the in-flight refresh must not save a replacement token");
+    assert.deepEqual(runtime.stops, [{ workspaceId: spaceOne, appId: "connected-inbox", digest: review.digest }]);
+    await service.close();
+  } finally {
+    releaseRefresh?.();
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService invalidates OAuth generations before credential replacement, app update, and removal", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-oauth-lifecycle-"));
+  const workspaceRoot = join(sandbox, "space");
+  const sourceRoot = join(workspaceRoot, "apps", "inbox");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const connections = new MemoryConnectionStore();
+  const oauth = oauthClient(connections, {
+    async getJson() { assert.fail("Lifecycle invalidation must not contact the provider."); },
+    async postForm() { assert.fail("Lifecycle invalidation must not contact the provider."); },
+  }, new Date("2026-07-13T12:00:00.000Z"));
+  const networkAuth = [
+    { kind: "api-key", header: "x-api-key" },
+    { kind: "oauth2-pkce", issuer: "https://identity.example.com", clientId: "workspace-public-client", scopes: ["mail.read"] },
+  ];
+  try {
+    await writePackage(sourceRoot, { networkAuth });
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: new RecordingRuntimeHost(), connections, oauth });
+    const first = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: first.digest });
+    await service.setConnection({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: first.digest,
+      destinationId: "mail-api",
+      credential: { kind: "api-key", value: "replacement" },
+    });
+
+    await writePackage(sourceRoot, { version: "0.2.0", networkAuth });
+    const second = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: second.digest });
+    await service.remove({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: second.digest });
+
+    assert.deepEqual(connections.deleteBindings.map((binding) => binding.digest), [first.digest, first.digest, second.digest]);
+    await service.close();
+  } finally {
     await rm(sandbox, { recursive: true, force: true });
   }
 });
@@ -491,6 +646,7 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
   readonly notificationsShown: string[] = [];
   readonly notificationsDenied: string[] = [];
   readonly #releases: Array<() => void> = [];
+  readonly #startWaiters: Array<{ count: number; resolve: () => void }> = [];
   readonly #broker = new RestrictedAppNotificationBroker({
     sink: {
       isSupported: () => true,
@@ -506,6 +662,7 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
 
   async runBackground(app: RestrictedAppRuntimeDescriptor): Promise<void> {
     this.#started += 1;
+    this.#resolveStartWaiters();
     if (this.#started <= 2) await new Promise<void>((resolvePromise) => this.#releases.push(resolvePromise));
     try {
       this.#broker.show({
@@ -525,11 +682,39 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
   }
 
   async waitForStarts(count: number): Promise<void> {
-    for (let attempt = 0; this.#started < count && attempt < 100; attempt += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
-    assert.equal(this.#started, count);
+    if (this.#started >= count) return;
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const waiter = {
+        count,
+        resolve: () => {
+          clearTimeout(timeout);
+          resolvePromise();
+        },
+      };
+      const timeout = setTimeout(() => {
+        const index = this.#startWaiters.indexOf(waiter);
+        if (index >= 0) this.#startWaiters.splice(index, 1);
+        rejectPromise(new Error(`Timed out waiting for ${count} background runs to start; observed ${this.#started}.`));
+      }, 10_000);
+      this.#startWaiters.push(waiter);
+      this.#resolveStartWaiters();
+    });
+  }
+
+  #resolveStartWaiters(): void {
+    for (let index = this.#startWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = this.#startWaiters[index];
+      if (waiter && this.#started >= waiter.count) {
+        this.#startWaiters.splice(index, 1);
+        waiter.resolve();
+      }
+    }
   }
 
   releaseOne(): void { this.#releases.shift()?.(); }
+  releaseAll(): void {
+    for (const release of this.#releases.splice(0)) release();
+  }
   async stop(): Promise<void> {}
   async close(): Promise<void> {}
   closeBroker(): void { this.#broker.dispose(); }
@@ -542,6 +727,32 @@ class RejectingStopRuntimeHost implements RestrictedAppRuntimeHost {
   async stop(_workspaceId: string, appId: string): Promise<void> {
     this.stops.push(appId);
     if (appId === this.rejectedAppId) throw new Error("stop failed");
+  }
+  async close(): Promise<void> {}
+}
+
+class StopRaceRuntimeHost implements RestrictedAppRuntimeHost {
+  readonly backgroundRuns: RestrictedAppRuntimeDescriptor[] = [];
+  backgroundRun?: Promise<unknown>;
+  #onStop?: () => void;
+
+  async invoke(): Promise<unknown> { return {}; }
+  async runBackground(app: RestrictedAppRuntimeDescriptor): Promise<void> {
+    this.backgroundRuns.push(structuredClone(app));
+  }
+  startBackgroundWhenStopped(service: RestrictedAppService, digest: string): void {
+    this.#onStop = () => {
+      this.backgroundRun = service.runBackgroundNow({
+        workspaceId: spaceOne,
+        appId: "connected-inbox",
+        expectedDigest: digest,
+      });
+    };
+  }
+  async stop(): Promise<void> {
+    const callback = this.#onStop;
+    this.#onStop = undefined;
+    callback?.();
   }
   async close(): Promise<void> {}
 }
@@ -578,6 +789,7 @@ async function writePackage(root: string, options: {
   version?: string;
   appId?: string;
   appSource?: string;
+  networkAuth?: unknown[];
 } = {}): Promise<void> {
   const packageName = options.packageName ?? "connected-inbox";
   const version = options.version ?? "0.1.0";
@@ -621,13 +833,34 @@ async function writePackage(root: string, options: {
         id: "mail-api",
         target: { kind: "public-https", origin: "https://mail.example.com" },
         methods: ["GET"],
-        auth: [{ kind: "api-key", header: "x-api-key" }],
+        auth: options.networkAuth ?? [{ kind: "api-key", header: "x-api-key" }],
       }],
     },
   }), "utf8");
   await writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8");
   await writeFile(join(root, "app.js"), "export {};\n", "utf8");
   await writeFile(join(root, "worker.js"), options.appSource ?? "// This code must remain inert during review and installation.\nexport async function handleAction() { return { count: 0 }; }\n", "utf8");
+}
+
+function oauthClient(
+  connections: MemoryConnectionStore,
+  transport: RestrictedAppOAuthPublicHttpsTransport,
+  now: Date,
+): RestrictedAppOAuthPkceClient {
+  return new RestrictedAppOAuthPkceClient({
+    store: {
+      encrypted: true,
+      async get(binding): Promise<RestrictedAppOAuthConnection | undefined> {
+        const credential = await connections.get(binding);
+        return credential?.kind === "oauth2-pkce" ? credential : undefined;
+      },
+      async set(binding, connection): Promise<void> { await connections.set(binding, connection); },
+      async delete(binding): Promise<boolean> { return await connections.delete(binding); },
+    },
+    transport,
+    now: () => new Date(now.valueOf()),
+    openExternal: async () => assert.fail("These tests must not open a browser."),
+  });
 }
 
 function connectionKey(binding: RestrictedAppConnectionBinding): string {

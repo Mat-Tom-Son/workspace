@@ -108,11 +108,27 @@ test("restricted app API keeps review, install, grants, connections, invocation,
       { method: "PUT", body: { expectedDigest: inspected.review.digest } },
     );
     assert.equal(background.app.backgroundEnabled, true);
-    const backgroundRun = await request<{ app: { backgroundLastRunAt?: string } }>(
+    const backgroundControl = runtime.blockNextBackground();
+    const backgroundRunRequest = request<{ app: { backgroundLastRunAt?: string } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/background/run`,
       { method: "POST", body: { expectedDigest: inspected.review.digest } },
     );
+    try {
+      await backgroundControl.started;
+      const blockedMutation = await fetch(
+        `${api.origin}/api/workspaces/${workspace.id}/restricted-apps/mail-app/permissions/network/mail-api`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedDigest: inspected.review.digest }),
+        },
+      );
+      assert.equal(blockedMutation.status, 409, "a manual background run must reserve the Space capability-mutation lane");
+    } finally {
+      backgroundControl.release();
+    }
+    const backgroundRun = await backgroundRunRequest;
     assert.ok(backgroundRun.app.backgroundLastRunAt);
     assert.equal(runtime.backgroundRuns.length, 1);
 
@@ -326,12 +342,30 @@ async function writePackage(root: string): Promise<void> {
 class RuntimeHost implements RestrictedAppRuntimeHost {
   readonly invocations: Array<{ app: RestrictedAppRuntimeDescriptor; action: string; input: unknown }> = [];
   readonly backgroundRuns: Array<{ app: RestrictedAppRuntimeDescriptor; event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string } }> = [];
+  #backgroundBlock?: { started: () => void; release: Promise<void> };
   async invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown> {
     this.invocations.push({ app: structuredClone(app), action, input: structuredClone(input) });
     return { count: 3 };
   }
   async runBackground(app: RestrictedAppRuntimeDescriptor, event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string }): Promise<void> {
     this.backgroundRuns.push({ app: structuredClone(app), event: structuredClone(event) });
+    const block = this.#backgroundBlock;
+    this.#backgroundBlock = undefined;
+    block?.started();
+    if (block) await block.release;
+  }
+  blockNextBackground(): { started: Promise<void>; release(): void } {
+    let started!: () => void;
+    let release!: () => void;
+    const result = {
+      started: new Promise<void>((resolvePromise) => { started = resolvePromise; }),
+      release: () => release(),
+    };
+    this.#backgroundBlock = {
+      started,
+      release: new Promise<void>((resolvePromise) => { release = resolvePromise; }),
+    };
+    return result;
   }
   async stop(): Promise<void> {}
   async close(): Promise<void> {}
@@ -345,6 +379,7 @@ class FakeOAuth {
     this.configuration = structuredClone(configuration);
     return { kind: "oauth2-pkce", connectedAt: "2026-07-13T12:00:00.000Z", expiresAt: "2026-07-13T13:00:00.000Z" };
   }
+  async disconnect(): Promise<boolean> { return false; }
 }
 
 class Connections implements RestrictedAppConnectionStore {
