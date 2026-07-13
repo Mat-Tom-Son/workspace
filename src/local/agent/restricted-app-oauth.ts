@@ -1,0 +1,824 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import { isIP } from "node:net";
+
+export interface RestrictedAppOAuthBinding {
+  workspaceId: string;
+  appId: string;
+  digest: string;
+  destinationId: string;
+  origin: string;
+}
+
+export interface RestrictedAppOAuthPkceConfiguration {
+  issuer: string;
+  clientId: string;
+  scopes: string[];
+}
+
+export interface RestrictedAppOAuthConnection {
+  kind: "oauth2-pkce";
+  issuer: string;
+  clientId: string;
+  requestedScopes: string[];
+  grantedScopes: string[];
+  tokenType: "Bearer";
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: string;
+  connectedAt: string;
+}
+
+/**
+ * Implementations are part of the desktop host and must persist these records
+ * only through operating-system-backed encryption. Restricted app JavaScript
+ * must never receive this interface or a stored record.
+ */
+export interface RestrictedAppOAuthEncryptedConnectionStore {
+  readonly encrypted: true;
+  get(binding: RestrictedAppOAuthBinding): Promise<RestrictedAppOAuthConnection | undefined>;
+  set(binding: RestrictedAppOAuthBinding, connection: RestrictedAppOAuthConnection): Promise<void>;
+  delete(binding: RestrictedAppOAuthBinding): Promise<boolean>;
+}
+
+export interface RestrictedAppOAuthJsonResponse {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * The desktop implementation must reject redirects, resolve and pin a public
+ * address, preserve TLS hostname verification, enforce the supplied byte
+ * limit, and honor the abort signal. The OAuth client still validates every
+ * URL and response before handing it to this transport.
+ */
+export interface RestrictedAppOAuthPublicHttpsTransport {
+  getJson(
+    url: URL,
+    options: { signal: AbortSignal; maxResponseBytes: number },
+  ): Promise<RestrictedAppOAuthJsonResponse>;
+  postForm(
+    url: URL,
+    form: URLSearchParams,
+    options: { signal: AbortSignal; maxResponseBytes: number },
+  ): Promise<RestrictedAppOAuthJsonResponse>;
+}
+
+export interface RestrictedAppOAuthPkceClientOptions {
+  store: RestrictedAppOAuthEncryptedConnectionStore;
+  transport: RestrictedAppOAuthPublicHttpsTransport;
+  openExternal(url: string): Promise<void>;
+  now?: () => Date;
+  randomBytes?: (size: number) => Uint8Array;
+  flowTimeoutMs?: number;
+  networkTimeoutMs?: number;
+  refreshLeewayMs?: number;
+  maxResponseBytes?: number;
+}
+
+export interface RestrictedAppOAuthConnectionStatus {
+  kind: "oauth2-pkce";
+  configured: true;
+  scopes: string[];
+  expiresAt?: string;
+}
+
+export type RestrictedAppOAuthErrorCode =
+  | "AUTH_CANCELLED"
+  | "AUTH_DENIED"
+  | "AUTH_REQUIRED"
+  | "CONFIG_INVALID"
+  | "NETWORK_FAILED"
+  | "PROVIDER_UNSUPPORTED"
+  | "STORAGE_FAILED";
+
+export class RestrictedAppOAuthError extends Error {
+  constructor(readonly code: RestrictedAppOAuthErrorCode, message: string) {
+    super(message);
+    this.name = "RestrictedAppOAuthError";
+  }
+}
+
+interface AuthorizationServerMetadata {
+  issuer: string;
+  authorizationEndpoint: URL;
+  tokenEndpoint: URL;
+  authorizationResponseIssuer: boolean;
+}
+
+interface AuthorizationCallback {
+  code: string;
+}
+
+interface CallbackListener {
+  redirectUri: string;
+  result: Promise<AuthorizationCallback>;
+  close(): Promise<void>;
+}
+
+const maximumClientIdLength = 512;
+const maximumScopeLength = 256;
+const maximumTokenLength = 32 * 1024;
+const maximumCallbackUrlLength = 16 * 1024;
+const maximumFlowTimeoutMs = 10 * 60 * 1_000;
+const maximumNetworkTimeoutMs = 60 * 1_000;
+
+export class RestrictedAppOAuthPkceClient {
+  readonly #store: RestrictedAppOAuthEncryptedConnectionStore;
+  readonly #transport: RestrictedAppOAuthPublicHttpsTransport;
+  readonly #openExternal: (url: string) => Promise<void>;
+  readonly #now: () => Date;
+  readonly #randomBytes: (size: number) => Uint8Array;
+  readonly #flowTimeoutMs: number;
+  readonly #networkTimeoutMs: number;
+  readonly #refreshLeewayMs: number;
+  readonly #maxResponseBytes: number;
+  readonly #refreshes = new Map<string, Promise<RestrictedAppOAuthConnection>>();
+  readonly #generations = new Map<string, number>();
+
+  constructor(options: RestrictedAppOAuthPkceClientOptions) {
+    if (options.store.encrypted !== true) throw new Error("OAuth connections require an encrypted host store.");
+    this.#store = options.store;
+    this.#transport = options.transport;
+    this.#openExternal = options.openExternal;
+    this.#now = options.now ?? (() => new Date());
+    this.#randomBytes = options.randomBytes ?? randomBytes;
+    this.#flowTimeoutMs = boundedDuration(options.flowTimeoutMs ?? 5 * 60 * 1_000, "OAuth flow timeout", 1, maximumFlowTimeoutMs);
+    this.#networkTimeoutMs = boundedDuration(options.networkTimeoutMs ?? 15_000, "OAuth network timeout", 1, maximumNetworkTimeoutMs);
+    this.#refreshLeewayMs = boundedDuration(options.refreshLeewayMs ?? 60_000, "OAuth refresh leeway", 0, 10 * 60 * 1_000);
+    this.#maxResponseBytes = boundedDuration(options.maxResponseBytes ?? 64 * 1024, "OAuth response byte limit", 1_024, 512 * 1024);
+  }
+
+  async connect(
+    bindingValue: RestrictedAppOAuthBinding,
+    configurationValue: RestrictedAppOAuthPkceConfiguration,
+    cancellation?: AbortSignal,
+  ): Promise<RestrictedAppOAuthConnectionStatus> {
+    const binding = normalizeBinding(bindingValue);
+    const configuration = normalizeConfiguration(configurationValue);
+    const generation = this.#advanceGeneration(binding);
+    const flow = timedSignal(cancellation, this.#flowTimeoutMs);
+    let callback: CallbackListener | undefined;
+    try {
+      const metadata = await this.#discover(configuration, flow.signal);
+      const state = base64Url(this.#entropy(32));
+      const verifier = base64Url(this.#entropy(32));
+      const challenge = base64Url(createHash("sha256").update(verifier, "ascii").digest());
+      const callbackPath = `/oauth/callback/${base64Url(this.#entropy(24))}`;
+      callback = await createCallbackListener({
+        path: callbackPath,
+        expectedIssuer: configuration.issuer,
+        requireIssuer: metadata.authorizationResponseIssuer,
+        state,
+        signal: flow.signal,
+      });
+      // A callback can arrive while the host is still awaiting openExternal.
+      // Attach a rejection observer immediately so a denied callback never
+      // becomes a transient unhandled rejection before we await it below.
+      void callback.result.catch(() => undefined);
+      const authorizationUrl = authorizationRequestUrl(metadata.authorizationEndpoint, {
+        clientId: configuration.clientId,
+        scopes: configuration.scopes,
+        redirectUri: callback.redirectUri,
+        state,
+        challenge,
+      });
+      try {
+        await abortable(this.#openExternal(authorizationUrl.href), flow.signal);
+      } catch (error) {
+        if (error instanceof RestrictedAppOAuthError) throw error;
+        throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not open the OAuth authorization page.");
+      }
+      const authorization = await callback.result;
+      const token = await this.#exchangeCode(metadata, configuration, callback.redirectUri, verifier, authorization.code, flow.signal);
+      this.#assertGeneration(binding, generation);
+      try {
+        await this.#store.set(binding, token);
+      } catch {
+        throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not save the OAuth connection securely.");
+      }
+      return status(token);
+    } finally {
+      flow.dispose();
+      await callback?.close();
+    }
+  }
+
+  async status(
+    bindingValue: RestrictedAppOAuthBinding,
+    configurationValue: RestrictedAppOAuthPkceConfiguration,
+  ): Promise<RestrictedAppOAuthConnectionStatus | null> {
+    const binding = normalizeBinding(bindingValue);
+    const configuration = normalizeConfiguration(configurationValue);
+    const connection = await this.#read(binding, configuration);
+    return connection ? status(connection) : null;
+  }
+
+  /** Inject a current token into a host-owned request without exposing it to app JavaScript. */
+  async authorize(
+    bindingValue: RestrictedAppOAuthBinding,
+    configurationValue: RestrictedAppOAuthPkceConfiguration,
+    headers: Headers,
+    cancellation?: AbortSignal,
+  ): Promise<void> {
+    const binding = normalizeBinding(bindingValue);
+    const configuration = normalizeConfiguration(configurationValue);
+    let connection = await this.#read(binding, configuration);
+    if (!connection) throw new RestrictedAppOAuthError("AUTH_REQUIRED", "Connect this app before it accesses the destination.");
+    if (expiresSoon(connection, this.#now(), this.#refreshLeewayMs)) {
+      connection = await this.#refresh(binding, configuration, cancellation);
+    }
+    headers.set("authorization", `${connection.tokenType} ${connection.accessToken}`);
+  }
+
+  async disconnect(bindingValue: RestrictedAppOAuthBinding): Promise<boolean> {
+    const binding = normalizeBinding(bindingValue);
+    this.#advanceGeneration(binding);
+    try {
+      return await this.#store.delete(binding);
+    } catch {
+      throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not remove the OAuth connection securely.");
+    }
+  }
+
+  async #refresh(
+    binding: RestrictedAppOAuthBinding,
+    configuration: RestrictedAppOAuthPkceConfiguration,
+    cancellation?: AbortSignal,
+  ): Promise<RestrictedAppOAuthConnection> {
+    const key = bindingKey(binding);
+    const active = this.#refreshes.get(key);
+    if (active) return await active;
+    const refresh = this.#performRefresh(binding, configuration, cancellation);
+    this.#refreshes.set(key, refresh);
+    try {
+      return await refresh;
+    } finally {
+      if (this.#refreshes.get(key) === refresh) this.#refreshes.delete(key);
+    }
+  }
+
+  async #performRefresh(
+    binding: RestrictedAppOAuthBinding,
+    configuration: RestrictedAppOAuthPkceConfiguration,
+    cancellation?: AbortSignal,
+  ): Promise<RestrictedAppOAuthConnection> {
+    const generation = this.#generation(binding);
+    const current = await this.#read(binding, configuration);
+    if (!current) throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The OAuth connection is no longer available.");
+    if (!expiresSoon(current, this.#now(), this.#refreshLeewayMs)) return current;
+    if (!current.refreshToken) throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The OAuth connection must be renewed in the browser.");
+    const flow = timedSignal(cancellation, this.#networkTimeoutMs);
+    try {
+      const metadata = await this.#discover(configuration, flow.signal);
+      const response = await this.#postForm(metadata.tokenEndpoint, new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: current.refreshToken,
+        client_id: configuration.clientId,
+      }), flow.signal);
+      const refreshed = tokenConnection(response, configuration, this.#now(), {
+        connectedAt: current.connectedAt,
+        refreshToken: current.refreshToken,
+        scopes: current.grantedScopes,
+      });
+      this.#assertGeneration(binding, generation);
+      try {
+        await this.#store.set(binding, refreshed);
+      } catch {
+        throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not rotate the OAuth connection securely.");
+      }
+      return refreshed;
+    } finally {
+      flow.dispose();
+    }
+  }
+
+  async #discover(
+    configuration: RestrictedAppOAuthPkceConfiguration,
+    cancellation: AbortSignal,
+  ): Promise<AuthorizationServerMetadata> {
+    const issuer = new URL(configuration.issuer);
+    const metadataUrl = authorizationServerMetadataUrl(issuer);
+    const response = await this.#getJson(metadataUrl, cancellation);
+    const metadata = strictRecord(response, "OAuth authorization-server metadata");
+    if (metadata.issuer !== configuration.issuer) {
+      throw new RestrictedAppOAuthError("PROVIDER_UNSUPPORTED", "The OAuth provider metadata does not match its declared issuer.");
+    }
+    const responseTypes = stringArray(metadata.response_types_supported, "OAuth response types", 1, 32);
+    if (!responseTypes.includes("code")) unsupported("The OAuth provider does not advertise the authorization-code flow.");
+    if (metadata.grant_types_supported !== undefined) {
+      const grants = stringArray(metadata.grant_types_supported, "OAuth grant types", 1, 32);
+      if (!grants.includes("authorization_code")) unsupported("The OAuth provider does not advertise the authorization-code grant.");
+    }
+    const challengeMethods = stringArray(metadata.code_challenge_methods_supported, "OAuth PKCE methods", 1, 16);
+    if (!challengeMethods.includes("S256")) unsupported("The OAuth provider does not advertise PKCE S256.");
+    const tokenAuth = stringArray(metadata.token_endpoint_auth_methods_supported, "OAuth token authentication methods", 1, 32);
+    if (!tokenAuth.includes("none")) unsupported("The OAuth provider does not support public clients without a client secret.");
+    return {
+      issuer: configuration.issuer,
+      authorizationEndpoint: publicHttpsUrl(metadata.authorization_endpoint, "OAuth authorization endpoint"),
+      tokenEndpoint: publicHttpsUrl(metadata.token_endpoint, "OAuth token endpoint"),
+      authorizationResponseIssuer: metadata.authorization_response_iss_parameter_supported === true,
+    };
+  }
+
+  async #exchangeCode(
+    metadata: AuthorizationServerMetadata,
+    configuration: RestrictedAppOAuthPkceConfiguration,
+    redirectUri: string,
+    verifier: string,
+    code: string,
+    cancellation: AbortSignal,
+  ): Promise<RestrictedAppOAuthConnection> {
+    const response = await this.#postForm(metadata.tokenEndpoint, new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: configuration.clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    }), cancellation);
+    return tokenConnection(response, configuration, this.#now());
+  }
+
+  async #read(
+    binding: RestrictedAppOAuthBinding,
+    configuration: RestrictedAppOAuthPkceConfiguration,
+  ): Promise<RestrictedAppOAuthConnection | undefined> {
+    let connection: RestrictedAppOAuthConnection | undefined;
+    try {
+      connection = await this.#store.get(binding);
+    } catch {
+      throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not read the OAuth connection securely.");
+    }
+    if (!connection) return undefined;
+    const normalized = normalizeRestrictedAppOAuthConnection(connection);
+    if (normalized.issuer !== configuration.issuer
+      || normalized.clientId !== configuration.clientId
+      || !sameStrings(normalized.requestedScopes, configuration.scopes)) {
+      throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The saved OAuth connection does not match this app revision.");
+    }
+    return normalized;
+  }
+
+  async #getJson(url: URL, cancellation: AbortSignal): Promise<unknown> {
+    const network = timedSignal(cancellation, this.#networkTimeoutMs);
+    try {
+      let response: RestrictedAppOAuthJsonResponse;
+      try {
+        response = await this.#transport.getJson(url, { signal: network.signal, maxResponseBytes: this.#maxResponseBytes });
+      } catch (error) {
+        if (error instanceof RestrictedAppOAuthError) throw error;
+        throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not read the OAuth provider metadata.");
+      }
+      return successfulJson(response, this.#maxResponseBytes, "OAuth provider metadata");
+    } finally {
+      network.dispose();
+    }
+  }
+
+  async #postForm(url: URL, form: URLSearchParams, cancellation: AbortSignal): Promise<unknown> {
+    const network = timedSignal(cancellation, this.#networkTimeoutMs);
+    try {
+      let response: RestrictedAppOAuthJsonResponse;
+      try {
+        response = await this.#transport.postForm(url, form, { signal: network.signal, maxResponseBytes: this.#maxResponseBytes });
+      } catch (error) {
+        if (error instanceof RestrictedAppOAuthError) throw error;
+        throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not complete the OAuth token request.");
+      }
+      return successfulJson(response, this.#maxResponseBytes, "OAuth token response");
+    } finally {
+      network.dispose();
+    }
+  }
+
+  #entropy(size: number): Uint8Array {
+    const value = this.#randomBytes(size);
+    if (!(value instanceof Uint8Array) || value.byteLength !== size) throw new Error("OAuth entropy source returned an invalid value.");
+    return value;
+  }
+
+  #generation(binding: RestrictedAppOAuthBinding): number {
+    return this.#generations.get(bindingKey(binding)) ?? 0;
+  }
+
+  #advanceGeneration(binding: RestrictedAppOAuthBinding): number {
+    const key = bindingKey(binding);
+    const generation = this.#generation(binding) + 1;
+    this.#generations.set(key, generation);
+    this.#refreshes.delete(key);
+    return generation;
+  }
+
+  #assertGeneration(binding: RestrictedAppOAuthBinding, expected: number): void {
+    if (this.#generation(binding) !== expected) {
+      throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The OAuth connection changed before authorization completed.");
+    }
+  }
+}
+
+function normalizeConfiguration(value: RestrictedAppOAuthPkceConfiguration): RestrictedAppOAuthPkceConfiguration {
+  const record = strictRecord(value, "OAuth PKCE configuration", ["issuer", "clientId", "scopes"]);
+  const issuerUrl = publicHttpsUrl(record.issuer, "OAuth issuer", true);
+  const issuer = boundedString(record.issuer, "OAuth issuer", 2_048);
+  const canonicalIssuer = issuerUrl.pathname === "/" && !issuerUrl.search ? issuerUrl.origin : issuerUrl.href;
+  if (canonicalIssuer !== issuer) configInvalid("OAuth issuer must use its canonical HTTPS URL.");
+  const clientId = boundedString(record.clientId, "OAuth client id", maximumClientIdLength);
+  if (/[^\x20-\x7e]/.test(clientId) || /\s/.test(clientId)) configInvalid("OAuth client id contains unsupported characters.");
+  const scopes = stringArray(record.scopes, "OAuth scopes", 1, 32).map((scope) => {
+    if (scope.length > maximumScopeLength || !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(scope)) {
+      configInvalid("OAuth scope contains unsupported characters.");
+    }
+    return scope;
+  });
+  if (new Set(scopes).size !== scopes.length) configInvalid("OAuth scopes must be unique.");
+  if (scopes.includes("openid")) configInvalid("OpenID Connect scopes are not supported by this OAuth connection.");
+  if (scopes.join(" ").length > 2_048) configInvalid("OAuth scopes exceed the size limit.");
+  return { issuer, clientId, scopes };
+}
+
+function normalizeBinding(value: RestrictedAppOAuthBinding): RestrictedAppOAuthBinding {
+  const record = strictRecord(value, "OAuth connection binding", ["workspaceId", "appId", "digest", "destinationId", "origin"]);
+  const workspaceId = identifier(record.workspaceId, "OAuth Space id", 200);
+  const appId = identifier(record.appId, "OAuth app id");
+  const destinationId = identifier(record.destinationId, "OAuth destination id");
+  if (typeof record.digest !== "string" || !/^[0-9a-f]{64}$/.test(record.digest)) configInvalid("OAuth app digest is invalid.");
+  const originUrl = publicHttpsUrl(record.origin, "OAuth destination origin");
+  if (originUrl.origin !== record.origin || originUrl.pathname !== "/" || originUrl.search || originUrl.hash) {
+    configInvalid("OAuth destination origin must be an exact public HTTPS origin.");
+  }
+  return { workspaceId, appId, digest: record.digest, destinationId, origin: originUrl.origin };
+}
+
+export function normalizeRestrictedAppOAuthConnection(value: RestrictedAppOAuthConnection): RestrictedAppOAuthConnection {
+  const record = strictRecord(value, "Stored OAuth connection", [
+    "kind", "issuer", "clientId", "requestedScopes", "grantedScopes", "tokenType", "accessToken", "refreshToken", "expiresAt", "connectedAt",
+  ]);
+  if (record.kind !== "oauth2-pkce" || record.tokenType !== "Bearer") throw new Error("Stored OAuth connection kind is invalid.");
+  const configuration = normalizeConfiguration({ issuer: record.issuer as string, clientId: record.clientId as string, scopes: record.requestedScopes as string[] });
+  const grantedScopes = stringArray(record.grantedScopes, "Stored OAuth scopes", 1, 32);
+  if (new Set(grantedScopes).size !== grantedScopes.length || grantedScopes.some((scope) => !configuration.scopes.includes(scope))) {
+    throw new Error("Stored OAuth scopes exceed the requested grant.");
+  }
+  const accessToken = secret(record.accessToken, "Stored OAuth access token");
+  const refreshToken = record.refreshToken === undefined ? undefined : secret(record.refreshToken, "Stored OAuth refresh token");
+  const expiresAt = optionalIsoDate(record.expiresAt, "Stored OAuth expiration");
+  const connectedAt = isoDate(record.connectedAt, "Stored OAuth connection time");
+  return {
+    kind: "oauth2-pkce",
+    issuer: configuration.issuer,
+    clientId: configuration.clientId,
+    requestedScopes: configuration.scopes,
+    grantedScopes,
+    tokenType: "Bearer",
+    accessToken,
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    connectedAt,
+  } as RestrictedAppOAuthConnection;
+}
+
+function tokenConnection(
+  value: unknown,
+  configuration: RestrictedAppOAuthPkceConfiguration,
+  now: Date,
+  prior?: { connectedAt: string; refreshToken: string; scopes: string[] },
+): RestrictedAppOAuthConnection {
+  const record = strictRecord(value, "OAuth token response");
+  const accessToken = secret(record.access_token, "OAuth access token");
+  if (typeof record.token_type !== "string" || record.token_type.toLowerCase() !== "bearer") {
+    unsupported("The OAuth provider returned an unsupported token type.");
+  }
+  const refreshToken = record.refresh_token === undefined
+    ? prior?.refreshToken
+    : secret(record.refresh_token, "OAuth refresh token");
+  let grantedScopes = prior?.scopes ?? configuration.scopes;
+  if (record.scope !== undefined) {
+    const scopeText = boundedString(record.scope, "OAuth granted scopes", 2_048);
+    grantedScopes = scopeText.split(" ").filter(Boolean);
+    if (!grantedScopes.length || new Set(grantedScopes).size !== grantedScopes.length
+      || grantedScopes.some((scope) => !configuration.scopes.includes(scope))) {
+      unsupported("The OAuth provider returned scopes outside the requested grant.");
+    }
+  }
+  let expiresAt: string | undefined;
+  if (record.expires_in !== undefined) {
+    if (!Number.isInteger(record.expires_in) || (record.expires_in as number) < 1 || (record.expires_in as number) > 10 * 365 * 24 * 60 * 60) {
+      unsupported("The OAuth provider returned an invalid token lifetime.");
+    }
+    expiresAt = new Date(now.valueOf() + (record.expires_in as number) * 1_000).toISOString();
+  }
+  return {
+    kind: "oauth2-pkce",
+    issuer: configuration.issuer,
+    clientId: configuration.clientId,
+    requestedScopes: [...configuration.scopes],
+    grantedScopes: [...grantedScopes],
+    tokenType: "Bearer",
+    accessToken,
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    connectedAt: prior?.connectedAt ?? now.toISOString(),
+  };
+}
+
+function authorizationServerMetadataUrl(issuer: URL): URL {
+  const result = new URL(issuer.origin);
+  const issuerPath = issuer.pathname === "/" ? "" : issuer.pathname.replace(/\/$/, "");
+  result.pathname = `/.well-known/oauth-authorization-server${issuerPath}`;
+  return result;
+}
+
+function authorizationRequestUrl(endpoint: URL, input: {
+  clientId: string;
+  scopes: string[];
+  redirectUri: string;
+  state: string;
+  challenge: string;
+}): URL {
+  const url = new URL(endpoint);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", input.clientId);
+  url.searchParams.set("redirect_uri", input.redirectUri);
+  url.searchParams.set("scope", input.scopes.join(" "));
+  url.searchParams.set("state", input.state);
+  url.searchParams.set("code_challenge", input.challenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  return url;
+}
+
+async function createCallbackListener(input: {
+  path: string;
+  expectedIssuer: string;
+  requireIssuer: boolean;
+  state: string;
+  signal: AbortSignal;
+}): Promise<CallbackListener> {
+  let settle: ((value: AuthorizationCallback) => void) | undefined;
+  let fail: ((error: unknown) => void) | undefined;
+  let consumed = false;
+  const result = new Promise<AuthorizationCallback>((resolvePromise, reject) => {
+    settle = resolvePromise;
+    fail = reject;
+  });
+  const server = createServer((request, response) => {
+    const host = request.headers.host;
+    if (request.method !== "GET" || typeof request.url !== "string" || request.url.length > maximumCallbackUrlLength) {
+      callbackResponse(response, 405, false);
+      return;
+    }
+    let url: URL;
+    try {
+      url = new URL(request.url, `http://${host ?? "invalid"}`);
+    } catch {
+      callbackResponse(response, 400, false);
+      return;
+    }
+    const address = server.address();
+    const expectedHost = address && typeof address === "object" ? `127.0.0.1:${address.port}` : "";
+    if (url.pathname !== input.path || host !== expectedHost || request.socket.remoteAddress !== "127.0.0.1") {
+      callbackResponse(response, 404, false);
+      return;
+    }
+    if (consumed) {
+      callbackResponse(response, 409, false);
+      return;
+    }
+    consumed = true;
+    const state = singleParameter(url, "state");
+    const code = singleParameter(url, "code");
+    const oauthError = singleParameter(url, "error");
+    const responseIssuer = singleParameter(url, "iss");
+    let error: RestrictedAppOAuthError | undefined;
+    if (!state || !constantTimeEqual(state, input.state)) {
+      error = new RestrictedAppOAuthError("AUTH_DENIED", "The OAuth callback state did not match the authorization request.");
+    } else if ((input.requireIssuer || responseIssuer !== undefined) && responseIssuer !== input.expectedIssuer) {
+      error = new RestrictedAppOAuthError("AUTH_DENIED", "The OAuth callback issuer did not match the authorization request.");
+    } else if (oauthError !== undefined) {
+      error = new RestrictedAppOAuthError("AUTH_DENIED", `The OAuth provider declined authorization${safeOAuthError(oauthError)}.`);
+    } else if (!code || url.searchParams.getAll("code").length !== 1 || url.searchParams.getAll("error").length) {
+      error = new RestrictedAppOAuthError("AUTH_DENIED", "The OAuth callback did not contain one authorization code.");
+    }
+    callbackResponse(response, error ? 400 : 200, !error);
+    setImmediate(() => void closeServer(server));
+    if (error) fail?.(error);
+    else settle?.({ code: code! });
+  });
+  server.maxHeadersCount = 20;
+  server.requestTimeout = 5_000;
+  server.headersTimeout = 5_000;
+  server.keepAliveTimeout = 1;
+  server.maxRequestsPerSocket = 1;
+  const abort = () => {
+    if (consumed) return;
+    consumed = true;
+    fail?.(new RestrictedAppOAuthError("AUTH_CANCELLED", "The OAuth authorization was cancelled or timed out."));
+    void closeServer(server);
+  };
+  input.signal.addEventListener("abort", abort, { once: true });
+  if (input.signal.aborted) abort();
+  try {
+    await listenLoopback(server);
+  } catch {
+    input.signal.removeEventListener("abort", abort);
+    throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not open a loopback OAuth callback listener.");
+  }
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    input.signal.removeEventListener("abort", abort);
+    await closeServer(server);
+    throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not determine the OAuth callback address.");
+  }
+  return {
+    redirectUri: `http://127.0.0.1:${address.port}${input.path}`,
+    result,
+    close: async () => {
+      input.signal.removeEventListener("abort", abort);
+      await closeServer(server);
+    },
+  };
+}
+
+function listenLoopback(server: Server): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      server.removeListener("error", onError);
+      resolvePromise();
+    });
+  });
+}
+
+function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolvePromise) => server.close(() => resolvePromise()));
+}
+
+function callbackResponse(response: import("node:http").ServerResponse, statusCode: number, success: boolean): void {
+  response.writeHead(statusCode, {
+    "cache-control": "no-store",
+    connection: "close",
+    "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(`<!doctype html><meta charset="utf-8"><title>Workspace sign-in</title><p>${success ? "Sign-in complete. You can return to Workspace." : "Sign-in could not be completed. You can return to Workspace."}</p>`);
+}
+
+function singleParameter(url: URL, name: string): string | undefined {
+  const values = url.searchParams.getAll(name);
+  return values.length === 1 ? values[0] : undefined;
+}
+
+function successfulJson(response: RestrictedAppOAuthJsonResponse, maximum: number, label: string): unknown {
+  if (!Number.isInteger(response.status) || response.status < 200 || response.status > 299) {
+    throw new RestrictedAppOAuthError("NETWORK_FAILED", `${label} failed.`);
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(response.body);
+  } catch {
+    throw new RestrictedAppOAuthError("NETWORK_FAILED", `${label} was not valid JSON.`);
+  }
+  if (serialized === undefined || Buffer.byteLength(serialized) > maximum) {
+    throw new RestrictedAppOAuthError("NETWORK_FAILED", `${label} exceeded the response limit.`);
+  }
+  return response.body;
+}
+
+function publicHttpsUrl(value: unknown, label: string, issuer = false): URL {
+  const text = boundedString(value, label, 2_048);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    configInvalid(`${label} must be an HTTPS URL.`);
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || !url.hostname || url.hostname.includes("*")) {
+    configInvalid(`${label} must be a public HTTPS URL without credentials or a fragment.`);
+  }
+  if (issuer && url.search) configInvalid(`${label} cannot contain a query.`);
+  const hostname = url.hostname.toLowerCase();
+  if (isIP(hostname) !== 0 || !hostname.includes(".") || hostname === "localhost" || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local") || hostname.endsWith(".internal") || hostname.endsWith(".home.arpa")) {
+    configInvalid(`${label} must name a public DNS host.`);
+  }
+  return url;
+}
+
+function strictRecord(value: unknown, label: string, allowed?: string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
+  const record = value as Record<string, unknown>;
+  if (allowed) {
+    const unknown = Object.keys(record).find((key) => !allowed.includes(key));
+    if (unknown) configInvalid(`${label} contains an unsupported field: ${unknown}`);
+  }
+  return record;
+}
+
+function stringArray(value: unknown, label: string, minimum: number, maximum: number): string[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum || value.some((item) => typeof item !== "string" || !item)) {
+    throw new RestrictedAppOAuthError("PROVIDER_UNSUPPORTED", `${label} is invalid.`);
+  }
+  return value as string[];
+}
+
+function boundedString(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== "string" || !value || value.length > maximum || /[\0\r\n]/.test(value)) configInvalid(`${label} is invalid.`);
+  return value;
+}
+
+function identifier(value: unknown, label: string, maximum = 64): string {
+  if (typeof value !== "string" || !value || value.length > maximum || !/^[A-Za-z0-9._-]+$/.test(value)) configInvalid(`${label} is invalid.`);
+  return value;
+}
+
+function secret(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value || value.length > maximumTokenLength || /[\0\r\n]/.test(value)) {
+    throw new RestrictedAppOAuthError("PROVIDER_UNSUPPORTED", `${label} is invalid.`);
+  }
+  return value;
+}
+
+function isoDate(value: unknown, label: string): string {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new Error(`${label} is invalid.`);
+  return value;
+}
+
+function optionalIsoDate(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : isoDate(value, label);
+}
+
+function status(connection: RestrictedAppOAuthConnection): RestrictedAppOAuthConnectionStatus {
+  return {
+    kind: "oauth2-pkce",
+    configured: true,
+    scopes: [...connection.grantedScopes],
+    ...(connection.expiresAt ? { expiresAt: connection.expiresAt } : {}),
+  };
+}
+
+function expiresSoon(connection: RestrictedAppOAuthConnection, now: Date, leewayMs: number): boolean {
+  return connection.expiresAt !== undefined && Date.parse(connection.expiresAt) <= now.valueOf() + leewayMs;
+}
+
+function base64Url(value: Uint8Array): string {
+  return Buffer.from(value).toString("base64url");
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.byteLength === rightBytes.byteLength && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function safeOAuthError(value: string): string {
+  return /^[A-Za-z0-9._-]{1,80}$/.test(value) ? ` (${value})` : "";
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function bindingKey(binding: RestrictedAppOAuthBinding): string {
+  return JSON.stringify([binding.workspaceId, binding.appId, binding.digest, binding.destinationId, binding.origin]);
+}
+
+function boundedDuration(value: number, label: string, minimum: number, maximum: number): number {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${label} is invalid.`);
+  return value;
+}
+
+function timedSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  parent?.addEventListener("abort", abort, { once: true });
+  if (parent?.aborted) controller.abort();
+  const timer = setTimeout(abort, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", abort);
+    },
+  };
+}
+
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolvePromise, reject) => {
+    const abort = () => reject(new RestrictedAppOAuthError("AUTH_CANCELLED", "The OAuth authorization was cancelled or timed out."));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    operation.then(resolvePromise, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function configInvalid(message: string): never {
+  throw new RestrictedAppOAuthError("CONFIG_INVALID", message);
+}
+
+function unsupported(message: string): never {
+  throw new RestrictedAppOAuthError("PROVIDER_UNSUPPORTED", message);
+}

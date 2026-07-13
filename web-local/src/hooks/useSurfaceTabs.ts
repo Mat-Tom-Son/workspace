@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { chatDisplayTitle } from "../lib/format";
 import { readStoredJsonValue, writeStoredJsonValue } from "../lib/storage";
 import { retargetMovedPath } from "../lib/tree";
-import type { ConversationSummary, WorkspaceSummary, WorkspaceSurfaceTab } from "../types";
+import type { AgentExtensionSurfaceView, CapabilitySurface, ConversationSummary, WorkspaceSummary, WorkspaceSurfaceTab } from "../types";
 
 const surfaceTabsStorageKey = "workspace.surfaceTabs.v1";
 
@@ -128,7 +128,7 @@ export function useSurfaceTabs({
 
   function openChatSurfaceTab(targetWorkspace: WorkspaceSummary, conversation: ConversationSummary | null = null): void {
     if (conversation) {
-      const existingTab = surfaceTabs.find((tab) => tab.workspaceId === targetWorkspace.id && tab.conversationId === conversation.id);
+      const existingTab = surfaceTabs.find((tab) => tab.kind === "chat" && tab.workspaceId === targetWorkspace.id && tab.conversationId === conversation.id);
       if (existingTab) {
         setSurfaceTabs((current) => current.map((tab) => (
           tab.id === existingTab.id ? { ...tab, title: chatDisplayTitle({ serverTitle: conversation.title }) } : tab
@@ -160,6 +160,41 @@ export function useSurfaceTabs({
     setActiveSurfaceTabId(tab.id);
   }
 
+  function openExtensionSurfaceTab(
+    targetWorkspace: WorkspaceSummary,
+    surface: CapabilitySurface,
+    view: AgentExtensionSurfaceView,
+  ): void {
+    const tab = extensionSurfaceTab(targetWorkspace, surface, view);
+    setSurfaceTabs((current) => upsertSurfaceTab(current, tab));
+    setActiveSurfaceTabId(tab.id);
+  }
+
+  function openRestrictedAppSurfaceTab(
+    targetWorkspace: WorkspaceSummary,
+    app: { appId: string; digest: string },
+    target: { appTabId: string; title: string; route: string; state?: unknown },
+  ): void {
+    const tab = restrictedAppSurfaceTab(targetWorkspace.id, app, target);
+    setSurfaceTabs((current) => upsertSurfaceTab(current, tab));
+    setActiveSurfaceTabId(tab.id);
+  }
+
+  function updateRestrictedAppSurfaceTab(
+    workspaceId: string,
+    app: { appId: string; digest: string },
+    target: { appTabId: string; title: string; route: string; state?: unknown },
+  ): void {
+    const id = restrictedAppSurfaceTabId(workspaceId, app.appId, app.digest, target.appTabId);
+    setSurfaceTabs((current) => current.map((tab) => tab.id === id && tab.kind === "restricted-app"
+      ? restrictedAppSurfaceTab(workspaceId, app, target)
+      : tab));
+  }
+
+  function closeRestrictedAppSurfaceTab(workspaceId: string, appId: string, digest: string, appTabId: string): void {
+    closeSurfaceTab(restrictedAppSurfaceTabId(workspaceId, appId, digest, appTabId));
+  }
+
   function closeSurfaceTab(tabId: string): void {
     setSurfaceTabs((current) => {
       const index = current.findIndex((tab) => tab.id === tabId);
@@ -178,7 +213,7 @@ export function useSurfaceTabs({
 
   function handleTabConversationActivated(tabId: string, tabWorkspace: WorkspaceSummary, conversation: ConversationSummary | null): void {
     if (!conversation) return;
-    const duplicate = surfaceTabs.find((tab) => tab.id !== tabId && tab.workspaceId === tabWorkspace.id && tab.conversationId === conversation.id);
+    const duplicate = surfaceTabs.find((tab) => tab.kind === "chat" && tab.id !== tabId && tab.workspaceId === tabWorkspace.id && tab.conversationId === conversation.id);
     if (duplicate) {
       setSurfaceTabs((current) => current.filter((tab) => tab.id !== tabId));
       setActiveSurfaceTabId(duplicate.id);
@@ -211,7 +246,7 @@ export function useSurfaceTabs({
 
   function updateSurfaceTabConversationTitle(workspaceId: string, conversation: ConversationSummary): void {
     setSurfaceTabs((current) => current.map((tab) => (
-      tab.workspaceId === workspaceId && tab.conversationId === conversation.id
+      tab.kind === "chat" && tab.workspaceId === workspaceId && tab.conversationId === conversation.id
         ? { ...tab, title: chatDisplayTitle({ serverTitle: conversation.title }) }
         : tab
     )));
@@ -226,6 +261,10 @@ export function useSurfaceTabs({
     openHistorySurfaceTab,
     openFileSurfaceTab,
     openAppearanceSurfaceTab,
+    openExtensionSurfaceTab,
+    openRestrictedAppSurfaceTab,
+    updateRestrictedAppSurfaceTab,
+    closeRestrictedAppSurfaceTab,
     closeSurfaceTab,
     handleTabConversationActivated,
     removeWorkspaceSurfaceTabs,
@@ -331,6 +370,37 @@ function normalizeStoredSurfaceTab(value: unknown): WorkspaceSurfaceTab | null {
       id: record.id,
       kind: "appearance",
       workspaceId: record.workspaceId,
+      title: record.title,
+    };
+  }
+  if (record.kind === "extension") {
+    if (typeof record.surfaceId !== "string" || typeof record.viewId !== "string") return null;
+    if (record.surfaceExecution !== undefined && record.surfaceExecution !== "full-trust-pi") return null;
+    return {
+      id: record.id,
+      kind: "extension",
+      workspaceId: record.workspaceId,
+      surfaceId: record.surfaceId,
+      surfaceExecution: "full-trust-pi",
+      viewId: record.viewId,
+      title: record.title,
+    };
+  }
+  if (record.kind === "restricted-app") {
+    if (typeof record.appId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(record.appId)) return null;
+    if (typeof record.digest !== "string" || !/^[a-f0-9]{64}$/.test(record.digest)) return null;
+    if (typeof record.appTabId !== "string" || !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(record.appTabId)) return null;
+    if (typeof record.route !== "string" || !validRestrictedAppRoute(record.route)) return null;
+    const id = restrictedAppSurfaceTabId(record.workspaceId, record.appId, record.digest, record.appTabId);
+    return {
+      id,
+      kind: "restricted-app",
+      workspaceId: record.workspaceId,
+      appId: record.appId,
+      digest: record.digest,
+      appTabId: record.appTabId,
+      route: record.route,
+      ...(record.state !== undefined ? { state: record.state } : {}),
       title: record.title,
     };
   }
@@ -455,6 +525,53 @@ function appearanceSurfaceTab(workspace: WorkspaceSummary): WorkspaceSurfaceTab 
   };
 }
 
+function extensionSurfaceTab(
+  workspace: WorkspaceSummary,
+  surface: CapabilitySurface,
+  view: AgentExtensionSurfaceView,
+): WorkspaceSurfaceTab {
+  return {
+    id: `extension:${workspace.id}:${surface.key}:${view.id}`,
+    kind: "extension",
+    workspaceId: workspace.id,
+    surfaceId: surface.key,
+    surfaceExecution: "full-trust-pi",
+    viewId: view.id,
+    title: view.title,
+  };
+}
+
+function restrictedAppSurfaceTab(
+  workspaceId: string,
+  app: { appId: string; digest: string },
+  target: { appTabId: string; title: string; route: string; state?: unknown },
+): WorkspaceSurfaceTab {
+  return {
+    id: restrictedAppSurfaceTabId(workspaceId, app.appId, app.digest, target.appTabId),
+    kind: "restricted-app",
+    workspaceId,
+    appId: app.appId,
+    digest: app.digest,
+    appTabId: target.appTabId,
+    route: target.route,
+    ...(target.state !== undefined ? { state: structuredClone(target.state) } : {}),
+    title: target.title,
+  };
+}
+
+function restrictedAppSurfaceTabId(workspaceId: string, appId: string, digest: string, appTabId: string): string {
+  return `restricted-app:${workspaceId}:${appId}:${digest}:${appTabId}`;
+}
+
+function validRestrictedAppRoute(value: string): boolean {
+  if (value.length > 2_048 || /[\\\0\r\n]/.test(value) || !value.startsWith("/") || value.startsWith("//")) return false;
+  try {
+    return new URL(value, "https://restricted-app.invalid").origin === "https://restricted-app.invalid";
+  } catch {
+    return false;
+  }
+}
+
 function upsertSurfaceTab(tabs: WorkspaceSurfaceTab[], tab: WorkspaceSurfaceTab): WorkspaceSurfaceTab[] {
   const existing = tabs.find((item) => item.id === tab.id);
   if (existing) return tabs.map((item) => item.id === tab.id ? { ...existing, ...tab } : item);
@@ -484,6 +601,7 @@ export {
   readStoredSurfaceTabsState,
   restoreStoredSurfaceTabsForWorkspaces,
   retargetFileSurfaceTabs,
+  restrictedAppSurfaceTabId,
   surfaceTabActivationForWorkspace,
   surfaceTabWorkspaceSwitchTarget,
   upsertSurfaceTab,

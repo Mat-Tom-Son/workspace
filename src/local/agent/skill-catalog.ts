@@ -18,6 +18,10 @@ import {
   type PiRuntimeProvider,
   type ResolvedPiRuntime,
 } from "./pi-runtime-config.js";
+import {
+  loadExtensionSurfaceManifests,
+  type PiExtensionSurface,
+} from "./surface-manifest.js";
 
 export interface PiCatalogSource {
   path: string;
@@ -106,6 +110,7 @@ export interface PiResourceCatalog {
   tools: PiToolCatalogItem[];
   skills: PiSkillCatalogItem[];
   extensions: PiExtensionCatalogItem[];
+  surfaces: PiExtensionSurface[];
   prompts: PiPromptCatalogItem[];
   themes: PiThemeCatalogItem[];
   contextFiles: PiContextFileCatalogItem[];
@@ -184,6 +189,7 @@ export async function buildPiResourceCatalog(
     commands: [...extension.commands.keys()].sort(),
     flags: [...extension.flags.keys()].sort(),
   }));
+  const surfaceResult = await loadExtensionSurfaceManifests(extensions);
 
   const tools = session.getAllTools().map((tool) => {
     const core = tool.sourceInfo.source === "builtin";
@@ -250,6 +256,7 @@ export async function buildPiResourceCatalog(
     tools,
     skills: skills.sort((left, right) => left.name.localeCompare(right.name)),
     extensions: extensions.sort((left, right) => left.resolvedPath.localeCompare(right.resolvedPath)),
+    surfaces: surfaceResult.surfaces,
     prompts,
     themes,
     contextFiles: loader.getAgentsFiles().agentsFiles,
@@ -261,6 +268,7 @@ export async function buildPiResourceCatalog(
         path: item.path,
         message: item.error,
       })),
+      ...surfaceResult.diagnostics,
       ...resourceDiagnostics(skillsResult.diagnostics),
       ...resourceDiagnostics(promptsResult.diagnostics),
       ...resourceDiagnostics(themesResult.diagnostics),

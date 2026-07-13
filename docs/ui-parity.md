@@ -67,7 +67,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 - Compliance/SOP-specific review surfaces and Kymanox/Kai branding.
 - Company signing credentials and compatibility identifiers that are not needed by the separate Workspace product.
 
-Pi remains the agent runtime. Workspace should expose Pi's provider setup, standard built-in tools, Skills, Extensions, packages, project trust, and supported extension UI without inventing a second capability system.
+Pi remains the agent runtime. Workspace should expose Pi's provider setup, standard built-in tools, Skills, Extensions, packages, registered-Space project authorization, and supported extension UI without inventing a second full-trust capability system. Restricted app packages are a deliberately separate sandbox lane and must never be loaded as Pi Extensions.
 
 ## Acceptance evidence
 

@@ -10,7 +10,7 @@ In the product navigation, **Capabilities** is the single Space-aware surface fo
 
 ## Extensions
 
-Global extensions are discovered from the user's Pi agent directory. Pi project extensions are discovered from `.pi/extensions` inside a trusted Space folder. Extension commands, tools, providers, events, and resource discovery remain available through Pi's normal runtime.
+Global extensions are discovered from the user's Pi agent directory. Pi project extensions are discovered from `.pi/extensions` inside a registered Space folder. Creating or registering the Space is Workspace's authorization to load that exact folder; removing it revokes the Workspace override. Extension commands, tools, providers, events, and resource discovery remain available through Pi's normal runtime.
 
 The desktop preflight creates isolated global and project extensions and verifies that Pi loads both. It also verifies that Pi's built-in `read`, `bash`, `edit`, and `write` tools remain active.
 
@@ -25,11 +25,11 @@ Pi may discover a standard Skill directory placed in a configured resource locat
 - Bundles containing `skills/*/SKILL.md`.
 - Compatible plugin or marketplace archives, importing only their skill components by default.
 
-Hooks, MCP servers, agents, binaries, and other plugin features outside discovered skill directories are not imported. Archive extraction rejects path traversal, symlinks, excessive file counts, and unreasonable expanded sizes. Importing a personal Skill is an explicit install action and makes its preserved scripts available to Pi; Pi project-scoped imports (shown as Space-scoped in the product) additionally require Pi to consider the Space trusted, normally through a saved per-Space decision.
+Hooks, MCP servers, agents, binaries, and other plugin features outside discovered skill directories are not imported. Archive extraction rejects path traversal, symlinks, excessive file counts, and unreasonable expanded sizes. Importing a personal Skill is an explicit install action and makes its preserved scripts available to Pi; project-scoped imports (shown as Space-scoped in the product) are allowed only for a registered Space.
 
 Workspace's importer writes personal Skills under the configured Pi agent directory and Space-scoped Skills under `.pi/skills`. Pi may additionally discover standard `.agents/skills`, package, settings, and explicit resource locations; the native Pi catalog remains authoritative.
 
-Pi packages remain the installation, update, and removal mechanism for npm, git, HTTPS, and local sources. Workspace surfaces Pi's diagnostics, scope, source, resource types, and load state rather than inventing a second package format. Project-scoped mutations require an explicit persistent Pi trust policy, with a negative host override or saved Space decision taking precedence. Capability mutations are rejected while an affected Space has an active turn or Chat compaction so changing the catalog cannot terminate background work.
+Pi packages remain the installation, update, and removal mechanism for full-trust npm, git, HTTPS, and local sources. Workspace surfaces Pi's diagnostics, scope, source, resource types, and load state rather than inventing a second full-trust format. Project-scoped mutations require the target to be a registered Space. Capability mutations are rejected while an affected Space has an active turn or Chat compaction so changing the catalog cannot terminate background work.
 
 Packages are distribution plumbing, not a separate top-level user concept. The interface should describe what a person is installing—a Skill, Extension, or mixed capability package—while retaining package source and diagnostic details. The Discover catalog may combine first-party/reference sources with npm packages tagged `pi-package`; popularity and download counts are discovery signals, not security endorsements.
 

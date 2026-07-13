@@ -437,7 +437,7 @@ export function AssistantSetupPane({ workspace, status, fixtureMode = false, emb
               </button>
               {oauthSupported ? <button className="professional-button professional-button-secondary" type="button" onClick={() => void configure(true)} disabled={saving}>Connect with OAuth</button> : null}
             </div>
-            <p className="security-note professional-field-wide"><ShieldCheckmark16Regular />Capabilities stored inside a Space load only after you trust that Space.</p>
+            <p className="security-note professional-field-wide"><ShieldCheckmark16Regular />Creating or registering a Space allows its local Pi configuration. Review packages separately before installing them.</p>
           </form>
         )}
       </section>

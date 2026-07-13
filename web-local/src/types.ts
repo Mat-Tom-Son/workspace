@@ -1,5 +1,6 @@
 export type WorkspacePane = "files" | "capabilities" | "chats" | "library" | "history";
-export type WorkspaceRailMode = "workspaces" | WorkspacePane;
+export type WorkspaceExtensionRailMode = `app:${string}`;
+export type WorkspaceRailMode = "workspaces" | WorkspacePane | WorkspaceExtensionRailMode;
 export type AppTheme = "light" | "dark";
 export type AppThemePreference = AppTheme | "system";
 export type AppTypographyFont = "default" | "stable" | "verdana" | "aptos";
@@ -150,15 +151,26 @@ export interface WorkspaceFixtureConversation extends ConversationSummary {
   contextAttachments?: ContextAttachment[];
 }
 
-export interface WorkspaceSurfaceTab {
+interface WorkspaceSurfaceTabBase {
   id: string;
   workspaceId: string;
-  kind: "chat" | "file" | "history" | "appearance";
   title: string;
-  conversationId?: string | null;
-  path?: string;
-  checkpointId?: string;
 }
+
+export type WorkspaceSurfaceTab =
+  | (WorkspaceSurfaceTabBase & { kind: "chat"; conversationId: string | null })
+  | (WorkspaceSurfaceTabBase & { kind: "file"; path: string })
+  | (WorkspaceSurfaceTabBase & { kind: "history"; checkpointId?: string })
+  | (WorkspaceSurfaceTabBase & { kind: "appearance" })
+  | (WorkspaceSurfaceTabBase & { kind: "extension"; surfaceId: string; surfaceExecution: "full-trust-pi"; viewId: string })
+  | (WorkspaceSurfaceTabBase & {
+    kind: "restricted-app";
+    appId: string;
+    digest: string;
+    appTabId: string;
+    route: string;
+    state?: unknown;
+  });
 
 export interface AgentStatus {
   ready: boolean;
@@ -264,6 +276,184 @@ export interface AgentToolManagement {
   reason: string;
 }
 export interface AgentDiagnostic { type: "info" | "warning" | "error"; message: string; path?: string }
+export type AgentSurfaceBlock =
+  | { type: "heading"; text: string; level: 1 | 2 | 3 }
+  | { type: "text"; text: string }
+  | { type: "callout"; tone: "info" | "success" | "warning"; title?: string; text: string }
+  | { type: "metrics"; items: Array<{ label: string; value: string; detail?: string }> }
+  | { type: "table"; columns: string[]; rows: string[][] }
+  | { type: "list"; items: Array<{ title: string; detail?: string; badge?: string }> };
+export interface AgentExtensionSurfaceView {
+  id: string;
+  title: string;
+  description?: string;
+  blocks: AgentSurfaceBlock[];
+}
+export interface AgentExtensionSurface {
+  id: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  extensionPath: string;
+  manifestPath: string;
+  source: string | AgentCapabilitySource;
+  sourceInfo?: AgentCapabilitySource;
+  scope?: AgentCapabilityScope | "user" | "temporary";
+  origin?: AgentCapabilityOrigin;
+  packageSource?: string;
+  enabled?: boolean;
+  loaded?: boolean;
+  status?: AgentCapabilityStatus;
+  views: AgentExtensionSurfaceView[];
+}
+
+export type CapabilitySurfaceExecution = "full-trust-pi";
+
+export interface CapabilitySurface {
+  key: string;
+  id: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  scope: AgentCapabilityScope | "user" | "temporary";
+  execution: "full-trust-pi";
+  views: AgentExtensionSurfaceView[];
+}
+
+export type RestrictedAppAuthDeclaration =
+  | { kind: "api-key"; header: string }
+  | { kind: "none" }
+  | { kind: "bearer" }
+  | { kind: "basic" }
+  | { kind: "oauth2-pkce"; issuer: string; clientId: string; scopes: string[] };
+
+export interface RestrictedAppJsonSchema {
+  type: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+  description?: string;
+  properties?: Record<string, RestrictedAppJsonSchema>;
+  required?: string[];
+  additionalProperties?: false;
+  items?: RestrictedAppJsonSchema;
+  enum?: Array<string | number | boolean | null>;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+}
+
+export interface RestrictedAppTool {
+  name: string;
+  description: string;
+  action: string;
+  inputSchema: RestrictedAppJsonSchema;
+  resultSchema: RestrictedAppJsonSchema;
+}
+
+export interface RestrictedAppNetworkDestination {
+  id: string;
+  target:
+    | { kind: "public-https"; origin: string }
+    | { kind: "loopback-http"; host: "127.0.0.1" | "::1"; port: number };
+  methods: Array<"GET" | "POST" | "PUT" | "PATCH" | "DELETE">;
+  auth: RestrictedAppAuthDeclaration[];
+}
+
+export interface RestrictedAppFilePermission {
+  id: string;
+  target: "file" | "directory";
+  access: "read" | "read-write";
+}
+
+export interface RestrictedAppFileGrant {
+  id: string;
+  declarationId: string;
+  root: string;
+  access: "read" | "read-write";
+}
+
+export interface RestrictedAppManifest {
+  version: 1;
+  id: string;
+  title: string;
+  description?: string;
+  runtime: { kind: "sandboxed-web"; entry: string; worker?: string };
+  ui: { icon?: string };
+  tools: RestrictedAppTool[];
+  background?: { intervalMinutes: number };
+  permissions: {
+    network: RestrictedAppNetworkDestination[];
+    files: RestrictedAppFilePermission[];
+  };
+}
+
+export interface RestrictedAppReview {
+  packageName: string;
+  version: string;
+  digest: string;
+  manifest: RestrictedAppManifest;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface RestrictedAppInstalled extends RestrictedAppReview {
+  workspaceId: string;
+  networkGrants: string[];
+  fileGrants: RestrictedAppFileGrant[];
+  backgroundEnabled: boolean;
+  backgroundLastRunAt?: string;
+  backgroundLastError?: string;
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface RestrictedAppViewRequest {
+  workspaceId: string;
+  appId: string;
+  digest: string;
+  mountId: string;
+  placement: "navigator" | "tab";
+  appTabId?: string;
+  route: string;
+  state?: unknown;
+  sequence: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  active: boolean;
+  occluded: boolean;
+  theme: AppTheme;
+}
+
+export interface RestrictedAppProposal {
+  id: string;
+  workspaceId: string;
+  conversationId: string;
+  sourcePath: string;
+  review: RestrictedAppReview;
+  status: "pending" | "installed" | "dismissed" | "revision-changed";
+  createdAt: string;
+  updatedAt: string;
+  installedApp?: RestrictedAppInstalled;
+}
+
+export interface RestrictedAppConnectionStatus {
+  destinationId: string;
+  kind: "api-key" | "bearer" | "basic" | "oauth2-pkce" | "none" | null;
+  configured: boolean;
+}
+
+export interface RestrictedAppStorageUsage {
+  revision: number;
+  usageBytes: number;
+  quotaBytes: number;
+  keyCount: number;
+  keyLimit: number;
+}
+
+export type RestrictedAppCredential =
+  | { kind: "api-key"; value: string }
+  | { kind: "bearer"; token: string }
+  | { kind: "basic"; username: string; password: string };
 export interface AgentCatalog {
   skills: AgentSkill[];
   extensions: AgentExtension[];
@@ -271,6 +461,7 @@ export interface AgentCatalog {
   tools: AgentTool[];
   toolManagement?: AgentToolManagement;
   diagnostics: AgentDiagnostic[];
+  surfaces?: AgentExtensionSurface[];
   trust?: AgentProjectTrust;
   projectTrusted?: boolean;
 }
@@ -366,7 +557,7 @@ export interface ExtensionUiRequest {
 }
 
 export interface ChatStreamEvent {
-  type: "status" | "turn_state" | "assistant_delta" | "assistant_message" | "assistant_thinking" | "tool" | "resources_changed" | "error" | "done" | "extension_ui_request" | "editor";
+  type: "status" | "turn_state" | "assistant_delta" | "assistant_message" | "assistant_thinking" | "tool" | "resources_changed" | "error" | "done" | "extension_ui_request" | "restricted_app_proposal" | "restricted_app_proposal_settled" | "editor";
   conversationId: string;
   running?: boolean;
   message?: string;
@@ -377,6 +568,7 @@ export interface ChatStreamEvent {
   thinkingPhase?: "start" | "delta" | "end";
   detail?: string;
   request?: ExtensionUiRequest;
+  proposal?: RestrictedAppProposal;
   editorMode?: "replace" | "append";
 }
 

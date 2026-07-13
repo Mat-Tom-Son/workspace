@@ -122,6 +122,18 @@ test("WorkspaceCliKernelAdapter flattens every capability kind without exposing 
       commands: [],
       flags: [],
     }],
+    surfaces: [{
+      id: "private-dashboard",
+      title: "Private dashboard",
+      extensionPath: join(root, ".pi", "extensions", "review.ts"),
+      manifestPath: join(root, ".pi", "extensions", "surface.json"),
+      source: source("extensions/review.ts", "auto", "user", "top-level"),
+      views: [{
+        id: "overview",
+        title: "Overview",
+        blocks: [{ type: "text", text: "PRIVATE SURFACE CONTENT" }],
+      }],
+    }],
     tools: [{
       name: "read",
       label: "Read",
@@ -186,6 +198,7 @@ test("WorkspaceCliKernelAdapter flattens every capability kind without exposing 
   assert.equal(capabilities.find((item) => item.kind === "extension")?.scope, "personal");
   assert.equal(capabilities.find((item) => item.id.startsWith("theme:"))?.scope, "temporary");
   assert.equal(JSON.stringify(capabilities).includes("TOP SECRET SKILL CONTENT"), false);
+  assert.equal(JSON.stringify(capabilities).includes("PRIVATE SURFACE CONTENT"), false);
   assert.equal(Object.hasOwn(capabilities.find((item) => item.kind === "skill") ?? {}, "content"), false);
 });
 

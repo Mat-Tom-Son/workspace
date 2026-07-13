@@ -44,7 +44,7 @@ There are two honest ways to create a Space:
 1. **Create a Space:** Workspace creates a normal folder under its managed local content location.
 2. **Turn an existing folder into a Space:** Workspace registers the folder in place.
 
-Both routes should lead to the same product experience. Registration must not move, duplicate, or rename user files. Workspace adds one intentionally narrow, hidden metadata layer: `.workspace/space.json` preserves the Space identity when its folder moves, and `.workspace/conversations/` keeps that Space's Chats with it. The Files and History surfaces hide this directory. Trust decisions, provider credentials, History objects, Pi sessions, ignore rules, and other machine-specific app state remain in application storage. Portable executable Pi configuration remains separate under `.pi/` and requires trust.
+Both routes should lead to the same product experience. Registration must not move, duplicate, or rename user files. Workspace adds one intentionally narrow, hidden metadata layer: `.workspace/space.json` preserves the Space identity when its folder moves, and `.workspace/conversations/` keeps that Space's Chats with it. The Files and History surfaces hide this directory. Provider credentials, the Space registry, History objects, Pi sessions, ignore rules, and other machine-specific app state remain in application storage. Portable executable Pi configuration remains separate under `.pi/`. Creating or registering the Space is the user's authorization for Workspace to load that local configuration; removing the Space revokes that authorization.
 
 A Space may also have a personal visual identity: accent colors, a compact banner, and a Fluent icon. Those preferences help distinguish Spaces inside Workspace, but they currently remain application state on this computer. The versioned `space.json` schema can grow deliberately if portable appearance is introduced later; current code must not smuggle machine-specific state into it.
 
@@ -52,26 +52,28 @@ The user should always be able to reveal a Space in the operating system, open i
 
 ## Context is explicit
 
-Physical availability, Assistant context, and executable capability are different states:
+Registering a folder is also the host authorization for its existing local Pi configuration. Assistant context, new package installation, restricted-app permissions, and external connections remain separate states:
 
 | Action | What changes | What does not happen implicitly |
 |---|---|---|
-| Register a folder as a Space | The folder appears in Workspace. | Files are not uploaded or converted. |
+| Register a folder as a Space | The folder appears in Workspace and its local Pi configuration may load. | Files are not uploaded or converted, and local code is not certified as safe. |
 | Add a Library item to a Space | An independent copy is written under `From Library`. | The original is not changed and the copy is not attached to a chat. |
 | Attach a file to a Chat | That file is made available to the conversation. | Other Space files are not included automatically. |
 | Install a personal Skill or Extension | It becomes available through the user's Pi scope. | It is not copied into every Space. |
-| Trust a Space | Pi may load trust-gated `.pi` configuration from that folder. | Trust does not certify the code as safe or publish it globally. |
+| Ask the Assistant to build a Space app | The Assistant may write an ordinary restricted-app package and ask Workspace to inspect it for review. | A proposal does not execute or install code, grant network access, or store a credential. |
+| Install a reviewed Space app | The exact reviewed digest becomes available in that Space. | Network and file access remain off, no connection is stored, and background work remains disabled. |
+| Allow an app power | One declared destination, Space file/folder, connection, or background schedule becomes usable. | Other declarations and other Spaces receive no authority. |
 
 This separation is a core product rail. “Available,” “in this Space,” “in this chat,” and “allowed to execute” must never collapse into one invisible state.
 
 ## Assistant model
 
-Workspace hosts Pi instead of recreating an agent framework. Pi owns model/provider behavior, built-in tools, standard resource discovery, packages, Skills, Extensions, and project trust. Workspace supplies the desktop experience: setup, catalog surfaces, secure credential persistence, folder selection, extension UI bridges, and clear scope/trust explanations.
+Workspace hosts Pi instead of recreating an agent framework. Pi owns model/provider behavior, built-in tools, standard resource discovery, packages, Skills, Extensions, and project trust mechanics. Workspace supplies the desktop experience: setup, catalog surfaces, secure credential persistence, folder selection, the registered-Space authorization override, extension UI bridges, and clear execution/permission explanations.
 
 There are two capability scopes:
 
 - **Personal:** available across Spaces from the user's Pi agent directory.
-- **This Space:** portable configuration stored under the Space's `.pi/` directory and loaded only after explicit trust.
+- **This Space:** portable configuration stored under the Space's `.pi/` directory and authorized while the folder is registered as a Space.
 
 The **Capabilities** surface unifies discovery and management without erasing the distinctions that matter. It identifies whether an item is a Skill or Extension, Personal or This Space, active or merely available, direct-imported or package-provided, and healthy or diagnostic-failing. Installed items can be searched, filtered by type and scope, and sorted by name, type, scope, or source. Discover results can be searched, filtered, and sorted by first-party/reference status, downloads, recency, or name.
 
@@ -93,7 +95,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 2. **Ordinary files:** user content stays portable and directly accessible.
 3. **Clear language:** expose the Space mental model before filesystem or package-manager jargon.
 4. **Explicit context:** people can tell what the Assistant can see in the current chat.
-5. **Progressive trust:** reading content and executing configuration are separate permissions.
+5. **Layered authorization:** Space registration authorizes local Pi configuration; package installation, restricted-app permissions, connections, and Chat context stay explicit and separately revocable.
 6. **Pi compatibility:** use standard Pi behavior and formats instead of parallel Workspace-only systems.
 7. **Capability transparency:** show source, scope, status, and diagnostics for executable additions.
 8. **Provider neutrality:** cloud and model integrations should use replaceable adapters rather than shape the core model.
@@ -107,18 +109,20 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Browse and upload Space files, run Space-scoped Chats, use the Library, and view History.
 - Restore content-addressed History checkpoints created around file mutations and Assistant turns.
 - Configure a Pi provider/model with an API key and use Pi's built-in tools.
-- Discover and search personal and trusted-Space Skills and Extensions in one Capabilities surface, with accurate source, scope, load state, and diagnostics.
+- Discover and search Personal and registered-Space Skills and Extensions in one Capabilities surface, with accurate source, scope, load state, and diagnostics.
 - Browse curated first-party/reference Skills and Extensions alongside community Pi packages, with type filters and explicit provenance.
 - Import standard Skills and compatible skill bundles while preserving their supporting files.
-- Install, update, and remove Pi packages at Personal or trusted-Space scope.
+- Install, update, and remove Pi packages at Personal or registered-Space scope.
 - Customize each Space with a compact banner, paired accent colors, and a searchable Fluent icon catalog without changing its folder.
 - Inspect Space context, registered Spaces, active Assistant/compaction tasks, and Pi capabilities through one versioned `WorkspaceKernel` and the read-only installed `workspace` CLI.
 - Drive one real Pi turn through the local API with the harness-neutral `workspace:drive` test driver.
+- Render validated declarative `surface.json` contributions from loaded Pi Extensions as a contributed rail destination, left-pane navigator, and Space-bound view tabs without injecting Extension code into the renderer.
+- Let the Assistant submit a completed, Space-relative restricted-app package through a host-owned proposal tool. Workspace persists a Space-and-Chat-bound, digest-pinned review without evaluating JavaScript; only a later human approval installs it, with network and Space-file access off and background work disabled. Capabilities manages grants, connections, background scheduling, local data, lifecycle, and the secondary local-package path. An installed app gets arbitrary reviewed web UI in a sandboxed rail navigator, can request persistent Space-owned right tabs through a host-derived identity, may expose bounded Assistant/background actions through a separate worker sandbox, and can use bounded host-owned storage, History-covered Space-file grants, exact brokered network access, and standards-only OAuth PKCE.
 - Build a Windows installer and deliver updates through GitHub Releases.
 
 ### Next product layer
 
-- Make Space location, storage ownership, History coverage, and trust state easier to inspect at a glance.
+- Make Space location, storage ownership, History coverage, and executable capability class easier to inspect at a glance.
 - Add Library organization controls such as rename, move, delete, reveal, and bulk operations.
 - Add per-resource enable/disable and package filtering controls without confusing availability with activation.
 - Add receipts and safe removal for directly imported Skills, independently from package lifecycle.
@@ -126,7 +130,7 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Make “what this Chat can see and use” visible before and during a conversation.
 - Add an authenticated, versioned mutation surface with explicit Personal, Space, and Chat scopes, replay protection, confirmations, revocation, and durable action receipts.
 - Add event subscriptions and a scoped cross-Space Assistant that can manage the product only through those authorized contracts.
-- Define controlled Extension primitives for tabs, rail entries, left/right panes, and safe web surfaces before treating a Space as an app-like runtime.
+- Add restricted-app subscriptions and host-owned notifications, finer web-runtime resource controls, and a verified Space-service registry backed by a trusted launcher, per-instance challenge, and process-generation lifecycle. Raw numeric loopback grants remain useful for development but do not prove which process owns a port.
 - Strengthen onboarding, keyboard/accessibility behavior, renderer interaction tests, recovery, export, and diagnostics.
 
 ### Later adapters and distribution maturity

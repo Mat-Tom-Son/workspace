@@ -1,0 +1,388 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import test from "node:test";
+
+import {
+  normalizeRestrictedAppCredential,
+  RestrictedAppError,
+  RestrictedAppNetworkBroker,
+  type RestrictedAppConnectionBinding,
+  type RestrictedAppConnectionStore,
+  type RestrictedAppCredential,
+  type RestrictedAppRuntimeOwner,
+} from "../src/local/agent/restricted-app-connections.js";
+import {
+  parseRestrictedAppManifest,
+  type RestrictedAppAuthDeclaration,
+  type RestrictedAppManifest,
+} from "../src/local/agent/restricted-app-manifest.js";
+
+const digest = "a".repeat(64);
+const owner: RestrictedAppRuntimeOwner = {
+  workspaceId: "space-one",
+  appId: "mail-app",
+  digest,
+  networkGrants: ["mail-api"],
+};
+
+test("connection credentials reject fields from a different auth kind", () => {
+  assert.throws(
+    () => normalizeRestrictedAppCredential({ kind: "bearer", token: "token", value: "extra-secret" }),
+    /too many fields|unsupported field value/i,
+  );
+  assert.throws(
+    () => normalizeRestrictedAppCredential({ kind: "api-key", value: "key", password: "extra-secret" }),
+    /too many fields|unsupported field password/i,
+  );
+});
+
+class MemoryConnections implements RestrictedAppConnectionStore {
+  readonly gets: RestrictedAppConnectionBinding[] = [];
+
+  constructor(private credential?: RestrictedAppCredential) {}
+
+  async get(binding: RestrictedAppConnectionBinding): Promise<RestrictedAppCredential | undefined> {
+    this.gets.push(structuredClone(binding));
+    return this.credential ? structuredClone(this.credential) : undefined;
+  }
+
+  async set(_binding: RestrictedAppConnectionBinding, credential: RestrictedAppCredential): Promise<void> {
+    this.credential = structuredClone(credential);
+  }
+
+  async delete(): Promise<boolean> {
+    const existed = this.credential !== undefined;
+    this.credential = undefined;
+    return existed;
+  }
+
+  async deleteApp(): Promise<void> {
+    this.credential = undefined;
+  }
+}
+
+function manifest(options: {
+  auth?: RestrictedAppAuthDeclaration[];
+  methods?: string[];
+  origin?: string;
+} = {}): RestrictedAppManifest {
+  return parseRestrictedAppManifest({
+    version: 1,
+    id: "mail-app",
+    title: "Mail",
+    runtime: { kind: "sandboxed-web", entry: "index.html" },
+    ui: {},
+    tools: [],
+    permissions: {
+      network: [{
+        id: "mail-api",
+        target: { kind: "public-https", origin: options.origin ?? "https://mail.example.com" },
+        methods: options.methods ?? ["GET", "POST"],
+        auth: options.auth ?? [{ kind: "none" }],
+      }],
+    },
+  });
+}
+
+function loopbackManifest(port: number): RestrictedAppManifest {
+  return parseRestrictedAppManifest({
+    version: 1,
+    id: "mail-app",
+    title: "Mail",
+    runtime: { kind: "sandboxed-web", entry: "index.html" },
+    ui: {},
+    tools: [],
+    permissions: {
+      network: [{
+        id: "local-api",
+        target: { kind: "loopback-http", host: "127.0.0.1", port },
+        methods: ["GET"],
+        auth: [{ kind: "none" }],
+      }],
+    },
+  });
+}
+
+function successfulFetch(inspect?: (url: URL, init: RequestInit) => void): typeof globalThis.fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    inspect?.(new URL(String(input)), init ?? {});
+    return new Response('{"ok":true}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof globalThis.fetch;
+}
+
+function isRestrictedError(code: RestrictedAppError["code"]): (error: unknown) => boolean {
+  return (error) => error instanceof RestrictedAppError && error.code === code;
+}
+
+test("network broker derives the exact digest and origin credential binding", async () => {
+  const connections = new MemoryConnections();
+  const broker = new RestrictedAppNetworkBroker({ credentials: connections, fetch: successfulFetch() });
+
+  await broker.request(owner, manifest(), {
+    destinationId: "mail-api",
+    method: "GET",
+    path: "/messages?unread=true",
+  });
+
+  assert.deepEqual(connections.gets, [{
+    workspaceId: "space-one",
+    appId: "mail-app",
+    digest,
+    destinationId: "mail-api",
+    origin: "https://mail.example.com",
+  }]);
+});
+
+test("network broker injects API-key, bearer, and basic credentials in the host", async () => {
+  const cases: Array<{
+    auth: RestrictedAppAuthDeclaration;
+    credential: RestrictedAppCredential;
+    header: string;
+    expected: string;
+  }> = [
+    {
+      auth: { kind: "api-key", header: "x-service-key" },
+      credential: { kind: "api-key", value: "api-secret" },
+      header: "x-service-key",
+      expected: "api-secret",
+    },
+    {
+      auth: { kind: "bearer" },
+      credential: { kind: "bearer", token: "bearer-secret" },
+      header: "authorization",
+      expected: "Bearer bearer-secret",
+    },
+    {
+      auth: { kind: "basic" },
+      credential: { kind: "basic", username: "user", password: "password" },
+      header: "authorization",
+      expected: `Basic ${Buffer.from("user:password", "utf8").toString("base64")}`,
+    },
+  ];
+
+  for (const item of cases) {
+    let sentHeaders: Headers | undefined;
+    const broker = new RestrictedAppNetworkBroker({
+      credentials: new MemoryConnections(item.credential),
+      fetch: successfulFetch((_url, init) => { sentHeaders = new Headers(init.headers); }),
+    });
+    await broker.request(owner, manifest({ auth: [item.auth] }), {
+      destinationId: "mail-api",
+      method: "GET",
+      path: "/messages",
+      headers: { accept: "application/json" },
+    });
+    assert.equal(sentHeaders?.get(item.header), item.expected);
+    assert.equal(sentHeaders?.get("cookie"), null);
+  }
+});
+
+test("network broker requires an accepted credential when anonymous access is not declared", async () => {
+  const broker = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    fetch: successfulFetch(() => assert.fail("fetch must not run without credentials")),
+  });
+  await assert.rejects(
+    broker.request(owner, manifest({ auth: [{ kind: "bearer" }] }), {
+      destinationId: "mail-api",
+      method: "GET",
+      path: "/messages",
+    }),
+    isRestrictedError("AUTH_REQUIRED"),
+  );
+});
+
+test("network broker enforces owner identity, destination grants, methods, paths, and headers before fetch", async () => {
+  let fetches = 0;
+  const broker = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    fetch: successfulFetch(() => { fetches += 1; }),
+  });
+  const app = manifest({ methods: ["GET"] });
+  const denied: Array<[RestrictedAppRuntimeOwner, unknown]> = [
+    [{ ...owner, appId: "other-app" }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
+    [{ ...owner, networkGrants: [] }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
+    [owner, { destinationId: "unknown", method: "GET", path: "/messages" }],
+    [owner, { destinationId: "mail-api", method: "POST", path: "/messages" }],
+    [owner, { destinationId: "mail-api", method: "GET", path: "//evil.example/messages" }],
+    [owner, { destinationId: "mail-api", method: "GET", path: "/messages#secret" }],
+    [owner, { destinationId: "mail-api", method: "GET", path: "/messages", headers: { authorization: "Bearer app-secret" } }],
+    [owner, { destinationId: "mail-api", method: "GET", path: "/messages", appId: "mail-app" }],
+  ];
+  for (const [runtimeOwner, request] of denied) {
+    await assert.rejects(broker.request(runtimeOwner, app, request), isRestrictedError("NETWORK_DENIED"));
+  }
+  assert.equal(fetches, 0);
+});
+
+test("network broker enforces request byte limits and denies private destination resolution", async () => {
+  let fetches = 0;
+  const oversized = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    maxRequestBytes: 4,
+    fetch: successfulFetch(() => { fetches += 1; }),
+  });
+  await assert.rejects(
+    oversized.request(owner, manifest(), { destinationId: "mail-api", method: "POST", path: "/messages", body: "12345" }),
+    isRestrictedError("NETWORK_DENIED"),
+  );
+
+  const privateDestination = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+    fetch: successfulFetch(() => { fetches += 1; }),
+  });
+  await assert.rejects(
+    privateDestination.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" }),
+    isRestrictedError("NETWORK_DENIED"),
+  );
+  assert.equal(fetches, 0);
+});
+
+test("network broker follows bounded same-origin redirects and rejects cross-origin redirects", async () => {
+  const visited: Array<{ url: string; method: string; body: BodyInit | null | undefined }> = [];
+  const sameOriginFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    visited.push({ url: String(input), method: init?.method ?? "GET", body: init?.body });
+    if (visited.length === 1) return new Response(null, { status: 307, headers: { location: "/v2/messages" } });
+    return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+  }) as typeof globalThis.fetch;
+  const broker = new RestrictedAppNetworkBroker({ credentials: new MemoryConnections(), fetch: sameOriginFetch });
+  const response = await broker.request(owner, manifest({ methods: ["POST"] }), {
+    destinationId: "mail-api",
+    method: "POST",
+    path: "/v1/messages",
+    body: "payload",
+  });
+  assert.equal(response.body, "ok");
+  assert.deepEqual(visited, [
+    { url: "https://mail.example.com/v1/messages", method: "POST", body: "payload" },
+    { url: "https://mail.example.com/v2/messages", method: "POST", body: "payload" },
+  ]);
+
+  let crossOriginFetches = 0;
+  const crossOrigin = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    fetch: (async () => {
+      crossOriginFetches += 1;
+      return new Response(null, { status: 302, headers: { location: "https://evil.example/messages" } });
+    }) as typeof globalThis.fetch,
+  });
+  await assert.rejects(
+    crossOrigin.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" }),
+    isRestrictedError("NETWORK_DENIED"),
+  );
+  assert.equal(crossOriginFetches, 1);
+});
+
+test("network broker caps redirects, response bytes, and exposed response headers", async () => {
+  let redirects = 0;
+  const redirectBroker = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    maxRedirects: 1,
+    fetch: (async () => {
+      redirects += 1;
+      return new Response(null, { status: 302, headers: { location: `/redirect-${redirects}` } });
+    }) as typeof globalThis.fetch,
+  });
+  await assert.rejects(
+    redirectBroker.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" }),
+    isRestrictedError("NETWORK_DENIED"),
+  );
+  assert.equal(redirects, 2);
+
+  const oversized = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    maxResponseBytes: 4,
+    fetch: (async () => new Response("12345", { headers: { "content-type": "text/plain" } })) as typeof globalThis.fetch,
+  });
+  await assert.rejects(
+    oversized.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" }),
+    isRestrictedError("NETWORK_FAILED"),
+  );
+
+  const filtered = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    fetch: (async () => new Response("ok", {
+      headers: {
+        "content-type": "text/plain",
+        etag: "v1",
+        "set-cookie": "session=secret",
+        "x-secret": "hidden",
+      },
+    })) as typeof globalThis.fetch,
+  });
+  const response = await filtered.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" });
+  assert.deepEqual(response.headers, { "content-type": "text/plain", etag: "v1" });
+});
+
+test("network broker applies its deadline while streaming the response body", async () => {
+  const broker = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    timeoutMs: 10,
+    fetch: (async (_input, init) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+      },
+    }), { headers: { "content-type": "text/plain" } })) as typeof globalThis.fetch,
+  });
+
+  await assert.rejects(
+    broker.request(owner, manifest(), { destinationId: "mail-api", method: "GET", path: "/messages" }),
+    isRestrictedError("NETWORK_FAILED"),
+  );
+});
+
+test("network broker reaches an exact loopback service and denies its redirects", async () => {
+  const requests: Array<{ host: string | undefined; url: string | undefined }> = [];
+  const server = createServer((request, response) => {
+    requests.push({ host: request.headers.host, url: request.url });
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/elsewhere" });
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json", "x-private": "hidden" });
+    response.end('{"service":"ready"}');
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    assert.ok(address.port >= 1_024);
+    const broker = new RestrictedAppNetworkBroker({ credentials: new MemoryConnections() });
+    const localOwner = { ...owner, networkGrants: ["local-api"] };
+    const app = loopbackManifest(address.port);
+
+    const response = await broker.request(localOwner, app, {
+      destinationId: "local-api",
+      method: "GET",
+      path: "/status?detail=true",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.body, '{"service":"ready"}');
+    assert.deepEqual(response.headers, { "content-type": "application/json" });
+    assert.deepEqual(requests, [{
+      host: `127.0.0.1:${address.port}`,
+      url: "/status?detail=true",
+    }]);
+
+    await assert.rejects(
+      broker.request(localOwner, app, {
+        destinationId: "local-api",
+        method: "GET",
+        path: "/redirect",
+      }),
+      isRestrictedError("NETWORK_DENIED"),
+    );
+    assert.equal(requests.length, 2);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});

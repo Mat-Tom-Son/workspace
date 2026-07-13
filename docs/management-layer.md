@@ -26,7 +26,7 @@ flowchart LR
   kernel -. "future scoped adapters" .-> future["Meta-Assistant, Extensions, and Space runtimes"]
 ```
 
-Domain services still own writes. The kernel does not bypass folder grants, Space trust, capability-mutation locks, History behavior, or any other mutation policy.
+Domain services still own writes. The kernel does not bypass folder grants, registered-Space authorization, capability-mutation locks, History behavior, or any other mutation policy.
 
 ## Kernel contract
 
@@ -54,11 +54,11 @@ The current snapshot version is `1` and exposes four read models:
 | `workspace.context` | Normalized actor, resolution method, and resolved Space or `null`. |
 | `workspace.spaces` | Registered Space identities, roots, ownership/location metadata, and timestamps. |
 | `workspace.tasks` | Running `assistant_turn` and `compaction` records, optionally scoped to one Space. |
-| `workspace.capabilities` | Pi's authoritative capability catalog plus packages, trust, mutation trust, provenance, and diagnostics for one Space. |
+| `workspace.capabilities` | Pi's authoritative capability catalog plus packages, project authorization, mutation eligibility, provenance, and diagnostics for one Space. |
 
 The local API and the desktop CLI share one kernel instance. Assistant turns and Chat compactions register a task when work is accepted and finish it in success and failure cleanup paths. Capability mutations remain blocked while affected work is active, so a catalog reload cannot silently terminate a background turn.
 
-Capability snapshots are projections of Pi's native catalog. They do not create a second registry, activate inactive tools, grant Space trust, or install anything.
+Capability snapshots are projections of Pi's native catalog. They do not create a second full-trust registry, activate inactive tools, bypass the Space registry, or install anything.
 
 ## Workspace CLI
 
@@ -101,7 +101,7 @@ Do not add mutations to protocol v1. A future write surface needs, at minimum:
 - request freshness and replay protection;
 - confirmation and revocation behavior for sensitive operations;
 - durable receipts or audit records for accepted changes;
-- the existing trust, concurrency, History, and filesystem-policy checks.
+- the existing Space-registration, concurrency, History, and filesystem-policy checks.
 
 ## Agent harness versus management CLI
 
@@ -121,16 +121,21 @@ Use the CLI to assert management snapshots. Use `workspace:drive` to test actual
 
 This read-only layer is the first primitive for a broader Workspace operating layer. It can support a future cross-Space Assistant and controlled Space runtimes because they can start from one semantic inventory instead of scraping UI state.
 
+The renderer capability catalog now also carries validated declarative surface metadata from Extensions Pi actually loaded. The compact installed CLI projection remains content-free and does not emit surface block contents or mutate UI state.
+
+Separately, the local restricted-app service can inspect and install completed reviewed web assets without evaluation, and the desktop can mount or invoke them through the sandbox hosts. Package dependency metadata is never resolved or installed. Restricted apps remain outside the kernel and CLI projection and must never be merged into Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md).
+
 It does **not** yet provide:
 
 - an authenticated mutation API;
 - a cross-Space meta-Assistant with delegated authority;
 - event subscriptions for all state changes;
-- Extension APIs for creating rail items, left panes, right panes, or tabs;
-- arbitrary HTML/web applications running as trusted Space surfaces;
-- per-Space application sandboxes comparable to a mobile operating system.
+- imperative Extension APIs for dynamically creating or mutating rail items, panes, or tabs beyond the static `surface.json` contribution contract;
+- a verified registry that binds a Space-local service to a Workspace-launched process generation;
+- host-owned remote subscriptions or push notifications for restricted apps;
+- resource isolation comparable to a mobile operating system; the shipped Chromium hosts and brokers do not eliminate renderer exploits or CPU/memory denial-of-service risk.
 
-Those features require an explicit capability, permission, lifecycle, and UI-surface model. They should build on the kernel instead of reaching around it.
+Restricted apps already have an explicit package, permission, lifecycle, sandbox-host, connection, storage, file-grant, background-work, and UI-surface model. The remaining features should extend those contracts and the kernel's read authority instead of reaching around either boundary.
 
 ## Implementation and verification map
 

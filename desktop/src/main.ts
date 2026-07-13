@@ -30,11 +30,19 @@ import {
 
 import { RoutedPiExtensionUiBridge, type PiExtensionUiEvent } from "../../src/local/agent/extension-ui.js";
 import { defaultAgentSdkDir } from "../../src/local/agent/agent-data-dir.js";
+import {
+  RegisteredSpaceRuntimeProvider,
+  RegisteredSpaceTrustAuthority,
+} from "../../src/local/agent/registered-space-runtime.js";
+import type { PiRuntimeProvider } from "../../src/local/agent/pi-runtime-config.js";
 import { startLocalApi } from "../../src/local/server.js";
 import { configureWorkspaceStateRoot } from "../../src/local/state-paths.js";
-import { getWorkspace } from "../../src/local/workspace.js";
+import { getWorkspace, listWorkspaces } from "../../src/local/workspace.js";
 import { WorkspaceCliKernelAdapter } from "../../src/local/workspace-cli-adapter.js";
 import { WorkspaceKernel } from "../../src/local/workspace-kernel.js";
+import { RestrictedAppService } from "../../src/local/agent/restricted-app-service.js";
+import { FileRestrictedAppStorage } from "../../src/local/agent/restricted-app-storage.js";
+import { restrictedAppRoot } from "../../src/local/state-paths.js";
 import {
   WorkspaceDesktopCliHost,
   workspaceCliInstanceData,
@@ -42,6 +50,9 @@ import {
   workspaceCliRequestIdFromInstanceData,
 } from "./cli-host.js";
 import { PackagedPiRuntimeProvider } from "./pi-runtime.js";
+import { createRestrictedAppConnectionStore } from "./restricted-app-connections.js";
+import { createRestrictedAppOAuthClient } from "./restricted-app-oauth.js";
+import { RestrictedAppHost, restrictedAppProtocol } from "./restricted-app-host.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
 import { shouldUseWindowsMica } from "./window-material.js";
@@ -119,16 +130,25 @@ let activateRegistered = false;
 let interactiveRequested = false;
 let cliRequestGeneration = 0;
 
-protocol.registerSchemesAsPrivileged([{
-  scheme: appProtocol,
-  privileges: {
-    standard: true,
-    secure: true,
-    supportFetchAPI: true,
-    corsEnabled: true,
-    stream: true,
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: appProtocol,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
   },
-}]);
+  {
+    scheme: restrictedAppProtocol,
+    privileges: {
+      standard: true,
+      secure: true,
+    },
+  },
+]);
 
 app.setName(productName);
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
@@ -214,8 +234,12 @@ interface DesktopHost {
   settings: SecureSettingsStore;
   extensionUi: RoutedPiExtensionUiBridge;
   runtime: PackagedPiRuntimeProvider;
+  runtimeProvider: PiRuntimeProvider;
+  spaceTrustAuthority: RegisteredSpaceTrustAuthority;
   kernel: WorkspaceKernel;
   cli: WorkspaceDesktopCliHost;
+  restrictedApps: RestrictedAppService;
+  restrictedAppHost: RestrictedAppHost;
 }
 
 async function ensureDesktopHost(): Promise<DesktopHost> {
@@ -224,30 +248,68 @@ async function ensureDesktopHost(): Promise<DesktopHost> {
     const userData = app.getPath("userData");
     configureWorkspaceStateRoot(userData);
     const settings = new SecureSettingsStore(join(userData, "secure-settings.bin"));
-    const extensionUi = new RoutedPiExtensionUiBridge();
-    extensionUi.on("event", (event: PiExtensionUiEvent) => {
+    const restrictedConnections = createRestrictedAppConnectionStore(join(userData, "restricted-app-connections.bin"));
+    const restrictedOAuth = createRestrictedAppOAuthClient(restrictedConnections, (url) => shell.openExternal(url));
+    const restrictedStorage = new FileRestrictedAppStorage(join(restrictedAppRoot(), "data"));
+    const restrictedRuntime = new RestrictedAppHost({
+      connections: restrictedConnections,
+      oauth: restrictedOAuth,
+      storage: restrictedStorage,
+      resolveWorkspaceRoot: async (workspaceId) => (await listWorkspaces()).find((workspace) => workspace.id === workspaceId)?.rootPath ?? null,
+      preloadPath: resolveRestrictedAppPreloadPath(),
+      onTabCommand: (command) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.webContents.send("workspace:restricted-app-view:tab-command", command);
+      },
+      onUiState: (state) => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.id !== state.ownerWebContentsId) return;
+        mainWindow.webContents.send("workspace:restricted-app-view:state", state);
+      },
+    });
+    let restrictedApps: RestrictedAppService;
+    try {
+      restrictedApps = await RestrictedAppService.create({
+        rootPath: restrictedAppRoot(),
+        runtimeHost: restrictedRuntime,
+        connections: restrictedConnections,
+        oauth: restrictedOAuth,
+        storage: restrictedStorage,
+      });
+    } catch (error) {
+      await restrictedRuntime.close();
+      throw error;
+    }
+    try {
+      const extensionUi = new RoutedPiExtensionUiBridge();
+      extensionUi.on("event", (event: PiExtensionUiEvent) => {
       if (event.method === "openExternal") void openExternal(event.url);
       else if (event.method === "oauthDeviceCode") void openExternal(event.verificationUri);
       else if (event.method === "copyText") clipboard.writeText(event.text);
       else if (event.method === "openSettings") mainWindow?.webContents.send("workspace:agent:open-settings");
       else if (event.method === "quit") app.quit();
-    });
-    const runtime = new PackagedPiRuntimeProvider({
+      });
+      const runtime = new PackagedPiRuntimeProvider({
       agentDir: defaultAgentSdkDir(),
       authStorageHost: settings,
       extensionUi,
     });
-    const kernel = new WorkspaceKernel({ runtimeProvider: runtime });
-    const cli = new WorkspaceDesktopCliHost({
+      const spaceTrustAuthority = new RegisteredSpaceTrustAuthority((await listWorkspaces()).map((workspace) => workspace.rootPath));
+      const runtimeProvider = new RegisteredSpaceRuntimeProvider(runtime, spaceTrustAuthority);
+      const kernel = new WorkspaceKernel({ runtimeProvider });
+      const cli = new WorkspaceDesktopCliHost({
       stateRoot: userData,
       kernel: new WorkspaceCliKernelAdapter(kernel),
       version: app.getVersion(),
       productName,
-    });
-    await cli.initialize();
-    secureSettings = settings;
-    piRuntime = runtime;
-    return { settings, extensionUi, runtime, kernel, cli };
+      });
+      await cli.initialize();
+      secureSettings = settings;
+      piRuntime = runtime;
+      return { settings, extensionUi, runtime, runtimeProvider, spaceTrustAuthority, kernel, cli, restrictedApps, restrictedAppHost: restrictedRuntime };
+    } catch (error) {
+      await restrictedApps.close();
+      throw error;
+    }
   })();
   return desktopHostPromise;
 }
@@ -272,7 +334,7 @@ async function startInteractiveApp(): Promise<void> {
     if (!activateRegistered) {
       activateRegistered = true;
       app.on("activate", () => {
-        if (BrowserWindow.getAllWindows().length === 0) void ensureMainWindow();
+        if (!mainWindow || mainWindow.isDestroyed()) void ensureMainWindow();
         else showWindow();
       });
     }
@@ -293,6 +355,7 @@ async function quitAfterCliRequest(): Promise<void> {
     await startInteractiveApp();
     return;
   }
+  await host.restrictedApps.close();
   quitting = true;
   // Exit synchronously after the queue and host-backed auth storage are both
   // drained so a new process cannot hand work to a half-shutdown primary.
@@ -325,9 +388,11 @@ async function createMainWindow(): Promise<void> {
     sessionToken: apiSessionToken,
     allowedOrigins: [`${appProtocol}://app`],
     piRuntimeProvider: host.runtime,
+    spaceTrustAuthority: host.spaceTrustAuthority,
     extensionUiBridge: host.extensionUi,
     kernel: host.kernel,
     localFolderGrantProvider: { consumeLocalFolderGrant },
+    restrictedAppService: host.restrictedApps,
     onAgentTurnActivity: updateAgentPowerState,
   });
   closeLocalApi = api.close;
@@ -371,6 +436,10 @@ async function createMainWindow(): Promise<void> {
   } catch (error) {
     console.warn(`${productName} could not configure spellchecker languages: ${errorMessage(error)}`);
   }
+  const rendererWebContentsId = mainWindow.webContents.id;
+  mainWindow.webContents.once("destroyed", () => {
+    void desktopHostPromise?.then((host) => host.restrictedAppHost.unmountUiOwner(rendererWebContentsId));
+  });
   configureWindowStatePersistence(mainWindow);
   if (state?.isMaximized) mainWindow.maximize();
   mainWindow.on("ready-to-show", () => mainWindow?.show());
@@ -386,7 +455,10 @@ async function createMainWindow(): Promise<void> {
     quitting = true;
     void shutdown();
   });
-  mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+    if (process.platform !== "darwin" && !quitting && !quittingForUpdate) app.quit();
+  });
   configureWindowNavigation(mainWindow);
   configureContextMenu(mainWindow);
   configureWindowResilience(mainWindow);
@@ -521,6 +593,27 @@ function registerIpc(): void {
   ipcMain.handle("workspace:settings:status", (event) => {
     assertTrustedRenderer(event);
     return secureSettings?.status() ?? { encryptionAvailable: false, configuredProviders: [] };
+  });
+  ipcMain.handle("workspace:restricted-app-view:mount", async (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    const window = mainWindow;
+    if (!window || window.isDestroyed()) throw new Error("The Workspace window is not available.");
+    const identity = restrictedAppViewIdentity(value);
+    const host = await ensureDesktopHost();
+    const descriptor = await host.restrictedApps.runtimeDescriptor(identity.workspaceId, identity.appId, identity.digest);
+    return await host.restrictedAppHost.mountUi(descriptor, event.sender, window, restrictedAppViewPayload(value));
+  });
+  ipcMain.on("workspace:restricted-app-view:layout", (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    void ensureDesktopHost()
+      .then((host) => host.restrictedAppHost.layoutUi(event.sender.id, restrictedAppViewPayload(value)))
+      .catch((error) => console.warn(`${productName} could not lay out a restricted app view: ${errorMessage(error)}`));
+  });
+  ipcMain.handle("workspace:restricted-app-view:unmount", async (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    if (typeof value !== "string") throw new Error("A restricted app mount id is required.");
+    const host = await ensureDesktopHost();
+    await host.restrictedAppHost.unmountUi(event.sender.id, value);
   });
   ipcMain.handle("workspace:updates:status", (event): WorkspaceUpdateStatus => {
     assertTrustedRenderer(event);
@@ -796,10 +889,12 @@ async function shutdown(): Promise<void> {
   closeLocalApi = null;
   const runtime = piRuntime;
   piRuntime = null;
+  const restrictedApps = desktopHostPromise?.then((host) => host.restrictedApps.close()) ?? Promise.resolve();
   shutdownPromise = (async () => {
     const outcomes = await Promise.allSettled([
       withShutdownTimeout(close?.() ?? Promise.resolve(), "local API"),
       withShutdownTimeout(runtime?.flush() ?? Promise.resolve(), "Pi state"),
+      withShutdownTimeout(restrictedApps, "restricted apps"),
     ]);
     for (const outcome of outcomes) {
       if (outcome.status === "rejected") console.warn(`${productName} shutdown cleanup failed: ${errorMessage(outcome.reason)}`);
@@ -933,7 +1028,11 @@ function closeToTrayStatus(): { supported: boolean; enabled: boolean } {
 function configurePowerMonitor(): void {
   if (powerMonitorRegistered) return;
   powerMonitorRegistered = true;
+  powerMonitor.on("suspend", () => {
+    void desktopHostPromise?.then((host) => host.restrictedApps.suspendBackground());
+  });
   powerMonitor.on("resume", () => {
+    void desktopHostPromise?.then((host) => host.restrictedApps.resumeBackground());
     setTimeout(ensureRendererAfterResume, resumeRendererHealthDelayMs);
     setTimeout(() => { void checkForUpdates(false); }, resumeUpdateCheckDelayMs);
   });
@@ -959,6 +1058,12 @@ function getWindowsAccentColor(): string | null {
 }
 
 function configureWindowResilience(window: BrowserWindow): void {
+  const unmountRestrictedViews = () => {
+    void desktopHostPromise?.then((host) => host.restrictedAppHost.unmountUiOwner(window.webContents.id));
+  };
+  window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) unmountRestrictedViews();
+  });
   window.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame || !isTrustedRendererUrl(url)) return;
     rendererLoadFailed = true;
@@ -969,6 +1074,7 @@ function configureWindowResilience(window: BrowserWindow): void {
     rendererRecoveryAttempts = 0;
   });
   window.webContents.on("render-process-gone", (_event, details) => {
+    unmountRestrictedViews();
     if (!window.isDestroyed()) scheduleRendererRecovery(`renderer process ended: ${details.reason}`);
   });
 }
@@ -1103,6 +1209,34 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
   if (!event.senderFrame || !isTrustedRendererUrl(event.senderFrame.url)) throw new Error("Untrusted renderer IPC request.");
 }
 
+function assertTrustedMainRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
+  assertTrustedRenderer(event);
+  const frame = event.senderFrame;
+  const mainFrame = event.sender.mainFrame;
+  const mainFrameMatches = Boolean(frame && frame.processId === mainFrame.processId && frame.routingId === mainFrame.routingId);
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainFrameMatches) {
+    throw new Error("Restricted app view requests require the main Workspace renderer.");
+  }
+}
+
+function restrictedAppViewIdentity(value: unknown): { workspaceId: string; appId: string; digest: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Restricted app view identity is invalid.");
+  const record = value as Record<string, unknown>;
+  const workspaceId = typeof record.workspaceId === "string" ? record.workspaceId : "";
+  const appId = typeof record.appId === "string" ? record.appId : "";
+  const digest = typeof record.digest === "string" ? record.digest.toLowerCase() : "";
+  if (!workspaceId || workspaceId.length > 256 || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(appId) || !/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("Restricted app view identity is invalid.");
+  }
+  return { workspaceId, appId, digest };
+}
+
+function restrictedAppViewPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Restricted app view request is invalid.");
+  const { workspaceId: _workspaceId, appId: _appId, digest: _digest, ...payload } = value as Record<string, unknown>;
+  return payload;
+}
+
 function isTrustedRendererUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -1124,6 +1258,10 @@ function resolveRendererDir(): string {
 
 function resolvePreloadPath(): string {
   return join(dirnameFromFile(currentFile), "preload.cjs");
+}
+
+function resolveRestrictedAppPreloadPath(): string {
+  return join(dirnameFromFile(currentFile), "restricted-app-preload.cjs");
 }
 
 function resolveWindowIcon(): string {

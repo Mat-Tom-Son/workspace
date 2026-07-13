@@ -17,15 +17,19 @@ import { TextInputModal } from "./components/modals/TextInputModal";
 import { OnboardingFlow } from "./components/onboarding/OnboardingFlow";
 import { FileDetailsPane } from "./components/panes/FileDetailsPane";
 import { CapabilitiesPane } from "./components/panes/CapabilitiesPane";
+import { ExtensionSurfacePane, ExtensionSurfaceUnavailable, ExtensionSurfaceView } from "./components/panes/ExtensionSurface";
+import { RestrictedAppViewport } from "./components/panes/RestrictedAppViewport";
 import { WorkspaceAppearancePanel, WorkspaceModeRail, WorkspacePaneHeader } from "./components/panes/workspaceChrome";
 import { ChatsPane, HistoryPane, LibraryPane, SpacesPane } from "./components/panes/workspacePanes";
 import { FileContextMenu } from "./components/tree/FileContextMenu";
 import { FileTree, FileTreeLoadingState } from "./components/tree/FileTree";
 import type { WorkspaceUiFixture } from "./fixtures/workspace-fixture";
 import { usePaneResize } from "./hooks/usePaneResize";
+import { useRestrictedApps } from "./hooks/useRestrictedApps";
 import { useSurfaceTabs } from "./hooks/useSurfaceTabs";
 import { useWorkspaceTree } from "./hooks/useWorkspaceTree";
 import { api, apiForm, apiUrl, errorText } from "./lib/api";
+import { contributedSurfaces, resolveSurfaceForKey, surfaceMatchesTab } from "./lib/capability-surfaces";
 import { hasNativeFiles, hasWorkspacePathDrag } from "./lib/file-actions";
 import { formatItemCount } from "./lib/format";
 import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
@@ -33,7 +37,7 @@ import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry,
 import { normalizeWorkspaceCustomizations } from "./lib/workspace-customization";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "./lib/workspace-identity";
 import { removeWorkspaceConfirmText, surfacePanelDomId, surfaceTabDomId, workspaceHeaderSourceBadgeLabel } from "./lib/workspace-ui";
-import type { AppTheme, AppThemePreference, AppTypographyFont, AppTypographyPreference, BootstrapResponse, ChatContextPathRequest, ChatRenameState, ConversationSummary, DesktopUpdateStatus, FileContextMenuState, TreeEntry, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspacePane, WorkspaceRailMode, WorkspaceSummary } from "./types";
+import type { AgentCatalog, AgentExtensionSurface, AppTheme, AppThemePreference, AppTypographyFont, AppTypographyPreference, BootstrapResponse, ChatContextPathRequest, ChatRenameState, ConversationSummary, DesktopUpdateStatus, FileContextMenuState, RestrictedAppInstalled, TreeEntry, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspacePane, WorkspaceRailMode, WorkspaceSummary } from "./types";
 import { ConfirmDialogHost, requestConfirm, showToast, ToastHost } from "./ui/feedback";
 import { workspaceIconOptions } from "./workspace-icons";
 
@@ -216,6 +220,8 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   const appearanceStorageWarningShownRef = useRef(false);
   customizationsRef.current = customizations;
   const [conversationGroups, setConversationGroups] = useState<Record<string, ConversationSummary[]>>(() => fixture ? fixtureConversationGroups(fixture) : {});
+  const [surfaceCatalogs, setSurfaceCatalogs] = useState<Record<string, AgentExtensionSurface[]>>(() => fixture ? fixture.surfaces : {});
+  const surfaceCatalogRequestRef = useRef(0);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const [renameEntryRequest, setRenameEntryRequest] = useState<{ path: string; name: string } | null>(null);
   const [chatRename, setChatRename] = useState<ChatRenameState | null>(null);
@@ -236,8 +242,21 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   selectedPathRef.current = tree.selectedPath;
   const paneResize = usePaneResize(Boolean(fixture));
   const tabs = useSurfaceTabs({ workspace, workspaces, fixtureMode: Boolean(fixture), onSwitchWorkspace });
+  const handleRestrictedAppError = useCallback((caught: unknown) => onError(errorText(caught)), [onError]);
+  const restrictedAppsState = useRestrictedApps({
+    activeWorkspaceId: workspace.id,
+    fixtureMode: Boolean(fixture),
+    onError: handleRestrictedAppError,
+  });
   const activeTab = tabs.surfaceTabs.find((tab) => tab.id === tabs.activeSurfaceTabId) ?? null;
   const identity = workspaceIdentityFor(workspace, customizations);
+  const surfaceCatalogKnown = Object.prototype.hasOwnProperty.call(surfaceCatalogs, workspace.id);
+  const restrictedAppCatalogKnown = restrictedAppsState.knownWorkspaceIds.has(workspace.id);
+  const restrictedApps = restrictedAppsState.appsByWorkspace[workspace.id] ?? [];
+  const surfaces = useMemo(() => contributedSurfaces(workspace.id, surfaceCatalogs[workspace.id] ?? []), [surfaceCatalogs, workspace.id]);
+  const activeSurfaceKey = extensionSurfaceIdForMode(activeMode);
+  const activeSurface = activeSurfaceKey ? resolveSurfaceForKey(surfaces, activeSurfaceKey) : null;
+  const activeRestrictedApp = restrictedApps.find((app) => restrictedAppRailMode(workspace.id, app.manifest.id) === activeMode) ?? null;
 
   const openCommandPalette = useCallback(() => {
     if (commandPaletteBlockedByDialog()) return;
@@ -255,6 +274,28 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
   useEffect(() => { setActiveMode((current) => current === "workspaces" ? "files" : current); }, [workspace.id]);
   useEffect(() => {
+    if (!activeMode.startsWith("app:restricted:") || !restrictedAppCatalogKnown || activeRestrictedApp) return;
+    setActiveMode("files");
+  }, [activeMode, activeRestrictedApp, restrictedAppCatalogKnown]);
+  useEffect(() => {
+    const desktop = window.workspaceDesktop?.restrictedApps;
+    if (!desktop) return;
+    return desktop.onTabCommand((command) => {
+      const installed = restrictedAppsState.appsByWorkspace[command.workspaceId]?.find((app) => (
+        app.manifest.id === command.appId && app.digest === command.digest
+      ));
+      const targetWorkspace = workspaces.find((item) => item.id === command.workspaceId);
+      if (!installed || !targetWorkspace) return;
+      if (command.type === "open" && command.tab) {
+        tabs.openRestrictedAppSurfaceTab(targetWorkspace, { appId: command.appId, digest: command.digest }, command.tab);
+      } else if (command.type === "update" && command.tab) {
+        tabs.updateRestrictedAppSurfaceTab(command.workspaceId, { appId: command.appId, digest: command.digest }, command.tab);
+      } else if (command.type === "close" && command.sourceAppTabId) {
+        tabs.closeRestrictedAppSurfaceTab(command.workspaceId, command.appId, command.digest, command.sourceAppTabId);
+      }
+    });
+  }, [restrictedAppsState.appsByWorkspace, tabs, workspaces]);
+  useEffect(() => {
     // A temporarily missing or moved folder is not the same thing as an
     // explicit Space removal. Keep appearance keyed by the portable Space id
     // so relinking that folder restores its identity on this computer.
@@ -262,6 +303,23 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     if (JSON.stringify(next) !== JSON.stringify(customizationsRef.current)) persistWorkspaceCustomizations(next);
   }, [workspaces.map((item) => item.id).join("|")]);
   useEffect(() => { if (fixture) { setConversationGroups(fixtureConversationGroups(fixture)); return; } void loadConversationGroups(); }, [fixture, workspaces.map((item) => item.id).join("|")]);
+  useEffect(() => {
+    if (fixture) {
+      setSurfaceCatalogs(fixture.surfaces);
+      return;
+    }
+    const requestId = ++surfaceCatalogRequestRef.current;
+    void api<AgentCatalog>(`/api/workspaces/${workspace.id}/agent/catalog`).then((catalog) => {
+      if (surfaceCatalogRequestRef.current !== requestId) return;
+      setSurfaceCatalogs((current) => ({ ...current, [workspace.id]: catalog.surfaces ?? [] }));
+    }).catch((caught) => {
+      if (surfaceCatalogRequestRef.current === requestId) onError(errorText(caught));
+    });
+  }, [fixture, workspace.id]);
+  useEffect(() => {
+    if (!surfaceCatalogKnown || !restrictedAppCatalogKnown || !activeSurfaceKey || activeSurface) return;
+    setActiveMode("files");
+  }, [activeSurface, activeSurfaceKey, restrictedAppCatalogKnown, surfaceCatalogKnown, workspace.id]);
   useEffect(() => { tabs.syncSurfaceTabConversationTitles(conversationGroups); }, [conversationGroups]);
   useEffect(() => {
     function closeMenus(event: PointerEvent) { if (event.target instanceof Element && event.target.closest(".context-menu")) return; setFileContextMenu(null); }
@@ -414,7 +472,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
       if (!confirmed) return;
     }
     const selectedPath = tree.selectedPath && (tree.selectedPath === path || tree.selectedPath.startsWith(`${path}/`)) ? tree.selectedPath : null;
-    const deletedTabPaths = new Set(tabs.surfaceTabs.filter((tab) => tab.kind === "file" && tab.workspaceId === workspace.id && tab.path && (tab.path === path || tab.path.startsWith(`${path}/`))).map((tab) => tab.path as string));
+    const deletedTabPaths = new Set(tabs.surfaceTabs.flatMap((tab) => tab.kind === "file" && tab.workspaceId === workspace.id && (tab.path === path || tab.path.startsWith(`${path}/`)) ? [tab.path] : []));
     const pending: PendingDelete = { workspaceId: workspace.id, path, name: entry?.name ?? path, selectedPath, deletedTabPaths };
     pendingDeletesRef.current.set(pendingDeleteKey(pending), pending);
     tree.setTree((current) => removeTreeEntries(current, new Set([path])));
@@ -550,8 +608,32 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: (current[targetWorkspace.id] ?? []).map((item) => item.id === conversation.id ? result.conversation : item) })); tabs.updateSurfaceTabConversationTitle(targetWorkspace.id, result.conversation); setChatRename(null);
   }
 
+  function selectRailMode(mode: WorkspaceRailMode): void {
+    setActiveMode(mode);
+    if (mode.startsWith("app:restricted:")) return;
+    const surfaceKey = extensionSurfaceIdForMode(mode);
+    if (!surfaceKey) return;
+    const surface = resolveSurfaceForKey(surfaces, surfaceKey);
+    const firstView = surface?.views[0];
+    if (!surface || !firstView) return;
+    const activeMatches = activeTab?.kind === "extension" && surfaceMatchesTab(surface, activeTab);
+    if (!activeMatches) tabs.openExtensionSurfaceTab(workspace, surface, firstView);
+  }
+
+  function openInstalledRestrictedApp(targetWorkspace: WorkspaceSummary, app: RestrictedAppInstalled): void {
+    restrictedAppsState.upsertApp(app);
+    if (targetWorkspace.id !== workspace.id) onSwitchWorkspace(targetWorkspace);
+    setActiveMode(restrictedAppRailMode(targetWorkspace.id, app.manifest.id));
+  }
+
+  function updateSurfaceCatalog(targetWorkspaceId: string, catalog: AgentCatalog): void {
+    setSurfaceCatalogs((current) => ({ ...current, [targetWorkspaceId]: catalog.surfaces ?? [] }));
+  }
+
   const commands = useMemo<CommandPaletteCommand[]>(() => [
-    ...(["files", "capabilities", "chats", "library", "history"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => setActiveMode(mode) })),
+    ...(["files", "capabilities", "chats", "library", "history"] as WorkspacePane[]).map((mode) => ({ id: `go:${mode}`, groupId: "go-to" as const, groupLabel: "Go to", label: mode[0]!.toUpperCase() + mode.slice(1), defaultVisible: true, run: () => selectRailMode(mode) })),
+    ...surfaces.map((surface) => ({ id: `app:${surface.key}`, groupId: "go-to" as const, groupLabel: "Go to", label: surface.title, detail: surface.scope === "project" ? "Pi Extension · This Space" : "Pi Extension · Personal", run: () => selectRailMode(`app:${surface.key}`) })),
+    ...restrictedApps.map((app) => ({ id: `restricted-app:${app.manifest.id}`, groupId: "go-to" as const, groupLabel: "Go to", label: app.manifest.title, detail: "Sandboxed app · This Space", run: () => selectRailMode(restrictedAppRailMode(workspace.id, app.manifest.id)) })),
     ...workspaces.map((item) => ({ id: `space:${item.id}`, groupId: "switch-workspace" as const, groupLabel: "Switch Space", label: item.name, detail: workspaceHeaderSourceBadgeLabel(item), matchTargets: [item.rootPath], run: () => onSwitchWorkspace(item) })),
     ...Object.entries(conversationGroups).flatMap(([workspaceId, conversations]) => conversations.map((conversation) => ({ id: `chat:${workspaceId}:${conversation.id}`, groupId: "chats" as const, groupLabel: "Chats", label: conversation.title, run: () => { const target = workspaces.find((item) => item.id === workspaceId); if (target) openChat(target, conversation); } }))),
     ...collectLoadedFileEntries(tree.tree).flatMap((entry) => {
@@ -568,12 +650,12 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     { id: "action:settings", groupId: "actions", groupLabel: "Actions", label: "Settings", defaultVisible: true, run: onOpenSettings },
     { id: "action:shortcuts", groupId: "actions", groupLabel: "Actions", label: "Keyboard shortcuts", run: onOpenShortcuts },
     ...(["light", "dark", "system"] as AppThemePreference[]).map((preference) => ({ id: `theme:${preference}`, groupId: "actions" as const, groupLabel: "Actions", label: preference === "system" ? "Use device theme" : `Use ${preference} theme`, detail: themePreference === preference ? "Current" : undefined, keywords: ["appearance", "color", "mode"], run: () => onThemePreferenceChange(preference) })),
-  ], [conversationGroups, fixture, themePreference, tree.selectedPath, tree.tree, workspaces, workspace.id]);
+  ], [conversationGroups, fixture, restrictedApps, surfaces, themePreference, tree.selectedPath, tree.tree, workspaces, workspace.id]);
 
   const layoutStyle = { ...(workspaceIdentityStyle(identity)), ...(paneResize.sidebarWidth ? { "--workspace-sidebar-width": `${paneResize.sidebarWidth}px` } : {}) } as CSSProperties;
 
   return <main className={paneResize.sidebarResizing ? "workspace-layout resizing" : "workspace-layout"} ref={paneResize.workspaceLayoutRef} style={layoutStyle}>
-    <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} onModeChange={setActiveMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={() => onOpenSettings()} aria-label="Settings" data-rail-tooltip="Settings"><Settings24Regular aria-hidden="true" /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
+    <WorkspaceModeRail activeMode={activeMode} workspace={workspace} workspaceIdentity={identity} surfaces={surfaces} apps={restrictedApps} onModeChange={selectRailMode} accountControl={<button className="workspace-rail-account-button" type="button" onClick={() => onOpenSettings()} aria-label="Settings" data-rail-tooltip="Settings"><Settings24Regular aria-hidden="true" /></button>} onOpenKeyboardShortcuts={onOpenShortcuts} updateControl={updateStatus && updateNeedsAttention(updateStatus) ? <DesktopUpdateButton status={updateStatus} onClick={onUpdateAction} /> : undefined} />
     <section className={`workspace-mode-pane workspace-mode-pane-${activeMode}`} id="workspace-file-panel">
       <WorkspacePaneHeader workspace={workspace} identity={identity} workspaces={workspaces} workspaceCustomizations={customizations} onSwitchWorkspace={onSwitchWorkspace} switchable={activeMode !== "workspaces"} action={activeMode === "files" ? <button className="minimal-icon-button" type="button" disabled={uploadingFiles || tree.status === "refreshing"} onClick={() => void tree.refresh(false)} aria-label="Refresh files" title="Refresh files"><ArrowSync16Regular className={tree.status === "refreshing" ? "spin" : undefined} /></button> : undefined} />
       {activeMode === "workspaces" ? <SpacesPane workspace={workspace} workspaces={workspaces} identities={customizations} onSwitch={onSwitchWorkspace} onCreate={onCreateSpace} onOpenFolder={onOpenFolder} onCustomize={(target) => tabs.openAppearanceSurfaceTab(target)} onRename={renameSpace} onRemove={(target) => void removeSpace(target)} /> : null}
@@ -626,10 +708,12 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
           {tree.status === "loading" ? <FileTreeLoadingState /> : tree.status === "error" ? <EmptyInline text="Couldn't load this Space. Refresh to try again." /> : <FileTree entries={tree.visibleEntries} collapsedPaths={tree.query ? new Set() : tree.collapsedPaths} loadingFolderPaths={tree.loadingFolderPaths} selectedPath={tree.selectedPath} movingTreePath={tree.movingTreePath} dropTargetFolderPath={tree.dropTargetFolderPath} searchQuery={tree.query} onToggleFolder={tree.toggleFolder} onSelectFile={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onOpenFile={(path) => void openLocalPath(path, "open")} onOpenContextMenu={openContextMenu} onUpdateDropTarget={updateDropTarget} onDropOnTarget={dropOnTarget} onNativeDragStartFile={startNativeFileDrag} onDragStartEntry={startTreeDrag} onDragEndEntry={endTreeDrag} />}
         </div>
       </div> : null}
-      {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.conversationId} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
+      {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.kind === "chat" ? activeTab.conversationId ?? undefined : undefined} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
       {activeMode === "library" ? <LibraryPane workspace={workspace} fixtureTree={fixture?.library} onError={onError} /> : null}
       {activeMode === "history" ? <HistoryPane workspace={workspace} fixtureItems={fixture?.checkpoints[workspace.id]} refreshRequest={historyRefreshRequest} onOpen={(item) => tabs.openHistorySurfaceTab(workspace, item.checkpointId, item.label || "Restore point")} onError={onError} /> : null}
-      {activeMode === "capabilities" ? <CapabilitiesPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} onOpenSettings={() => onOpenSettings("assistant")} onError={onError} /> : null}
+      {activeMode === "capabilities" ? <CapabilitiesPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} restrictedApps={restrictedApps} restrictedAppsLoading={restrictedAppsState.loadingWorkspaceIds.has(workspace.id)} onOpenSettings={() => onOpenSettings("assistant")} onError={onError} onCatalogChanged={(catalog) => updateSurfaceCatalog(workspace.id, catalog)} onRestrictedAppChanged={restrictedAppsState.upsertApp} onRestrictedAppRemoved={(appId) => restrictedAppsState.removeApp(workspace.id, appId)} onBuildApp={() => openChat(workspace, null)} /> : null}
+      {activeSurface ? <ExtensionSurfacePane surface={activeSurface} activeViewId={activeTab?.kind === "extension" && surfaceMatchesTab(activeSurface, activeTab) ? activeTab.viewId : null} onOpenView={(view) => tabs.openExtensionSurfaceTab(workspace, activeSurface, view)} /> : null}
+      {activeRestrictedApp ? <RestrictedAppViewport app={activeRestrictedApp} placement="navigator" route="/" active /> : null}
     </section>
     <button className="workspace-resizer" type="button" role="separator" aria-label="Resize the navigation pane and work area" aria-controls="workspace-file-panel workspace-chat-panel" aria-orientation="vertical" aria-valuemin={Math.round(paneResize.sidebarResizeBounds.min)} aria-valuemax={Math.round(paneResize.sidebarResizeBounds.max)} aria-valuenow={paneResize.sidebarResizeValue} title="Resize panes" onPointerDown={paneResize.startSidebarResize} onDoubleClick={paneResize.resetWorkspaceSidebarWidth} onKeyDown={paneResize.handleSidebarResizeKeyDown}><span className="sr-only">Resize panes</span></button>
     <aside className="right-rail" id="workspace-chat-panel">
@@ -653,9 +737,22 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
               </div>
             ) : tab.kind === "history" ? (
               <HistoryPane workspace={targetWorkspace} fixtureItems={fixture?.checkpoints[targetWorkspace.id]} refreshRequest={targetWorkspace.id === workspace.id ? historyRefreshRequest : 0} selectedCheckpointId={tab.checkpointId} onOpen={(item) => tabs.openHistorySurfaceTab(targetWorkspace, item.checkpointId, item.label || "Restore point")} onError={onError} />
-            ) : (
-              <ChatPanel surfaceTabId={tab.id} workspace={targetWorkspace} workspaceCustomizations={customizations} active={active} targetConversationId={tab.conversationId ?? null} targetConversationTitle={tab.conversationId ? tab.title : null} contextPathRequest={active && targetWorkspace.id === workspace.id ? contextRequest : null} onAddPathToChatContext={active && targetWorkspace.id === workspace.id ? attachToChat : undefined} onOpenWorkspaceFile={active && targetWorkspace.id === workspace.id ? (path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); } : undefined} selectedPath={active && targetWorkspace.id === workspace.id ? tree.selectedPath : null} onConversationActivated={(conversation) => tabs.handleTabConversationActivated(tab.id, targetWorkspace, conversation)} onConversationsChanged={(conversations) => setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: conversations }))} onAgentFinished={() => targetWorkspace.id === workspace.id ? tree.refresh() : undefined} fixtureMode={Boolean(fixture)} fixtureConversations={fixture && (tab.conversationId || tab.id === `chat:${targetWorkspace.id}:new`) ? fixture.conversations[targetWorkspace.id] : undefined} fixtureTreeEntries={fixture?.trees[targetWorkspace.id]} />
-            )}
+            ) : tab.kind === "extension" ? (() => {
+              const targetSurfaceInventoryKnown = Object.prototype.hasOwnProperty.call(surfaceCatalogs, targetWorkspace.id);
+              if (!targetSurfaceInventoryKnown) return <CenteredState icon={<Loader2 className="spin" size={24} />} title="Loading app view" text="Checking the capabilities installed for this Space." />;
+              const targetSurfaces = contributedSurfaces(targetWorkspace.id, surfaceCatalogs[targetWorkspace.id] ?? []);
+              const surface = targetSurfaces.find((item) => surfaceMatchesTab(item, tab));
+              const view = surface?.views.find((item) => item.id === tab.viewId);
+              return surface && view ? <ExtensionSurfaceView surface={surface} view={view} /> : <ExtensionSurfaceUnavailable surfaceId={tab.surfaceId} viewId={tab.viewId} execution={tab.surfaceExecution} />;
+            })() : tab.kind === "restricted-app" ? (() => {
+              if (!restrictedAppsState.knownWorkspaceIds.has(targetWorkspace.id)) return <CenteredState icon={<Loader2 className="spin" size={24} />} title="Loading app" text="Checking the sandboxed apps installed for this Space." />;
+              const app = restrictedAppsState.appsByWorkspace[targetWorkspace.id]?.find((item) => item.manifest.id === tab.appId && item.digest === tab.digest);
+              return app
+                ? <RestrictedAppViewport app={app} placement="tab" appTabId={tab.appTabId} route={tab.route} state={tab.state} active={active} />
+                : <CenteredState icon={<AlertTriangle size={24} />} title="App unavailable" text="This tab belongs to an app revision that is no longer installed in this Space." />;
+            })() : tab.kind === "chat" ? (
+              <ChatPanel surfaceTabId={tab.id} workspace={targetWorkspace} workspaceCustomizations={customizations} active={active} targetConversationId={tab.conversationId ?? null} targetConversationTitle={tab.conversationId ? tab.title : null} contextPathRequest={active && targetWorkspace.id === workspace.id ? contextRequest : null} onAddPathToChatContext={active && targetWorkspace.id === workspace.id ? attachToChat : undefined} onOpenWorkspaceFile={active && targetWorkspace.id === workspace.id ? (path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); } : undefined} selectedPath={active && targetWorkspace.id === workspace.id ? tree.selectedPath : null} onConversationActivated={(conversation) => tabs.handleTabConversationActivated(tab.id, targetWorkspace, conversation)} onConversationsChanged={(conversations) => setConversationGroups((current) => ({ ...current, [targetWorkspace.id]: conversations }))} onAgentFinished={() => targetWorkspace.id === workspace.id ? tree.refresh() : undefined} onRestrictedAppProposalRequested={() => tabs.setActiveSurfaceTabId(tab.id)} onRestrictedAppInstalled={(app) => openInstalledRestrictedApp(targetWorkspace, app)} fixtureMode={Boolean(fixture)} fixtureConversations={fixture && (tab.conversationId || tab.id === `chat:${targetWorkspace.id}:new`) ? fixture.conversations[targetWorkspace.id] : undefined} fixtureTreeEntries={fixture?.trees[targetWorkspace.id]} />
+            ) : null}
           </div>
         );
       }) : <WorkspaceSurfaceEmptyState workspace={workspace} identity={identity} onNewChat={() => openChat(workspace, null)} />}
@@ -772,8 +869,18 @@ function fixtureConversationGroups(fixture: WorkspaceUiFixture): Record<string, 
 function normalizeMode(value: string | null): WorkspaceRailMode {
   if (value === "space" || value === "workspaces") return "files";
   if (value === "skills" || value === "extensions") return "capabilities";
+  if (value?.startsWith("app:") && /^[a-z0-9][a-z0-9:_-]{0,255}$/i.test(value.slice(4))) return value as WorkspaceRailMode;
   return (["files", "capabilities", "chats", "library", "history"] as WorkspaceRailMode[]).includes(value as WorkspaceRailMode) ? value as WorkspaceRailMode : "files";
 }
+
+function extensionSurfaceIdForMode(mode: WorkspaceRailMode): string | null {
+  return mode.startsWith("app:") && !mode.startsWith("app:restricted:") ? mode.slice(4) : null;
+}
+
+function restrictedAppRailMode(workspaceId: string, appId: string): WorkspaceRailMode {
+  return `app:restricted:${workspaceId}:${appId}`;
+}
+
 function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePreference) => void] {
   const [preference, setPreference] = useState<AppThemePreference>(() => { if (fixtureRequested) return "light"; const value = readStoredValue(themePreferenceKey); return value === "light" || value === "dark" || value === "system" ? value : "system"; });
   const [system, setSystem] = useState<AppTheme>(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");

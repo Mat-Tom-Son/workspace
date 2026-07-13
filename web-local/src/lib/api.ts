@@ -1,6 +1,13 @@
 import { apiGetRetryDelaysMs, eventStreamReconnectDelaysMs } from "../constants";
 import type { LocalEventStream } from "../types";
 
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string, readonly code?: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function api<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const response = await fetchApiWithRetry(
@@ -12,7 +19,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     }),
     method === "GET" ? [...apiGetRetryDelaysMs] : [],
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await readApiError(response);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
@@ -40,7 +47,7 @@ export async function fetchApiWithRetry(
 
 export async function apiForm<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(apiUrl(path), { method: "POST", headers: await apiHeaders(), body });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await readApiError(response);
   return response.json() as Promise<T>;
 }
 
@@ -131,7 +138,7 @@ export async function readEventStream(
     headers: await apiHeaders({ accept: "text/event-stream" }),
     signal: controller.signal,
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await readApiError(response);
   const reader = response.body?.getReader();
   if (!reader) throw new Error("Event stream is not readable.");
   onOpen?.();
@@ -179,12 +186,14 @@ async function apiHeaders(extra: HeadersInit = {}): Promise<HeadersInit> {
   return { ...extra, ...(sessionHeaders ?? {}) };
 }
 
-async function readError(response: Response): Promise<string> {
+async function readApiError(response: Response): Promise<ApiError> {
   try {
-    const body = await response.json() as { error?: string };
-    return body.error || response.statusText || `Request failed (${response.status}).`;
+    const body = await response.json() as { error?: string | { message?: string; code?: string }; code?: string };
+    const nested = typeof body.error === "object" && body.error ? body.error : null;
+    const message = typeof body.error === "string" ? body.error : nested?.message;
+    return new ApiError(response.status, message || response.statusText || `Request failed (${response.status}).`, body.code || nested?.code);
   } catch {
-    return response.statusText || `Request failed (${response.status}).`;
+    return new ApiError(response.status, response.statusText || `Request failed (${response.status}).`);
   }
 }
 

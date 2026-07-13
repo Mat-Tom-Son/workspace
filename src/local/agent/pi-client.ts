@@ -13,6 +13,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   type AgentSessionRuntime,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import type { LoadedConversationContextAttachment } from "../conversation-context.js";
@@ -32,6 +33,11 @@ import {
   type PiRuntimeProvider,
   type ResolvedPiRuntime,
 } from "./pi-runtime-config.js";
+import { type RestrictedAppProposalHost } from "./restricted-app-proposals.js";
+import type {
+  RestrictedAppInstalled,
+  RestrictedAppService,
+} from "./restricted-app-service.js";
 
 export type { PiRuntimeConfig, PiRuntimeMetadata, PiRuntimeProvider } from "./pi-runtime-config.js";
 
@@ -72,6 +78,12 @@ export interface PiConversationState {
   isCompacting: boolean;
 }
 
+export interface PiConversationHostCapabilities {
+  workspaceId: string;
+  restrictedAppProposals?: RestrictedAppProposalHost;
+  restrictedApps?: Pick<RestrictedAppService, "list" | "invoke">;
+}
+
 export class PiConversationClient extends EventEmitter {
   private runtimeHost: AgentSessionRuntime | null = null;
   private resolvedRuntime: ResolvedPiRuntime | null = null;
@@ -86,6 +98,7 @@ export class PiConversationClient extends EventEmitter {
     private readonly conversationId: string,
     private readonly workspaceRoot: string,
     private readonly runtimeProvider?: PiRuntimeProvider,
+    private readonly hostCapabilities?: PiConversationHostCapabilities,
   ) {
     super();
   }
@@ -246,9 +259,28 @@ export class PiConversationClient extends EventEmitter {
       const preferred = options.sessionManager.buildSessionContext().messages.length === 0
         ? findPreferredModel(runtime)
         : undefined;
+      const restrictedAppTools = this.hostCapabilities?.restrictedApps
+        ? createRestrictedAppTools({
+          workspaceId: this.hostCapabilities.workspaceId,
+          apps: await this.hostCapabilities.restrictedApps.list(this.hostCapabilities.workspaceId),
+          service: this.hostCapabilities.restrictedApps,
+        })
+        : [];
+      const customTools = [
+        ...(this.hostCapabilities?.restrictedAppProposals
+          ? [createRestrictedAppProposalTool({
+            workspaceId: this.hostCapabilities.workspaceId,
+            workspaceRoot: options.cwd,
+            conversationId: this.conversationId,
+            host: this.hostCapabilities.restrictedAppProposals,
+          })]
+          : []),
+        ...restrictedAppTools,
+      ];
       const result = await createAgentSessionFromServices({
         services,
         sessionManager: options.sessionManager,
+        ...(customTools.length ? { customTools } : {}),
         ...(options.sessionStartEvent ? { sessionStartEvent: options.sessionStartEvent } : {}),
         ...(preferred ? { model: preferred } : {}),
       });
@@ -581,9 +613,11 @@ export class PiConversationClient extends EventEmitter {
     const normalized = args.trim().toLowerCase();
     if (!normalized) {
       const trust = this.resolvedRuntime!.projectTrust;
-      return `This Space is ${trust.trusted ? "trusted" : "not trusted"}${trust.required ? "" : " (no trust-gated capabilities found)"}.`;
+      return trust.trusted
+        ? "This registered Space can load its local Pi configuration."
+        : "This folder is not authorized as a registered Workspace Space.";
     }
-    return "Space trust changes are managed in Workspace’s Capabilities view so active Chats are never interrupted. Use /trust without arguments to inspect the current status.";
+    return "Space authorization follows Workspace registration and cannot be toggled from a Chat. Remove the Space from Workspace to revoke it.";
   }
 
   private uiBridge(): PiExtensionUiBridge {
@@ -610,6 +644,106 @@ export class PiConversationClient extends EventEmitter {
   private emitEvent(event: Omit<PiChatEvent, "conversationId">): void {
     this.emit("event", { ...event, conversationId: this.conversationId } satisfies PiChatEvent);
   }
+}
+
+export function createRestrictedAppProposalTool(input: {
+  workspaceId: string;
+  workspaceRoot: string;
+  conversationId: string;
+  host: RestrictedAppProposalHost;
+}): ToolDefinition<any> {
+  return {
+    name: "propose_space_app",
+    label: "Propose Space app",
+    description: "Submit a completed sandboxed app package inside the current Space for human review. Workspace inspects and hashes the folder itself. This creates a review proposal only: it does not run or install code, grant network or file access, enable background work, or store credentials.",
+    promptSnippet: "Propose a sandboxed Space app for human review",
+    promptGuidelines: [
+      "When the user asks you to create or update a Workspace side-rail app, write the complete restricted app package inside the current Space, then call propose_space_app with its Space-relative folder.",
+      "The package must contain package.json with an agentApp path and already-built local assets; Workspace never runs npm or installs dependencies. agent-app.json version 1 has id, title, optional description, runtime {kind:'sandboxed-web',entry,worker?}, ui {icon?}, tools, optional background {intervalMinutes:15..1440}, and permissions {network,files}. A file permission is {id,target:'file'|'directory',access:'read'|'read-write'}. A network permission has id, target ({kind:'public-https',origin} or {kind:'loopback-http',host:'127.0.0.1'|'::1',port}), explicit GET/POST/PUT/PATCH/DELETE methods, and auth. Public auth supports none, api-key {header}, bearer, basic, or oauth2-pkce {issuer,clientId,scopes}; loopback is anonymous only. Never put a secret in the package.",
+      "Visible browser code uses only globalThis.workspaceRestrictedApp: context.get/onChanged; tabs.open/update/close; network.request (also request); storage.usage/keys/get/set/delete/clear/transaction/onChanged; and files.list/read/write with a grantId and grant-relative path. File writes also supply data, utf8 or base64 encoding, and mode create or replace. Direct fetch, WebSocket, Node, filesystem APIs, popups, frames, workers, and service workers are unavailable. Keep all scripts, styles, images, fonts, and JSON inside the reviewed package.",
+      "A declared worker is a browser ES module. Export handleAction(action,input) for tools and handleBackground(event) for a background schedule. Tool input/result schemas use the bounded closed JSON-Schema subset and object schemas set additionalProperties:false. Both UI and worker use the same host bridges, but worker powers exist only during an accepted action or enabled background run.",
+      "Do not claim an app is installed when propose_space_app succeeds. It creates a digest-pinned review only; installation, each network/file grant, connection setup, and background enablement remain separate human actions.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        sourcePath: {
+          type: "string",
+          minLength: 1,
+          description: "Folder containing the completed restricted app package, relative to the current Space root.",
+        },
+      },
+      required: ["sourcePath"],
+      additionalProperties: false,
+    } as any,
+    executionMode: "sequential",
+    async execute(_toolCallId, params, signal) {
+      const argumentsValue = params as { sourcePath?: unknown };
+      const sourcePath = typeof argumentsValue.sourcePath === "string" ? argumentsValue.sourcePath.trim() : "";
+      if (!sourcePath) throw new Error("A Space-relative app package folder is required.");
+      const result = await input.host.propose({
+        workspaceId: input.workspaceId,
+        workspaceRoot: input.workspaceRoot,
+        conversationId: input.conversationId,
+        sourcePath,
+      }, signal);
+      const text = result.status === "pending" && result.proposal
+        ? `Workspace inspected ${result.proposal.review.manifest.title} and opened a human review pinned to revision ${result.proposal.review.digest}. No code was executed or installed; no network or file access, credential, or background work was granted.`
+        : "The app proposal was cancelled. No code was executed or installed; no network or file access, credential, or background work was granted.";
+      return { content: [{ type: "text", text }], details: result };
+    },
+  };
+}
+
+export function createRestrictedAppTools(input: {
+  workspaceId: string;
+  apps: RestrictedAppInstalled[];
+  service: Pick<RestrictedAppService, "invoke">;
+}): ToolDefinition<any>[] {
+  return input.apps.flatMap((app) => app.manifest.tools.map((tool): ToolDefinition<any> => ({
+    name: restrictedAppToolName(app.manifest.id, tool.name),
+    label: `${app.manifest.title}: ${tool.name}`,
+    description: `${tool.description} This action belongs to the installed sandboxed Space app “${app.manifest.title}”.`,
+    promptSnippet: `${app.manifest.title}: ${tool.description}`,
+    promptGuidelines: [
+      `Use ${restrictedAppToolName(app.manifest.id, tool.name)} only when the user wants ${app.manifest.title} to ${tool.description.charAt(0).toLowerCase()}${tool.description.slice(1)}`,
+      "The app can contact only destinations the user separately allowed in Capabilities; report connection or permission errors without asking for secret values in Chat.",
+    ],
+    parameters: structuredClone(tool.inputSchema) as any,
+    executionMode: "sequential",
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw turnCancelledError();
+      const result = await input.service.invoke({
+        workspaceId: input.workspaceId,
+        appId: app.manifest.id,
+        expectedDigest: app.digest,
+        action: tool.action,
+        input: params,
+      });
+      if (signal?.aborted) throw turnCancelledError();
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: {
+          workspaceId: input.workspaceId,
+          appId: app.manifest.id,
+          digest: app.digest,
+          action: tool.action,
+          result,
+        },
+      };
+    },
+  })));
+}
+
+function restrictedAppToolName(appId: string, toolName: string): string {
+  const prefix = `app_${createHash("sha256").update(appId).digest("hex").slice(0, 8)}_`;
+  return `${prefix}${toolName}`.slice(0, 64);
+}
+
+function turnCancelledError(): Error {
+  const error = new Error("Agent turn cancelled.");
+  error.name = "PiTurnCancelledError";
+  return error;
 }
 
 export function isPiTurnCancelledError(error: unknown): boolean {

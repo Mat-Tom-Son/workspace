@@ -47,7 +47,10 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - A personal Library for organizing reusable files and copying them into Spaces when needed.
 - Pi's normal built-in tools, provider/model selection, authentication, prompt templates, context files, and packages.
 - One Capabilities surface for installed Skills and Extensions, official/reference sources, community Pi packages, provenance, scope, diagnostics, update, and removal.
-- Global and trusted-Space Pi Extensions.
+- Global and registered-Space Pi Extensions. Native Pi Extensions run with the current user's permissions.
+- Validated declarative Extension surfaces that can contribute an app rail destination, navigator pane, and Space-bound data views without injecting Extension code into the renderer.
+- A [full-trust Connected inbox Pi Extension example](examples/packages/connected-inbox/README.md) and a separate [restricted connected inbox contract](examples/packages/restricted-connected-inbox/README.md).
+- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant/background workers, bounded local app storage, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, and standards-only OAuth PKCE.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
 - Assisted Windows installation and GitHub-hosted application updates.
 - A versioned, read-only management layer and installed `workspace` command for inspecting Space context, running work, and Pi capabilities without scraping the UI.
@@ -143,7 +146,7 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 
 - [Product model and roadmap](docs/product-model.md) — durable nouns, context rules, product rails, and future direction.
 - [Architecture](docs/architecture.md) and [management layer](docs/management-layer.md) — runtime boundaries, shared kernel, CLI, and agent harness.
-- [Assistant capabilities](docs/assistant-capabilities.md) and [Pi compatibility](docs/pi-resources.md) — Skills, Extensions, packages, scopes, and trust.
+- [Assistant capabilities](docs/assistant-capabilities.md), [Extension surfaces](docs/extension-surfaces.md), [restricted app runtime](docs/restricted-app-runtime.md), and [Pi compatibility](docs/pi-resources.md) — Skills, full-trust Extensions, restricted apps, packages, scopes, and authorization.
 - [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
 - [Windows build](docs/windows-build.md) and [release runbook](docs/windows-release.md) — verification lanes, signing, updater, and publishing.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.

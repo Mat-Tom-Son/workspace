@@ -118,6 +118,20 @@ test("WorkspaceKernel capability queries expose the shared stable catalog snapsh
       source: { path: "skills/research/SKILL.md", source: packageSource, scope: "project", origin: "package", baseDir: root },
     }],
     extensions: [],
+    surfaces: [{
+      id: "research-pulse",
+      title: "Research pulse",
+      description: "Connected research status",
+      icon: "pulse",
+      extensionPath: join(root, ".pi", "npm", "research", "index.ts"),
+      manifestPath: join(root, ".pi", "npm", "research", "surface.json"),
+      source: { path: "index.ts", source: packageSource, scope: "project", origin: "package", baseDir: root },
+      views: [{
+        id: "overview",
+        title: "Overview",
+        blocks: [{ type: "metrics", items: [{ label: "Sources", value: "12" }] }],
+      }],
+    }],
     prompts: [],
     themes: [],
     contextFiles: [],
@@ -141,6 +155,8 @@ test("WorkspaceKernel capability queries expose the shared stable catalog snapsh
   assert.equal(result.catalog.skills[0].scope, "project");
   assert.equal(result.catalog.skills[0].packageSource, packageSource);
   assert.equal(result.catalog.skills[0].sourceInfo.label, `This Space · ${packageSource}`);
+  assert.equal(result.catalog.surfaces[0].scope, "project");
+  assert.equal(result.catalog.surfaces[0].views[0].blocks[0].type, "metrics");
   assert.equal(result.catalog.tools[0].scope, "global");
   assert.deepEqual(result.catalog.diagnostics, [{ type: "warning", message: "A lower-precedence Skill was hidden." }]);
 

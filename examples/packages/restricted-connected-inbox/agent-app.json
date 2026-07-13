@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "id": "restricted-connected-inbox",
+  "title": "Connected inbox",
+  "description": "An interactive Space-bound inbox and local service console.",
+  "runtime": {
+    "kind": "sandboxed-web",
+    "entry": "index.html",
+    "worker": "worker.js"
+  },
+  "ui": {
+    "icon": "mail"
+  },
+  "tools": [
+    {
+      "name": "inbox_search",
+      "description": "Search messages in the connected inbox.",
+      "action": "search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "maxLength": 500 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "properties": {
+          "count": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["count"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "background": {
+    "intervalMinutes": 30
+  },
+  "permissions": {
+    "network": [
+      {
+        "id": "mail-api",
+        "target": { "kind": "public-https", "origin": "https://mail.example.com" },
+        "methods": ["GET", "POST"],
+        "auth": [{ "kind": "api-key", "header": "x-api-key" }, { "kind": "bearer" }]
+      },
+      {
+        "id": "project-service",
+        "target": { "kind": "loopback-http", "host": "127.0.0.1", "port": 4317 },
+        "methods": ["GET", "POST"],
+        "auth": [{ "kind": "none" }]
+      }
+    ],
+    "files": [
+      {
+        "id": "exports",
+        "target": "directory",
+        "access": "read-write"
+      }
+    ]
+  }
+}

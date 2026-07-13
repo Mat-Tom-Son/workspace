@@ -8,6 +8,10 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 import type { CapabilityRegistryService } from "../src/local/agent/capability-registry.js";
 import { RoutedPiExtensionUiBridge } from "../src/local/agent/extension-ui.js";
+import {
+  RegisteredSpaceRuntimeProvider,
+  RegisteredSpaceTrustAuthority,
+} from "../src/local/agent/registered-space-runtime.js";
 import { startLocalApi } from "../src/local/server.js";
 import { WorkspaceKernel } from "../src/local/workspace-kernel.js";
 
@@ -110,7 +114,7 @@ test("desktop linked folders require the exact one-shot picker grant", async () 
   }
 });
 
-test("catalog exposes Pi default-always mutation eligibility but preserves a saved Space denial", async () => {
+test("registered Space authorization overrides Pi's independent project-trust decision", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-default-trust-test-"));
   const agentDir = join(sandbox, "agent");
   const api = await startLocalApi({
@@ -139,17 +143,6 @@ test("catalog exposes Pi default-always mutation eligibility but preserves a sav
     });
     assert.deepEqual(catalog.trust, catalog.projectTrust);
 
-    const denied = await json(`${api.origin}/api/workspaces/${created.workspace.id}/agent/trust`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ trusted: false }),
-    }) as any;
-    assert.deepEqual(denied.catalog.projectTrust, {
-      required: false,
-      trusted: true,
-      savedDecision: false,
-      mutationTrusted: false,
-    });
   } finally {
     await api.close();
     await rm(sandbox, { recursive: true, force: true });
@@ -195,21 +188,9 @@ test("capability catalog and package lifecycle preserve native Pi state and prov
     const workspaceId = created.workspace.id;
 
     const initialCatalog = await json(`${api.origin}/api/workspaces/${workspaceId}/agent/catalog`) as any;
-    assert.deepEqual(initialCatalog.projectTrust, { required: false, trusted: true, savedDecision: null, mutationTrusted: false });
+    assert.deepEqual(initialCatalog.projectTrust, { required: false, trusted: true, savedDecision: null, mutationTrusted: true });
     assert.equal(initialCatalog.projectTrusted, true, "a Space with no gated resources must not be mislabeled untrusted");
 
-    const untrustedInstall = await fetch(`${api.origin}/api/agent/packages/install`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workspaceId, source: packageRoot, scope: "project" }),
-    });
-    assert.equal(untrustedInstall.status, 403, await untrustedInstall.text());
-
-    await ok(`${api.origin}/api/workspaces/${workspaceId}/agent/trust`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ trusted: true }),
-    });
     await ok(`${api.origin}/api/agent/packages/install`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -217,7 +198,7 @@ test("capability catalog and package lifecycle preserve native Pi state and prov
     });
 
     const catalog = await json(`${api.origin}/api/workspaces/${workspaceId}/agent/catalog`) as any;
-    assert.deepEqual(catalog.projectTrust, { required: true, trusted: true, savedDecision: true, mutationTrusted: true });
+    assert.deepEqual(catalog.projectTrust, { required: true, trusted: true, savedDecision: null, mutationTrusted: true });
     assert.deepEqual(catalog.trust, catalog.projectTrust);
     assert.equal(catalog.projectTrusted, true);
     assert.equal(catalog.packages.length, 1);
@@ -346,7 +327,10 @@ test("registry discovery installs through guarded capability mutations without s
     },
   };
   const piRuntimeProvider = { async resolveRuntime() { return { agentDir }; } };
-  const kernel = new WorkspaceKernel({ runtimeProvider: piRuntimeProvider });
+  const spaceTrustAuthority = new RegisteredSpaceTrustAuthority();
+  const kernel = new WorkspaceKernel({
+    runtimeProvider: new RegisteredSpaceRuntimeProvider(piRuntimeProvider, spaceTrustAuthority),
+  });
 
   const api = await startLocalApi({
     port: 0,
@@ -356,6 +340,7 @@ test("registry discovery installs through guarded capability mutations without s
     capabilityRegistry,
     kernel,
     piRuntimeProvider,
+    spaceTrustAuthority,
   });
   try {
     const discovered = await json(`${api.origin}/api/agent/capabilities/discover?type=skill&sort=name&limit=10`) as any;
@@ -382,13 +367,6 @@ test("registry discovery installs through guarded capability mutations without s
     assert.equal(activeTurn.status, 202, await activeTurn.text());
     const runningTasks = await kernel.getTasks({ kind: "system" });
     assert.equal(runningTasks.tasks.some((task) => task.kind === "assistant_turn" && task.workspaceId === workspaceId && task.conversationId === conversationId), true);
-
-    const blockedTrust = await fetch(`${api.origin}/api/workspaces/${workspaceId}/agent/trust`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ trusted: true }),
-    });
-    assert.equal(blockedTrust.status, 409, await blockedTrust.text());
 
     const blockedRegistryInstall = await fetch(`${api.origin}/api/agent/capabilities/install`, {
       method: "POST",
@@ -419,11 +397,6 @@ test("registry discovery installs through guarded capability mutations without s
     });
     assert.deepEqual((await kernel.getTasks({ kind: "system" })).tasks, []);
 
-    await ok(`${api.origin}/api/workspaces/${workspaceId}/agent/trust`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ trusted: true }),
-    });
     const installed = await json(`${api.origin}/api/agent/capabilities/install`, {
       method: "POST",
       headers: { "content-type": "application/json" },

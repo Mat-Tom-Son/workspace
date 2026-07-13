@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "connected-inbox",
+  "title": "Connected inbox",
+  "description": "A package-shaped example for connected data and follow-up work.",
+  "icon": "mail",
+  "views": [
+    {
+      "id": "inbox",
+      "title": "Inbox",
+      "description": "A host-rendered view contributed by the package.",
+      "blocks": [
+        { "type": "heading", "text": "Connected inbox", "level": 2 },
+        {
+          "type": "text",
+          "text": "The package is the unit the agent creates and installs. Its Extension owns network behavior; Workspace validates and renders this adjacent surface manifest."
+        },
+        {
+          "type": "metrics",
+          "items": [
+            { "label": "Needs reply", "value": "4", "detail": "Two from today" },
+            { "label": "Waiting", "value": "7", "detail": "Oldest is 3 days" }
+          ]
+        },
+        {
+          "type": "callout",
+          "tone": "info",
+          "title": "Connection boundary",
+          "text": "The example tool can make bounded HTTPS JSON requests. Live binding of tool results into this canvas is the next host-bridge layer."
+        }
+      ]
+    },
+    {
+      "id": "follow-ups",
+      "title": "Follow-ups",
+      "description": "A compact connected-work queue.",
+      "blocks": [
+        {
+          "type": "list",
+          "items": [
+            { "title": "Confirm launch window", "detail": "Avery · today", "badge": "Reply" },
+            { "title": "Review vendor quote", "detail": "Procurement · yesterday", "badge": "Review" },
+            { "title": "Send revised brief", "detail": "Design team · Monday", "badge": "Draft" }
+          ]
+        }
+      ]
+    }
+  ]
+}

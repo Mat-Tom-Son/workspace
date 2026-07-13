@@ -27,6 +27,17 @@ import {
 } from "./agent/capability-registry.js";
 import { importPiSkillBundle } from "./agent/skill-import.js";
 import {
+  RegisteredSpaceRuntimeProvider,
+  RegisteredSpaceTrustAuthority,
+} from "./agent/registered-space-runtime.js";
+import { RestrictedAppError } from "./agent/restricted-app-connections.js";
+import {
+  RoutedRestrictedAppProposalHost,
+  type RestrictedAppProposalReceipt,
+  type RestrictedAppProposalSettled,
+} from "./agent/restricted-app-proposals.js";
+import { RestrictedAppService } from "./agent/restricted-app-service.js";
+import {
   getPiSetupStatus,
   installPiPackage,
   isPiProjectMutationTrusted,
@@ -35,7 +46,6 @@ import {
   removePiPackage,
   savePiApiKey,
   setPiDefaultModel,
-  setPiProjectTrust,
   updatePiPackages,
   type PiOAuthHooks,
   type PiSetupStatus,
@@ -56,7 +66,7 @@ import {
   listResourceTree,
   uploadResourceFiles,
 } from "./resources.js";
-import { configureWorkspaceStateRoot } from "./state-paths.js";
+import { configureWorkspaceStateRoot, restrictedAppRoot } from "./state-paths.js";
 import { WorkspaceKernel } from "./workspace-kernel.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
 import { canonicalWorkspaceWatchRoot } from "./workspace-watch.js";
@@ -68,6 +78,7 @@ import {
   findExistingWorkspaceFilePaths,
   getWorkspace,
   getWorkspaceEntryInfo,
+  listWorkspaces,
   moveWorkspaceEntry,
   readWorkspaceTextFile,
   renameWorkspaceEntry,
@@ -98,7 +109,13 @@ export interface LocalApiOptions {
   extensionUiBridge?: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
   capabilityRegistry?: CapabilityRegistryService;
+  /** Separate from Pi packages: reviewed, staged apps that execute only in the desktop sandbox host. */
+  restrictedAppService?: RestrictedAppService;
+  restrictedAppProposalHost?: RoutedRestrictedAppProposalHost;
+  /** A supplied kernel must use a provider wrapped by the same spaceTrustAuthority. */
   kernel?: WorkspaceKernel;
+  /** Shared with the desktop kernel so registry trust changes apply everywhere. */
+  spaceTrustAuthority?: RegisteredSpaceTrustAuthority;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   maxBodyBytes?: number;
   loadEnv?: boolean;
@@ -129,7 +146,10 @@ interface LocalApiState {
   extensionUi: RoutedPiExtensionUiBridge;
   piOAuthHooks?: PiOAuthHooks;
   capabilityRegistry: CapabilityRegistryService;
+  restrictedApps: RestrictedAppService;
+  restrictedAppProposals: RoutedRestrictedAppProposalHost;
   kernel: WorkspaceKernel;
+  spaceTrustAuthority: RegisteredSpaceTrustAuthority;
   localFolderGrantProvider?: LocalFolderGrantProvider;
   chatStreams: Map<string, Set<ServerResponse>>;
   clients: Map<string, PiConversationClient>;
@@ -164,13 +184,24 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? numberFromEnv("WORKSPACE_LOCAL_API_PORT", 4327);
   const extensionUi = options.extensionUiBridge ?? new RoutedPiExtensionUiBridge();
-  const runtimeProvider: PiRuntimeProvider = {
+  const extensionRuntimeProvider: PiRuntimeProvider = {
     async resolveRuntime(workspaceRoot) {
       const runtime = await options.piRuntimeProvider?.resolveRuntime(workspaceRoot) ?? {};
-      return { ...runtime, extensionUi };
+      return {
+        ...runtime,
+        extensionUi,
+      };
     },
   };
+  const spaceTrustAuthority = options.spaceTrustAuthority
+    ?? new RegisteredSpaceTrustAuthority((await listWorkspaces()).map((workspace) => workspace.rootPath));
+  const runtimeProvider = new RegisteredSpaceRuntimeProvider(extensionRuntimeProvider, spaceTrustAuthority);
   const kernel = options.kernel ?? new WorkspaceKernel({ runtimeProvider });
+  const restrictedApps = options.restrictedAppService ?? await RestrictedAppService.create({ rootPath: restrictedAppRoot() });
+  const restrictedAppProposals = options.restrictedAppProposalHost ?? await RoutedRestrictedAppProposalHost.create({
+    service: restrictedApps,
+    registryPath: join(restrictedAppRoot(), "proposals.json"),
+  });
   const state: LocalApiState = {
     appMode: options.appMode ?? "dev",
     workspaceBase: options.workspaceBase ? resolve(options.workspaceBase) : undefined,
@@ -181,7 +212,10 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     extensionUi,
     piOAuthHooks: options.piOAuthHooks,
     capabilityRegistry: options.capabilityRegistry ?? new RemoteCapabilityRegistry(),
+    restrictedApps,
+    restrictedAppProposals,
     kernel,
+    spaceTrustAuthority,
     localFolderGrantProvider: options.localFolderGrantProvider,
     chatStreams: new Map(),
     clients: new Map(),
@@ -202,6 +236,10 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
   extensionUi.on("request", requestListener);
   extensionUi.on("event", eventListener);
   extensionUi.on("settled", settledListener);
+  const proposalListener = (proposal: RestrictedAppProposalReceipt) => routeRestrictedAppProposal(state, proposal);
+  const proposalSettledListener = (event: RestrictedAppProposalSettled) => routeRestrictedAppProposalSettled(state, event.proposal);
+  restrictedAppProposals.on("request", proposalListener);
+  restrictedAppProposals.on("settled", proposalSettledListener);
 
   const server = createServer(async (request, response) => {
     try {
@@ -220,10 +258,13 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
       extensionUi.off("request", requestListener);
       extensionUi.off("event", eventListener);
       extensionUi.off("settled", settledListener);
+      restrictedAppProposals.off("request", proposalListener);
+      restrictedAppProposals.off("settled", proposalSettledListener);
       extensionUi.cancelAll();
       for (const streams of state.chatStreams.values()) for (const response of streams) response.end();
       for (const close of [...state.fileStreams]) close();
       for (const client of state.clients.values()) await client.stop().catch(() => undefined);
+      await state.restrictedApps.close();
       await closeServer(server);
     },
   };
@@ -255,6 +296,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   if (method === "POST" && url.pathname === "/api/workspaces") {
     const body = await readJsonBody<{ name?: string }>(state, req);
     const workspace = await createManagedWorkspace(body.name ?? "Personal Space", state.workspaceBase);
+    state.spaceTrustAuthority.grant(workspace.rootPath);
     sendJson(res, { workspace }, 201);
     return;
   }
@@ -270,6 +312,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       throw forbidden("A folder must be selected in the desktop app before it can become a Space.");
     }
     const workspace = await registerLinkedWorkspace(body.rootPath, body.providerHint);
+    state.spaceTrustAuthority.grant(workspace.rootPath);
     sendJson(res, { workspace }, 201);
     return;
   }
@@ -291,7 +334,238 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
       state.extensionRequests.delete(request.id);
     }
     state.workspaceIdsByRoot.delete(workspaceRootKey(workspace.rootPath));
-    sendJson(res, await removeWorkspace(workspace.id, state.workspaceBase));
+    await state.restrictedAppProposals.removeWorkspace(workspace.id);
+    await state.restrictedApps.removeWorkspace(workspace.id);
+    const removal = await removeWorkspace(workspace.id, state.workspaceBase);
+    state.spaceTrustAuthority.revoke(workspace.rootPath);
+    sendJson(res, removal);
+    return;
+  }
+
+  const proposalCollectionMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/restricted-app-proposals$/);
+  if (proposalCollectionMatch && method === "GET") {
+    const workspace = await getWorkspace(proposalCollectionMatch[1]);
+    if (!(await readConversation(workspace.rootPath, proposalCollectionMatch[2])).length) throw notFound("Conversation not found.");
+    const proposals = await state.restrictedAppProposals.list({ workspaceId: workspace.id, conversationId: proposalCollectionMatch[2] });
+    sendJson(res, { proposals: proposals.map(rendererRestrictedAppProposal) });
+    return;
+  }
+  const proposalInstallMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/restricted-app-proposals\/([^/]+)\/install$/);
+  if (proposalInstallMatch && method === "POST") {
+    const workspace = await getWorkspace(proposalInstallMatch[1]);
+    const proposal = await state.restrictedAppProposals.get(proposalInstallMatch[3]);
+    if (!proposal || proposal.workspaceId !== workspace.id || proposal.conversationId !== proposalInstallMatch[2]) throw notFound("App proposal not found.");
+    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedAppProposals.install(proposal.id));
+    if (!app) throw httpError(409, "This app proposal is no longer available to install.");
+    sendJson(res, { app, proposal: rendererRestrictedAppProposal((await state.restrictedAppProposals.get(proposal.id))!) }, 201);
+    return;
+  }
+  const proposalMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/restricted-app-proposals\/([^/]+)$/);
+  if (proposalMatch && method === "DELETE") {
+    const workspace = await getWorkspace(proposalMatch[1]);
+    const proposal = await state.restrictedAppProposals.get(proposalMatch[3]);
+    if (!proposal || proposal.workspaceId !== workspace.id || proposal.conversationId !== proposalMatch[2]) throw notFound("App proposal not found.");
+    sendJson(res, { dismissed: await state.restrictedAppProposals.dismiss(proposal.id) });
+    return;
+  }
+
+  const restrictedCollectionMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps$/);
+  if (restrictedCollectionMatch && method === "GET") {
+    const workspace = await getWorkspace(restrictedCollectionMatch[1]);
+    sendJson(res, { apps: await state.restrictedApps.list(workspace.id) });
+    return;
+  }
+  if (restrictedCollectionMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedCollectionMatch[1]);
+    const body = await readJsonBody<{ sourcePath?: string; expectedDigest?: string }>(state, req);
+    if (!body.sourcePath?.trim() || !body.expectedDigest?.trim()) throw badRequest("A reviewed package folder and digest are required.");
+    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.install({
+      workspaceId: workspace.id,
+      workspaceRoot: workspace.rootPath,
+      sourcePath: body.sourcePath!,
+      expectedDigest: body.expectedDigest!,
+    }));
+    sendJson(res, { app }, 201);
+    return;
+  }
+
+  const restrictedInspectMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/inspect$/);
+  if (restrictedInspectMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedInspectMatch[1]);
+    const body = await readJsonBody<{ sourcePath?: string }>(state, req);
+    if (!body.sourcePath?.trim()) throw badRequest("A Space-relative package folder is required.");
+    sendJson(res, { review: await state.restrictedApps.inspect({
+      workspaceId: workspace.id,
+      workspaceRoot: workspace.rootPath,
+      sourcePath: body.sourcePath,
+    }) });
+    return;
+  }
+
+  const restrictedItemMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)$/);
+  if (restrictedItemMatch && method === "DELETE") {
+    const workspace = await getWorkspace(restrictedItemMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    const removed = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.remove({
+      workspaceId: workspace.id,
+      appId: restrictedItemMatch[2],
+      ...(body.expectedDigest ? { expectedDigest: body.expectedDigest } : {}),
+    }));
+    sendJson(res, { removed });
+    return;
+  }
+
+  const restrictedInvokeMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/invoke$/);
+  if (restrictedInvokeMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedInvokeMatch[1]);
+    assertNoCapabilityMutationForTurn(state, workspace.id);
+    const body = await readJsonBody<{ expectedDigest?: string; action?: string; input?: unknown }>(state, req);
+    if (!body.expectedDigest?.trim() || !body.action?.trim()) throw badRequest("An installed revision and action are required.");
+    assertNoCapabilityMutationForTurn(state, workspace.id);
+    const result = await state.restrictedApps.invoke({
+      workspaceId: workspace.id,
+      appId: restrictedInvokeMatch[2],
+      expectedDigest: body.expectedDigest,
+      action: body.action,
+      input: body.input,
+    });
+    sendJson(res, { result });
+    return;
+  }
+
+  const restrictedConnectionsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/connections$/);
+  if (restrictedConnectionsMatch && method === "GET") {
+    const workspace = await getWorkspace(restrictedConnectionsMatch[1]);
+    const expectedDigest = url.searchParams.get("expectedDigest")?.trim();
+    if (!expectedDigest) throw badRequest("An installed revision is required.");
+    sendJson(res, { connections: await state.restrictedApps.connectionStatus(
+      workspace.id,
+      restrictedConnectionsMatch[2],
+      expectedDigest,
+    ) });
+    return;
+  }
+
+  const restrictedNetworkGrantMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/permissions\/network\/([^/]+)$/);
+  if (restrictedNetworkGrantMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedNetworkGrantMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const operation = method === "PUT" ? state.restrictedApps.grantNetwork.bind(state.restrictedApps) : state.restrictedApps.revokeNetwork.bind(state.restrictedApps);
+    const app = await runRestrictedAppMutation(state, workspace.id, () => operation({
+      workspaceId: workspace.id,
+      appId: restrictedNetworkGrantMatch[2],
+      destinationId: restrictedNetworkGrantMatch[3],
+      expectedDigest: body.expectedDigest!,
+    }));
+    sendJson(res, { app });
+    return;
+  }
+
+  const restrictedFileGrantMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/permissions\/files\/([^/]+)$/);
+  if (restrictedFileGrantMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedFileGrantMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string; root?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const app = await runRestrictedAppMutation(state, workspace.id, () => method === "PUT"
+      ? state.restrictedApps.grantFiles({
+          workspaceId: workspace.id,
+          workspaceRoot: workspace.rootPath,
+          appId: restrictedFileGrantMatch[2],
+          permissionId: restrictedFileGrantMatch[3],
+          expectedDigest: body.expectedDigest!,
+          root: body.root ?? "",
+        })
+      : state.restrictedApps.revokeFiles({
+          workspaceId: workspace.id,
+          appId: restrictedFileGrantMatch[2],
+          permissionId: restrictedFileGrantMatch[3],
+          expectedDigest: body.expectedDigest!,
+        }));
+    sendJson(res, { app });
+    return;
+  }
+
+  const restrictedBackgroundRunMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/background\/run$/);
+  if (restrictedBackgroundRunMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedBackgroundRunMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const app = await state.restrictedApps.runBackgroundNow({
+      workspaceId: workspace.id,
+      appId: restrictedBackgroundRunMatch[2],
+      expectedDigest: body.expectedDigest,
+    });
+    sendJson(res, { app });
+    return;
+  }
+
+  const restrictedBackgroundMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/background$/);
+  if (restrictedBackgroundMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedBackgroundMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.setBackgroundEnabled({
+      workspaceId: workspace.id,
+      appId: restrictedBackgroundMatch[2],
+      expectedDigest: body.expectedDigest!,
+      enabled: method === "PUT",
+    }));
+    sendJson(res, { app });
+    return;
+  }
+
+  const restrictedStorageMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/storage$/);
+  if (restrictedStorageMatch && (method === "GET" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedStorageMatch[1]);
+    const body = method === "DELETE" ? await readJsonBody<{ expectedDigest?: string }>(state, req) : null;
+    const expectedDigest = body?.expectedDigest ?? url.searchParams.get("expectedDigest")?.trim();
+    if (!expectedDigest) throw badRequest("An installed revision is required.");
+    const usage = method === "DELETE"
+      ? await state.restrictedApps.clearStorage(workspace.id, restrictedStorageMatch[2], expectedDigest)
+      : await state.restrictedApps.storageUsage(workspace.id, restrictedStorageMatch[2], expectedDigest);
+    sendJson(res, { usage });
+    return;
+  }
+
+  const restrictedOAuthMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/connections\/([^/]+)\/oauth$/);
+  if (restrictedOAuthMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedOAuthMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const connection = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.connectOAuth({
+      workspaceId: workspace.id,
+      appId: restrictedOAuthMatch[2],
+      destinationId: restrictedOAuthMatch[3],
+      expectedDigest: body.expectedDigest!,
+    }));
+    sendJson(res, { connection });
+    return;
+  }
+
+  const restrictedConnectionMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/connections\/([^/]+)$/);
+  if (restrictedConnectionMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedConnectionMatch[1]);
+    const body = await readJsonBody<{ expectedDigest?: string; credential?: unknown }>(state, req);
+    if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
+    const result = await runRestrictedAppMutation(state, workspace.id, async () => {
+      if (method === "DELETE") {
+        return { removed: await state.restrictedApps.deleteConnection({
+          workspaceId: workspace.id,
+          appId: restrictedConnectionMatch[2],
+          destinationId: restrictedConnectionMatch[3],
+          expectedDigest: body.expectedDigest!,
+        }) };
+      }
+      return { connection: await state.restrictedApps.setConnection({
+        workspaceId: workspace.id,
+        appId: restrictedConnectionMatch[2],
+        destinationId: restrictedConnectionMatch[3],
+        expectedDigest: body.expectedDigest!,
+        credential: body.credential,
+      }) };
+    });
+    sendJson(res, result);
     return;
   }
 
@@ -717,23 +991,6 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     sendJson(res, snapshot.catalog);
     return;
   }
-  const trustMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/agent\/trust$/);
-  if (method === "POST" && trustMatch) {
-    const workspace = await getWorkspace(trustMatch[1]);
-    const body = await readJsonBody<{ trusted?: boolean }>(state, req);
-    if (typeof body.trusted !== "boolean") throw badRequest("Trust decision is required.");
-    await runCapabilityMutation(
-      state,
-      workspace,
-      "project",
-      () => setPiProjectTrust(workspace.rootPath, body.trusted!, state.runtimeProvider),
-      { requireProjectTrust: false },
-    );
-    const snapshot = await state.kernel.getCapabilities({ kind: "renderer", workspaceId: workspace.id });
-    sendJson(res, { catalog: snapshot.catalog });
-    return;
-  }
-
   const conversationsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations$/);
   if (conversationsMatch && method === "GET") {
     const workspace = await getWorkspace(conversationsMatch[1]);
@@ -769,7 +1026,7 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   if (method === "GET" && eventsMatch) {
     const workspace = await getWorkspace(eventsMatch[1]);
     rememberWorkspaceRoot(state, workspace.id, workspace.rootPath);
-    openChatStream(state, req, res, streamKey(eventsMatch[1], eventsMatch[2]), eventsMatch[2]);
+    openChatStream(state, req, res, eventsMatch[1], eventsMatch[2]);
     return;
   }
   const messagesPostMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/conversations\/([^/]+)\/messages$/);
@@ -920,7 +1177,11 @@ async function getClient(
   rememberWorkspaceRoot(state, workspaceId, workspaceRoot);
   const existing = state.clients.get(key);
   if (existing) return existing;
-  const client = new PiConversationClient(conversationId, workspaceRoot, state.runtimeProvider);
+  const client = new PiConversationClient(conversationId, workspaceRoot, state.runtimeProvider, {
+    workspaceId,
+    restrictedAppProposals: state.restrictedAppProposals,
+    restrictedApps: state.restrictedApps,
+  });
   client.on("event", (event: PiChatEvent) => {
     const { raw: _raw, ...safeEvent } = event;
     broadcast(state, streamKey(workspaceId, conversationId), safeEvent);
@@ -999,6 +1260,21 @@ async function runCapabilityMutation<T>(
   }
 }
 
+async function runRestrictedAppMutation<T>(
+  state: LocalApiState,
+  workspaceId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  reserveCapabilityMutation(state, workspaceId, "project", workspaceId);
+  try {
+    const result = await operation();
+    await invalidateWorkspaceClients(state, workspaceId);
+    return result;
+  } finally {
+    state.capabilityMutations.delete(workspaceId);
+  }
+}
+
 function reserveCapabilityMutation(
   state: LocalApiState,
   workspaceId: string,
@@ -1062,6 +1338,36 @@ function routeExtensionRequest(state: LocalApiState, request: PiExtensionUiReque
     conversationId: request.conversationId,
     request: rendererRequest,
   });
+}
+
+function routeRestrictedAppProposal(state: LocalApiState, proposal: RestrictedAppProposalReceipt): void {
+  broadcast(state, streamKey(proposal.workspaceId, proposal.conversationId), {
+    type: "restricted_app_proposal",
+    conversationId: proposal.conversationId,
+    proposal: rendererRestrictedAppProposal(proposal),
+  });
+}
+
+function routeRestrictedAppProposalSettled(state: LocalApiState, proposal: RestrictedAppProposalReceipt): void {
+  broadcast(state, streamKey(proposal.workspaceId, proposal.conversationId), {
+    type: "restricted_app_proposal_settled",
+    conversationId: proposal.conversationId,
+    proposal: rendererRestrictedAppProposal(proposal),
+  });
+}
+
+function rendererRestrictedAppProposal(proposal: RestrictedAppProposalReceipt): Record<string, unknown> {
+  return {
+    id: proposal.id,
+    workspaceId: proposal.workspaceId,
+    conversationId: proposal.conversationId,
+    sourcePath: proposal.sourcePath,
+    review: proposal.review,
+    status: proposal.status,
+    createdAt: proposal.createdAt,
+    updatedAt: proposal.updatedAt,
+    ...(proposal.installedApp ? { installedApp: proposal.installedApp } : {}),
+  };
 }
 
 function routeExtensionEvent(state: LocalApiState, event: PiExtensionUiEvent): void {
@@ -1138,9 +1444,10 @@ function openChatStream(
   state: LocalApiState,
   req: IncomingMessage,
   res: ServerResponse,
-  key: string,
+  workspaceId: string,
   conversationId: string,
 ): void {
+  const key = streamKey(workspaceId, conversationId);
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -1152,6 +1459,14 @@ function openChatStream(
   const streams = state.chatStreams.get(key) ?? new Set<ServerResponse>();
   streams.add(res);
   state.chatStreams.set(key, streams);
+  void state.restrictedAppProposals.list({ workspaceId, conversationId }).then(async (proposals) => {
+    for (const proposal of proposals) {
+      if (proposal.status !== "pending" || res.writableEnded) continue;
+      const current = await state.restrictedAppProposals.get(proposal.id);
+      if (!current || current.status !== "pending" || current.updatedAt !== proposal.updatedAt || res.writableEnded) continue;
+      res.write(`data: ${JSON.stringify({ type: "restricted_app_proposal", conversationId, proposal: rendererRestrictedAppProposal(current) })}\n\n`);
+    }
+  }).catch(() => undefined);
   const heartbeat = setInterval(() => {
     try { res.write(": keepalive\n\n"); } catch { /* disconnected */ }
   }, 15_000);
@@ -1419,8 +1734,32 @@ function sendJson(res: ServerResponse, payload: unknown, status = 200): void {
 
 function sendError(res: ServerResponse, error: unknown): void {
   if (res.headersSent) { res.end(); return; }
-  const status = typeof (error as { statusCode?: unknown })?.statusCode === "number" ? (error as { statusCode: number }).statusCode : 500;
-  sendJson(res, { error: status >= 500 ? errorMessage(error) : errorMessage(error) }, status);
+  const explicit = typeof (error as { statusCode?: unknown })?.statusCode === "number" ? (error as { statusCode: number }).statusCode : null;
+  const status = explicit ?? restrictedAppErrorStatus(error) ?? 500;
+  sendJson(res, {
+    error: errorMessage(error),
+    ...(error instanceof RestrictedAppError ? { code: error.code } : {}),
+  }, status);
+}
+
+function restrictedAppErrorStatus(error: unknown): number | null {
+  if (!(error instanceof RestrictedAppError)) return null;
+  switch (error.code) {
+    case "INPUT_INVALID": return 400;
+    case "ACTION_UNKNOWN": return 404;
+    case "NETWORK_DENIED":
+    case "FILE_DENIED": return 403;
+    case "AUTH_REQUIRED":
+    case "REVISION_CHANGED": return 409;
+    case "APP_TIMEOUT": return 504;
+    case "APP_CRASHED":
+    case "APP_ERROR": return 502;
+    case "NETWORK_FAILED":
+    case "FILE_FAILED":
+    case "STORAGE_FAILED":
+    case "APP_UNAVAILABLE": return 503;
+    case "OUTPUT_INVALID": return 500;
+  }
 }
 
 function httpError(statusCode: number, message: string): Error {

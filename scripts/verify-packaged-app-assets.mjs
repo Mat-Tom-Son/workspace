@@ -67,6 +67,8 @@ if (existsSync(asarPath)) {
     "/LICENSE",
     "/dist/desktop/desktop/src/main.js",
     "/dist/desktop/desktop/src/preload.cjs",
+    "/dist/desktop/desktop/src/restricted-app-host.js",
+    "/dist/desktop/desktop/src/restricted-app-preload.cjs",
     "/node_modules/@earendil-works/pi-coding-agent/package.json",
     "/node_modules/electron-updater/package.json",
     "/node_modules/jszip/package.json",

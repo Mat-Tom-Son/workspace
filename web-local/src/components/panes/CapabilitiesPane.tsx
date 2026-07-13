@@ -27,6 +27,7 @@ import {
 import { api, apiForm, errorText, safeExternalHref } from "../../lib/api";
 import { useModalDialog } from "../../hooks/useModalDialog";
 import { createWorkspaceOperationGate, type WorkspaceOperationToken } from "../../lib/workspace-operation-gate";
+import { RestrictedAppsSection } from "./RestrictedAppsSection";
 import type {
   AgentCatalog,
   AgentCapabilityOrigin,
@@ -36,7 +37,6 @@ import type {
   AgentDiagnostic,
   AgentExtension,
   AgentPackage,
-  AgentProjectTrust,
   AgentSkill,
   AgentStatus,
   AgentTool,
@@ -45,6 +45,7 @@ import type {
   CapabilityDiscoverDetailsItem,
   CapabilityDiscoverDetailsResponse,
   CapabilityDiscoverResponse,
+  RestrictedAppInstalled,
   WorkspaceSummary,
 } from "../../types";
 import { requestConfirm, showToast } from "../../ui/feedback";
@@ -94,14 +95,26 @@ export function CapabilitiesPane({
   workspace,
   status,
   fixtureMode = false,
+  restrictedApps,
+  restrictedAppsLoading = false,
   onOpenSettings,
   onError,
+  onCatalogChanged,
+  onRestrictedAppChanged,
+  onRestrictedAppRemoved,
+  onBuildApp,
 }: {
   workspace: WorkspaceSummary;
   status: AgentStatus;
   fixtureMode?: boolean;
+  restrictedApps: RestrictedAppInstalled[];
+  restrictedAppsLoading?: boolean;
   onOpenSettings: () => void;
   onError: (message: string | null) => void;
+  onCatalogChanged?: (catalog: AgentCatalog) => void;
+  onRestrictedAppChanged: (app: RestrictedAppInstalled) => void;
+  onRestrictedAppRemoved: (appId: string) => void;
+  onBuildApp: () => void;
 }) {
   const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
   const [view, setView] = useState<CapabilityView>("installed");
@@ -113,7 +126,6 @@ export function CapabilitiesPane({
   const [discoverSort, setDiscoverSort] = useState<DiscoverSort>("official");
   const [packageSource, setPackageSource] = useState("");
   const [busy, setBusy] = useState(false);
-  const [trustBusy, setTrustBusy] = useState(false);
   const [packageBusy, setPackageBusy] = useState<string | null>(null);
   const [pendingInstall, setPendingInstall] = useState<PendingInstall | null>(null);
   const [selectedCapability, setSelectedCapability] = useState<InstalledCapability | null>(null);
@@ -143,7 +155,6 @@ export function CapabilitiesPane({
     setPendingInstall(null);
     setSelectedCapability(null);
     setBusy(false);
-    setTrustBusy(false);
     setPackageBusy(null);
     setReviewingItemId(null);
     void loadCatalog(operationGateRef.current.capture());
@@ -158,12 +169,18 @@ export function CapabilitiesPane({
   async function loadCatalog(operation: WorkspaceOperationToken = operationGateRef.current.capture()) {
     const requestId = ++catalogRequestRef.current;
     if (fixtureMode) {
-      if (operationGateRef.current.isCurrent(operation)) setCatalog(fixtureCatalog());
+      if (operationGateRef.current.isCurrent(operation)) {
+        const next = fixtureCatalog();
+        setCatalog(next);
+      }
       return;
     }
     try {
       const next = await api<AgentCatalog>(`/api/workspaces/${operation.workspaceId}/agent/catalog`);
-      if (catalogRequestRef.current === requestId && operationGateRef.current.isCurrent(operation)) setCatalog(next);
+      if (catalogRequestRef.current === requestId && operationGateRef.current.isCurrent(operation)) {
+        setCatalog(next);
+        onCatalogChanged?.(next);
+      }
     } catch (caught) {
       if (catalogRequestRef.current === requestId && operationGateRef.current.isCurrent(operation)) onError(errorText(caught));
     }
@@ -206,8 +223,6 @@ export function CapabilitiesPane({
     }
   }
 
-  const trust = catalogTrust(catalog);
-  const projectInstallReady = trust.mutationTrusted ?? (trust.savedDecision === true);
   const resources = useMemo(() => catalog ? normalizedCapabilities(catalog) : [], [catalog]);
   const visibleResources = useMemo(
     () => filterAndSortCapabilities(resources, query, typeFilter, scopeFilter, installedSort),
@@ -233,38 +248,6 @@ export function CapabilitiesPane({
     event.preventDefault();
     selectView(nextView);
     window.requestAnimationFrame(() => document.getElementById(`capabilities-${nextView}-tab`)?.focus());
-  }
-
-  async function setTrust(trusted: boolean) {
-    const operation = operationGateRef.current.capture();
-    if (!trusted) {
-      const confirmed = await requestConfirm({
-        title: "Remove trust from this Space?",
-        body: "Space-scoped Skills, Extensions, packages, and settings will stop loading. Personal capabilities will remain available.",
-        confirmLabel: "Remove trust",
-        tone: "danger",
-      });
-      if (!confirmed) return;
-    }
-    if (!operationGateRef.current.isCurrent(operation)) return;
-    if (fixtureMode) {
-      setCatalog((current) => current ? { ...current, trust: { required: current.trust?.required ?? true, trusted, savedDecision: trusted } } : current);
-      return;
-    }
-    setTrustBusy(true);
-    try {
-      const response = await api<{ catalog: AgentCatalog }>(`/api/workspaces/${operation.workspaceId}/agent/trust`, {
-        method: "POST",
-        body: { trusted },
-      });
-      if (!operationGateRef.current.isCurrent(operation)) return;
-      setCatalog(response.catalog);
-      showToast({ text: trusted ? "This Space is trusted for Pi capabilities." : "Space trust was removed.", tone: "success" });
-    } catch (caught) {
-      if (operationGateRef.current.isCurrent(operation)) onError(errorText(caught));
-    } finally {
-      if (operationGateRef.current.isCurrent(operation)) setTrustBusy(false);
-    }
   }
 
   function chooseSkillFiles(event: ChangeEvent<HTMLInputElement>) {
@@ -303,7 +286,7 @@ export function CapabilitiesPane({
   }
 
   async function installPending() {
-    if (!pendingInstall || (pendingInstall.scope === "project" && !projectInstallReady)) return;
+    if (!pendingInstall) return;
     const operation = operationGateRef.current.capture();
     const install = pendingInstall;
     setBusy(true);
@@ -379,8 +362,6 @@ export function CapabilitiesPane({
     }
   }
 
-  const projectScopeBlocked = installScope === "project" && !projectInstallReady;
-
   return (
     <div className="workspace-pane-content capabilities-pane professional-surface professional-assistant">
       {!status.configured ? (
@@ -392,17 +373,6 @@ export function CapabilitiesPane({
         />
       ) : null}
 
-      {trust.required && !trust.trusted ? (
-        <CapabilityNotice
-          icon={<ShieldCheckmark20Regular />}
-          title="Space capabilities are paused"
-          detail="Personal capabilities still work. Trust this Space to load its local Pi configuration."
-          action={<button className="professional-button professional-button-secondary" type="button" disabled={trustBusy} onClick={() => void setTrust(true)}>{trustBusy ? <ArrowSync16Regular className="spin" /> : null}Trust Space</button>}
-        />
-      ) : null}
-
-      {trust.required && trust.trusted ? <div className="capabilities-trust-status"><ShieldCheckmark20Regular aria-hidden="true" /><span>Space capabilities allowed</span><button type="button" disabled={trustBusy} onClick={() => void setTrust(false)}>{trustBusy ? <ArrowSync16Regular className="spin" /> : null}Remove trust</button></div> : null}
-
       <div className="capabilities-view-tabs" role="tablist" aria-label="Capabilities view">
         <button id="capabilities-installed-tab" type="button" role="tab" tabIndex={view === "installed" ? 0 : -1} aria-controls="capabilities-installed-panel" aria-selected={view === "installed"} className={view === "installed" ? "active" : ""} onKeyDown={handleViewTabKeyDown} onClick={() => selectView("installed")}>Installed</button>
         <button id="capabilities-discover-tab" type="button" role="tab" tabIndex={view === "discover" ? 0 : -1} aria-controls="capabilities-discover-panel" aria-selected={view === "discover"} className={view === "discover" ? "active" : ""} onKeyDown={handleViewTabKeyDown} onClick={() => selectView("discover")}>Discover</button>
@@ -411,7 +381,7 @@ export function CapabilitiesPane({
       {view === "installed" ? (
         <section ref={installedViewRef} id="capabilities-installed-panel" className="capabilities-view-content" role="tabpanel" aria-labelledby="capabilities-installed-tab" tabIndex={-1}>
           <div className="capabilities-view-heading">
-            <div><h2>Installed capabilities</h2><p>Review Skills and Extensions available to Pi, manage their packages, and inspect core tools.</p></div>
+            <div><h2>Installed capabilities</h2><p>Review Skills and Extensions available in this Space, manage their packages, and inspect core tools.</p></div>
             <button className="professional-button professional-button-primary capabilities-add-trigger" type="button" onClick={() => setAddOpen(true)}><Add16Regular />Add capability</button>
           </div>
           <CapabilityToolbar
@@ -426,6 +396,16 @@ export function CapabilitiesPane({
             onScopeChange={setScopeFilter}
             onInstalledSortChange={setInstalledSort}
             onDiscoverSortChange={setDiscoverSort}
+          />
+          <RestrictedAppsSection
+            workspace={workspace}
+            apps={restrictedApps}
+            loading={restrictedAppsLoading}
+            fixtureMode={fixtureMode}
+            onBuildApp={onBuildApp}
+            onUpsertApp={onRestrictedAppChanged}
+            onRemoveApp={onRestrictedAppRemoved}
+            onError={onError}
           />
           <InstalledCapabilities
             catalog={catalog}
@@ -456,13 +436,6 @@ export function CapabilitiesPane({
             onDiscoverSortChange={setDiscoverSort}
           />
           <div className="capabilities-discover-install-scope"><span>Install to</span><ScopeToggle value={installScope} onChange={setInstallScope} label="Catalog installation location" /></div>
-          {projectScopeBlocked ? (
-            <div className="capabilities-inline-trust">
-              <ShieldCheckmark20Regular aria-hidden="true" />
-              <span>Confirm trust before writing Pi capabilities into this Space.</span>
-              <button className="professional-button professional-button-secondary" type="button" disabled={trustBusy} onClick={() => void setTrust(true)}>Trust Space</button>
-            </div>
-          ) : null}
           <DiscoverCapabilities
             items={discoverItems}
             total={discoverTotal}
@@ -470,7 +443,6 @@ export function CapabilitiesPane({
             error={discoverError}
             diagnostics={discoverDiagnostics}
             truncated={discoverTruncated}
-            projectScopeBlocked={projectScopeBlocked}
             reviewingItemId={reviewingItemId}
             onInstall={reviewDiscoverItem}
             onLoadMore={() => void loadDiscover(false)}
@@ -482,13 +454,10 @@ export function CapabilitiesPane({
       {addOpen ? (
         <AddCapabilityDialog
           busy={busy}
-          trustBusy={trustBusy}
           installScope={installScope}
           packageSource={packageSource}
-          projectScopeBlocked={projectScopeBlocked}
           onClose={() => setAddOpen(false)}
           onScopeChange={setInstallScope}
-          onTrust={() => void setTrust(true)}
           onChooseFiles={() => importRef.current?.click()}
           onPackageSourceChange={setPackageSource}
           onReviewPackage={reviewPackage}
@@ -498,7 +467,6 @@ export function CapabilitiesPane({
         <InstallReviewDialog
           pending={pendingInstall}
           busy={busy}
-          projectScopeBlocked={pendingInstall.scope === "project" && !projectInstallReady}
           onClose={() => { if (!busy) setPendingInstall(null); }}
           onInstall={() => void installPending()}
         />
@@ -607,14 +575,13 @@ function InstalledCapabilityCard({ item, onSelect }: { item: InstalledCapability
   );
 }
 
-function DiscoverCapabilities({ items, total, loading, error, diagnostics, truncated, projectScopeBlocked, reviewingItemId, onInstall, onLoadMore }: {
+function DiscoverCapabilities({ items, total, loading, error, diagnostics, truncated, reviewingItemId, onInstall, onLoadMore }: {
   items: CapabilityDiscoverItem[];
   total: number;
   loading: boolean;
   error: string | null;
   diagnostics: string[];
   truncated: boolean;
-  projectScopeBlocked: boolean;
   reviewingItemId: string | null;
   onInstall: (item: CapabilityDiscoverItem) => void;
   onLoadMore: () => void;
@@ -626,7 +593,7 @@ function DiscoverCapabilities({ items, total, loading, error, diagnostics, trunc
       {diagnostics.length || truncated ? <div className="professional-diagnostics" role="status">{diagnostics.map((message) => <span key={message}>{message}</span>)}{truncated ? <span>The catalog limited this result set. Narrow the search to see more specific matches.</span> : null}</div> : null}
       {error ? <div className="inline-error" role="alert">{error}</div> : null}
       {loading && !items.length ? <div className="professional-loading-row" role="status"><ArrowSync16Regular className="spin" />Loading the full Pi catalog. The first load can take about 20 seconds.</div> : null}
-      {items.length ? <div className="capabilities-discover-list">{items.map((item) => <DiscoverCapabilityCard key={item.id} item={item} busy={reviewingItemId === item.id} disabled={projectScopeBlocked || Boolean(reviewingItemId) || !canInstallDiscoverItem(item)} onInstall={() => onInstall(item)} />)}</div> : !loading && !error ? <CapabilityEmpty title="No catalog matches" detail="Try a broader search or a different capability type." /> : null}
+      {items.length ? <div className="capabilities-discover-list">{items.map((item) => <DiscoverCapabilityCard key={item.id} item={item} busy={reviewingItemId === item.id} disabled={Boolean(reviewingItemId) || !canInstallDiscoverItem(item)} onInstall={() => onInstall(item)} />)}</div> : !loading && !error ? <CapabilityEmpty title="No catalog matches" detail="Try a broader search or a different capability type." /> : null}
       {items.length < total ? <button className="professional-button professional-button-secondary capabilities-load-more" type="button" disabled={loading} onClick={onLoadMore}>{loading ? <ArrowSync16Regular className="spin" /> : null}Load more</button> : null}
     </div>
   );
@@ -646,25 +613,19 @@ function DiscoverCapabilityCard({ item, busy, disabled, onInstall }: { item: Cap
 
 function AddCapabilityDialog({
   busy,
-  trustBusy,
   installScope,
   packageSource,
-  projectScopeBlocked,
   onClose,
   onScopeChange,
-  onTrust,
   onChooseFiles,
   onPackageSourceChange,
   onReviewPackage,
 }: {
   busy: boolean;
-  trustBusy: boolean;
   installScope: AgentCapabilityScope;
   packageSource: string;
-  projectScopeBlocked: boolean;
   onClose: () => void;
   onScopeChange: (value: AgentCapabilityScope) => void;
-  onTrust: () => void;
   onChooseFiles: () => void;
   onPackageSourceChange: (value: string) => void;
   onReviewPackage: (event: FormEvent<HTMLFormElement>) => void;
@@ -679,23 +640,16 @@ function AddCapabilityDialog({
             <div><strong>Installation location</strong><p>Keep it personal or store it with this Space.</p></div>
             <ScopeToggle value={installScope} onChange={onScopeChange} label="Installation location" />
           </div>
-          {projectScopeBlocked ? (
-            <div className="capabilities-inline-trust">
-              <ShieldCheckmark20Regular aria-hidden="true" />
-              <span>Confirm trust before writing Pi capabilities into this Space.</span>
-              <button className="professional-button professional-button-secondary" type="button" disabled={trustBusy} onClick={onTrust}>Trust Space</button>
-            </div>
-          ) : null}
           <div className="capabilities-add-options">
             <div className="capabilities-add-option">
               <span className="professional-icon-tile" aria-hidden="true"><BookToolbox20Regular /></span>
               <div><strong>Skill or pack</strong><span>Import `SKILL.md`, `.skill`, or ZIP bundles. Only discovered Skill directories are preserved.</span></div>
-              <button className="professional-button professional-button-primary" type="button" disabled={busy || projectScopeBlocked} onClick={onChooseFiles}><ArrowUpload16Regular />Choose files</button>
+              <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={onChooseFiles}><ArrowUpload16Regular />Choose files</button>
             </div>
             <form className="capabilities-add-option capabilities-package-option" onSubmit={onReviewPackage}>
               <span className="professional-icon-tile" aria-hidden="true"><Box16Regular /></span>
               <label><strong>Pi package</strong><span>Install from npm, git, HTTPS, or a local path. Packages can contain executable Extensions and install scripts.</span><input value={packageSource} onChange={(event) => onPackageSourceChange(event.target.value)} placeholder="npm package, git URL, or local path" aria-label="Pi package source" /></label>
-              <button className="professional-button professional-button-secondary" type="submit" disabled={busy || projectScopeBlocked || !packageSource.trim()}>Review</button>
+              <button className="professional-button professional-button-secondary" type="submit" disabled={busy || !packageSource.trim()}>Review</button>
             </form>
           </div>
         </div>
@@ -704,7 +658,7 @@ function AddCapabilityDialog({
   );
 }
 
-function InstallReviewDialog({ pending, busy, projectScopeBlocked, onClose, onInstall }: { pending: PendingInstall; busy: boolean; projectScopeBlocked: boolean; onClose: () => void; onInstall: () => void }) {
+function InstallReviewDialog({ pending, busy, onClose, onInstall }: { pending: PendingInstall; busy: boolean; onClose: () => void; onInstall: () => void }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useModalDialog({ onClose, blocked: busy, initialFocusRef: cancelRef });
   const packageInstall = pending.kind === "package";
@@ -722,9 +676,8 @@ function InstallReviewDialog({ pending, busy, projectScopeBlocked, onClose, onIn
           <dl className="capability-review-facts"><div><dt>Source</dt><dd>{source}</dd></div><div><dt>Location</dt><dd>{scopeLabel(pending.scope)}</dd></div>{pending.kind !== "skill-files" ? <div><dt>Advertised contents</dt><dd>{pending.kind === "package" ? pending.item?.types.map(capabilityTypeLabel).join(", ") || "Package-defined Pi resources" : pending.item.types.map(capabilityTypeLabel).join(", ")}</dd></div> : <div><dt>Files</dt><dd>{pending.files.length}</dd></div>}{catalogInstall ? <><div><dt>Dependencies</dt><dd>{typeof pending.item.dependencyCount === "number" ? pending.item.dependencyCount : "Unknown / not inspected"}</dd></div><div><dt>Install scripts</dt><dd>{installScriptSummary(pending.item)}</dd></div></> : null}</dl>
           {catalogInstall ? <CapabilityPackageContents item={pending.item} /> : null}
           <div className={extensionInstall ? "capability-code-warning danger" : "capability-code-warning"}><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>{extensionInstall ? "This can run code on your computer" : "Skills can include scripts"}</strong><p>{executablePackageInstall ? `Pi packages may run package-manager install scripts. Loaded Extensions execute with your user account's full file, process, and network access.${mutableGitSource(source) ? " This git source is not pinned to an immutable commit and can change between installs." : ""} Missing script or dependency details mean unknown, not none. Review the source before continuing.` : "Workspace imports only discovered Skill directories, but a Skill may tell the Assistant to run included scripts. Import only from a source you trust."}</p></div></div>
-          {projectScopeBlocked ? <div className="inline-error" role="alert">Trust this Space before installing here.</div> : null}
         </div>
-        <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="professional-button professional-button-primary" type="button" onClick={onInstall} disabled={busy || projectScopeBlocked}>{busy ? <ArrowSync16Regular className="spin" /> : null}{pending.kind === "skill-files" ? "Import Skill" : "Install"}</button></div>
+        <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="professional-button professional-button-primary" type="button" onClick={onInstall} disabled={busy}>{busy ? <ArrowSync16Regular className="spin" /> : null}{pending.kind === "skill-files" ? "Import Skill" : "Install"}</button></div>
       </section>
     </div>
   );
@@ -867,12 +820,6 @@ function filterAndSortCapabilities(items: InstalledCapability[], query: string, 
   });
   const value = (item: InstalledCapability) => sort === "type" ? item.kind : sort === "scope" ? scopeLabel(item.scope) : sort === "source" ? item.source : item.name;
   return filtered.sort((left, right) => value(left).localeCompare(value(right), undefined, { sensitivity: "base", numeric: true }) || left.name.localeCompare(right.name));
-}
-
-function catalogTrust(catalog: AgentCatalog | null): AgentProjectTrust {
-  if (catalog?.trust) return catalog.trust;
-  if (typeof catalog?.projectTrusted === "boolean") return { required: true, trusted: catalog.projectTrusted, savedDecision: catalog.projectTrusted };
-  return { required: false, trusted: true, savedDecision: null };
 }
 
 function productScope(value: AgentCapabilitySource["scope"] | AgentCapabilityScope | "user" | undefined): AgentCapabilityScope {

@@ -28,6 +28,39 @@ type WorkspaceDesktopMenuCommand =
 type WorkspaceDesktopMenuId = "file" | "edit" | "view" | "help";
 type WorkspaceDesktopPathAction = "open" | "open-native" | "reveal";
 
+interface WorkspaceRestrictedAppViewRequest {
+  workspaceId: string;
+  appId: string;
+  digest: string;
+  mountId: string;
+  placement: "navigator" | "tab";
+  appTabId?: string;
+  route: string;
+  state?: unknown;
+  sequence: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  active: boolean;
+  occluded: boolean;
+  theme: "light" | "dark";
+}
+
+interface WorkspaceRestrictedAppTabCommand {
+  type: "open" | "update" | "close";
+  workspaceId: string;
+  appId: string;
+  digest: string;
+  sourceMountId: string;
+  sourcePlacement: "navigator" | "tab";
+  sourceAppTabId?: string;
+  tab?: { appTabId: string; title: string; route: string; state?: unknown };
+}
+
+interface WorkspaceRestrictedAppViewState {
+  mountId: string;
+  state: "loading" | "ready" | "crashed" | "stopped";
+  message?: string;
+}
+
 declare global {
   interface Window {
     workspaceDesktop?: {
@@ -58,6 +91,13 @@ declare global {
       };
       agent: {
         onOpenSettings: (listener: () => void) => () => void;
+      };
+      restrictedApps: {
+        mountView: (request: WorkspaceRestrictedAppViewRequest) => Promise<{ mounted: true; digest: string }>;
+        layoutView: (request: WorkspaceRestrictedAppViewRequest) => void;
+        unmountView: (mountId: string) => Promise<void>;
+        onTabCommand: (listener: (command: WorkspaceRestrictedAppTabCommand) => void) => () => void;
+        onViewState: (listener: (state: WorkspaceRestrictedAppViewState) => void) => () => void;
       };
       window: {
         material: "mica" | "none";

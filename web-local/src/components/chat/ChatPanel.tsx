@@ -8,10 +8,12 @@ import { createFixtureContextAttachment, fixtureAgentActivityEvents, fixtureConv
 import { api, createEventSource, errorText } from "../../lib/api";
 import { createChatTurnStateGate, observeChatTurnState } from "../../lib/chat-turn-state";
 import { chatDisplayTitle, chatDraftStorageKey, clearStoredChatDraft, formatBytes, latestTranscriptTime, modelConversationTitle, readStoredChatDraft, writeStoredChatDraft } from "../../lib/format";
+import { dismissRestrictedAppProposal, installRestrictedAppProposal } from "../../lib/restricted-apps";
 import { resolveFixtureWorkspacePathCandidates } from "../../lib/workspace-path-links";
 import { workspaceIdentityFor, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
-import type { AgentActivityEvent, AgentActivityLogEntry, ChatContextPathRequest, ChatMessage, ChatStreamEvent, ContextAttachment, ConversationSummary, ExtensionUiRequest, PendingChatSend, RuntimePreviewEntry, TreeEntry, WorkspaceCustomizationMap, WorkspaceFixtureConversation, WorkspaceSummary } from "../../types";
+import type { AgentActivityEvent, AgentActivityLogEntry, ChatContextPathRequest, ChatMessage, ChatStreamEvent, ContextAttachment, ConversationSummary, ExtensionUiRequest, PendingChatSend, RestrictedAppInstalled, RestrictedAppProposal, RuntimePreviewEntry, TreeEntry, WorkspaceCustomizationMap, WorkspaceFixtureConversation, WorkspaceSummary } from "../../types";
 import { Banner, FluentGlyph, WorkspaceIconGlyph } from "../chrome/common";
+import { RestrictedAppReviewDialog } from "../panes/RestrictedAppsSection";
 import { FileTypeIcon } from "../tree/FileTree";
 import { AgentActivityLog, AgentActivityTicker, RuntimeContextPreview, activityRecapKey, normalizeAgentActivityEvent, shouldKeepActivityRecap } from "./activity";
 import { ChatMessageRow, MarkdownMessage, copyMarkdownToClipboard } from "./messages";
@@ -33,6 +35,8 @@ export function ChatPanel({
   onConversationActivated,
   onConversationsChanged,
   onAgentFinished,
+  onRestrictedAppInstalled,
+  onRestrictedAppProposalRequested,
   fixtureMode = false,
   fixtureConversations,
   fixtureTreeEntries = emptyFixtureTreeEntries,
@@ -50,6 +54,8 @@ export function ChatPanel({
   onConversationActivated?: (conversation: ConversationSummary | null) => void;
   onConversationsChanged?: (conversations: ConversationSummary[]) => void;
   onAgentFinished: () => void | Promise<void>;
+  onRestrictedAppInstalled?: (app: RestrictedAppInstalled) => void;
+  onRestrictedAppProposalRequested?: () => void;
   fixtureMode?: boolean;
   fixtureConversations?: WorkspaceFixtureConversation[];
   fixtureTreeEntries?: TreeEntry[];
@@ -74,6 +80,9 @@ export function ChatPanel({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [extensionRequest, setExtensionRequest] = useState<ExtensionUiRequest | null>(null);
+  const [appProposal, setAppProposal] = useState<RestrictedAppProposal | null>(null);
+  const [appProposalBusy, setAppProposalBusy] = useState(false);
+  const appProposalVersionsRef = useRef(new Map<string, Pick<RestrictedAppProposal, "status" | "updatedAt">>());
   const emptyStateGreeting = useMemo(() => randomChatEmptyGreeting(), []);
   const workspaceIdentity = useMemo(
     () => workspaceIdentityFor(workspace, workspaceCustomizations),
@@ -145,6 +154,12 @@ export function ChatPanel({
     eventStreamReadyConversationIdRef.current = null;
     transientConversationIdsRef.current = new Set();
   }, [workspace.id]);
+
+  useEffect(() => {
+    setAppProposal(null);
+    setAppProposalBusy(false);
+    appProposalVersionsRef.current.clear();
+  }, [workspace.id, conversation?.id]);
 
   useEffect(() => {
     if (fixtureMode) return;
@@ -363,6 +378,13 @@ export function ChatPanel({
         } else {
           setExtensionRequest(data.request);
         }
+      }
+      if (data.type === "restricted_app_proposal" && data.proposal?.status === "pending" && data.proposal.workspaceId === workspace.id && data.proposal.conversationId === conversationId && observeAppProposal(data.proposal)) {
+        setAppProposal(data.proposal);
+        onRestrictedAppProposalRequested?.();
+      }
+      if (data.type === "restricted_app_proposal_settled" && data.proposal?.workspaceId === workspace.id && data.proposal.conversationId === conversationId && observeAppProposal(data.proposal)) {
+        setAppProposal((current) => current?.id === data.proposal?.id ? null : current);
       }
       if (data.type === "editor" && typeof data.text === "string") {
         setDraft((current) => data.editorMode === "replace" ? data.text ?? "" : `${current}${data.text ?? ""}`);
@@ -1175,6 +1197,44 @@ export function ChatPanel({
     }
   }
 
+  function observeAppProposal(proposal: RestrictedAppProposal): boolean {
+    const previous = appProposalVersionsRef.current.get(proposal.id);
+    if (previous?.updatedAt && previous.updatedAt > proposal.updatedAt) return false;
+    if (previous?.updatedAt === proposal.updatedAt && previous.status !== "pending" && proposal.status === "pending") return false;
+    appProposalVersionsRef.current.set(proposal.id, { status: proposal.status, updatedAt: proposal.updatedAt });
+    return true;
+  }
+
+  async function installAppProposal() {
+    if (!appProposal || running) return;
+    const proposal = appProposal;
+    setAppProposalBusy(true);
+    try {
+      const app = await installRestrictedAppProposal(workspace.id, proposal.conversationId, proposal.id);
+      setAppProposal(null);
+      onRestrictedAppInstalled?.(app);
+      showToast({ text: `${app.manifest.title} installed. Review its access in Capabilities when you are ready to connect it.`, tone: "success" });
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setAppProposalBusy(false);
+    }
+  }
+
+  async function dismissAppProposal() {
+    if (!appProposal || appProposalBusy) return;
+    const proposal = appProposal;
+    setAppProposalBusy(true);
+    try {
+      await dismissRestrictedAppProposal(workspace.id, proposal.conversationId, proposal.id);
+      setAppProposal(null);
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setAppProposalBusy(false);
+    }
+  }
+
   function applySuggestedPrompt(prompt: string): void {
     if (!prompt || running) return;
     setDraft(prompt);
@@ -1358,6 +1418,7 @@ export function ChatPanel({
         </div>
       </form>
       {extensionRequest ? <ExtensionRequestDialog request={extensionRequest} onRespond={respondToExtension} /> : null}
+      {appProposal ? <RestrictedAppReviewDialog review={appProposal.review} sourcePath={appProposal.sourcePath} updating={false} busy={appProposalBusy} installDisabled={running} closeLabel="Decline" onInstall={() => void installAppProposal()} onClose={() => void dismissAppProposal()} /> : null}
     </section>
   );
 }

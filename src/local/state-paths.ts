@@ -30,6 +30,11 @@ export function workspaceRegistryFile(): string {
   return join(workspaceStateRoot(), "workspace-registry.json");
 }
 
+/** Machine-local staged code and lifecycle receipts for restricted apps. */
+export function restrictedAppRoot(): string {
+  return join(workspaceStateRoot(), "restricted-apps");
+}
+
 export function workspaceStateDir(workspaceRoot: string): string {
   const resolved = resolve(workspaceRoot);
   const key = workspaceStateKey(resolved);

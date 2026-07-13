@@ -12,6 +12,7 @@ const {
   readStoredSurfaceTabsState,
   restoreStoredSurfaceTabsForWorkspaces,
   retargetFileSurfaceTabs,
+  restrictedAppSurfaceTabId,
   surfaceTabActivationForWorkspace,
   surfaceTabWorkspaceSwitchTarget,
   upsertSurfaceTab,
@@ -28,11 +29,19 @@ interface SpaceSummary {
 
 interface SurfaceTab {
   id: string;
-  kind: "chat" | "file" | "history" | "appearance";
+  kind: "chat" | "file" | "history" | "appearance" | "extension" | "restricted-app";
   workspaceId: string;
   conversationId?: string | null;
   path?: string;
   checkpointId?: string;
+  surfaceId?: string;
+  surfaceExecution?: "full-trust-pi";
+  viewId?: string;
+  appId?: string;
+  digest?: string;
+  appTabId?: string;
+  route?: string;
+  state?: unknown;
   title: string;
 }
 
@@ -47,6 +56,7 @@ interface SurfaceTabsExports {
     spaces: SpaceSummary[],
   ) => { tabs: SurfaceTab[]; activeTabId: string | null };
   retargetFileSurfaceTabs: (tabs: SurfaceTab[], workspaceId: string, sourcePath: string, movedPath: string) => SurfaceTab[];
+  restrictedAppSurfaceTabId: (workspaceId: string, appId: string, digest: string, appTabId: string) => string;
   surfaceTabActivationForWorkspace: (input: {
     activeTabId: string | null;
     recentTabIdsByWorkspace: Map<string, string>;
@@ -125,6 +135,10 @@ test("tab restore accepts only known, well-formed surface types", () => {
       { id: 4, kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md" },
       { id: "file:space-1", kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md", ignored: "yes" },
       { id: "history:space-1", kind: "history", workspaceId: "space-1", title: "History" },
+      { id: "extension:space-1:inbox:overview", kind: "extension", workspaceId: "space-1", surfaceId: "inbox", viewId: "overview", title: "Overview", ignored: true },
+      { id: "restricted:bad", kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "bad", appTabId: "message:release", route: "/message/release", title: "Bad app tab" },
+      { id: "app-controlled-spoof", kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "a".repeat(64), appTabId: "message:release", route: "/message/release", state: { selected: true }, title: "Release checklist" },
+      { id: "extension:space-1:broken", kind: "extension", workspaceId: "space-1", surfaceId: "inbox", title: "Broken" },
     ],
     activeTabId: "file:space-1",
   }), {
@@ -132,6 +146,8 @@ test("tab restore accepts only known, well-formed surface types", () => {
       { id: "chat:space-1:new", kind: "chat", workspaceId: "space-1", conversationId: null, title: "New chat" },
       { id: "file:space-1", kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md" },
       { id: "history:space-1", kind: "history", workspaceId: "space-1", checkpointId: undefined, title: "History" },
+      { id: "extension:space-1:inbox:overview", kind: "extension", workspaceId: "space-1", surfaceId: "inbox", surfaceExecution: "full-trust-pi", viewId: "overview", title: "Overview" },
+      { id: restrictedAppSurfaceTabId("space-1", "mail", "a".repeat(64), "message:release"), kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "a".repeat(64), appTabId: "message:release", route: "/message/release", state: { selected: true }, title: "Release checklist" },
     ],
     activeTabId: "file:space-1",
   });

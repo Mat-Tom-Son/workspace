@@ -1,0 +1,140 @@
+const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
+
+const networkChannel = "workspace:restricted-app:network";
+const tabCommandChannel = "workspace:restricted-app:tabs";
+const contextChannel = "workspace:restricted-app:context";
+const storageChannel = "workspace:restricted-app:storage";
+const storageChangedChannel = "workspace:restricted-app:storage-changed";
+const filesChannel = "workspace:restricted-app:files";
+const maximumEnvelopeBytes = 160 * 1024;
+const maximumFileEnvelopeBytes = 800 * 1024;
+const encoder = new TextEncoder();
+
+function argumentValue(name: string): string {
+  const prefix = `--workspace-restricted-${name}=`;
+  const argument = process.argv.find((value) => value.startsWith(prefix));
+  if (!argument) return "";
+  try { return decodeURIComponent(argument.slice(prefix.length)); } catch { return ""; }
+}
+
+function initialState(): unknown {
+  const value = argumentValue("state");
+  if (!value) return null;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+let context = Object.freeze({
+  workspaceId: argumentValue("workspace-id"),
+  appId: argumentValue("app-id"),
+  digest: argumentValue("digest"),
+  mountId: argumentValue("mount-id"),
+  placement: argumentValue("placement") === "tab" ? "tab" as const : "navigator" as const,
+  appTabId: argumentValue("app-tab-id") || null,
+  route: argumentValue("route") || "/",
+  state: initialState(),
+  theme: argumentValue("theme") === "dark" ? "dark" as const : "light" as const,
+  active: true,
+});
+
+const contextListeners = new Set<(value: typeof context) => void>();
+ipcRenderer.on(contextChannel, (_event, value: Partial<typeof context>) => {
+  context = Object.freeze({ ...context, ...value });
+  for (const listener of contextListeners) {
+    try { listener(context); } catch { /* app callback errors stay inside the app */ }
+  }
+});
+
+async function invokeHost(channel: string, request: unknown, maximum: number, fallbackCode: string) {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(request);
+  } catch {
+    throw new Error("Restricted app request must be JSON-compatible.");
+  }
+  if (serialized === undefined || encoder.encode(serialized).byteLength > maximum) {
+    throw new Error("Restricted app request exceeds the size limit.");
+  }
+  const response = await ipcRenderer.invoke(channel, serialized) as {
+    ok?: unknown;
+    value?: unknown;
+    error?: { code?: unknown; message?: unknown };
+  };
+  if (response?.ok === true) return response.value;
+  const error = new Error(typeof response?.error?.message === "string" ? response.error.message : "Restricted app request failed.");
+  Object.defineProperty(error, "code", {
+    value: typeof response?.error?.code === "string" ? response.error.code : fallbackCode,
+    enumerable: true,
+  });
+  throw error;
+}
+
+const networkRequest = (request: unknown) => invokeHost(networkChannel, request, maximumEnvelopeBytes, "NETWORK_FAILED");
+const storageRequest = (operation: string, fields: Record<string, unknown> = {}) => invokeHost(storageChannel, { operation, ...fields }, maximumEnvelopeBytes, "STORAGE_FAILED");
+const fileRequest = (operation: string, request: unknown) => invokeHost(filesChannel, { operation, request }, maximumFileEnvelopeBytes, "FILE_FAILED");
+
+const storageListeners = new Set<(event: { revision: number; keys: string[] }) => void>();
+ipcRenderer.on(storageChangedChannel, (_event, value: unknown) => {
+  if (!value || typeof value !== "object") return;
+  const candidate = value as { revision?: unknown; keys?: unknown };
+  if (!Number.isSafeInteger(candidate.revision) || !Array.isArray(candidate.keys) || candidate.keys.some((key) => typeof key !== "string")) return;
+  const event = Object.freeze({ revision: candidate.revision as number, keys: Object.freeze([...(candidate.keys as string[])]) as unknown as string[] });
+  for (const listener of storageListeners) {
+    try { listener(event); } catch { /* app callback errors stay inside the app */ }
+  }
+});
+
+contextBridge.exposeInMainWorld("workspaceRestrictedApp", Object.freeze({
+  request: networkRequest,
+  network: Object.freeze({ request: networkRequest }),
+  storage: Object.freeze({
+    usage: () => storageRequest("usage"),
+    keys: (prefix = "") => storageRequest("keys", { prefix }),
+    get: (key: string) => storageRequest("get", { key }),
+    set: (key: string, value: unknown) => storageRequest("set", { key, value }),
+    delete: (key: string) => storageRequest("delete", { key }),
+    clear: () => storageRequest("clear"),
+    transaction: (transaction: unknown) => storageRequest("transaction", { transaction }),
+    onChanged: (listener: (event: { revision: number; keys: string[] }) => void) => {
+      if (typeof listener !== "function") throw new TypeError("Storage listener must be a function.");
+      storageListeners.add(listener);
+      return () => storageListeners.delete(listener);
+    },
+  }),
+  files: Object.freeze({
+    list: (request: unknown) => fileRequest("list", request),
+    read: (request: unknown) => fileRequest("read", request),
+    write: (request: unknown) => fileRequest("write", request),
+  }),
+  context: Object.freeze({
+    get: () => context,
+    onChanged: (listener: (value: typeof context) => void) => {
+      contextListeners.add(listener);
+      return () => contextListeners.delete(listener);
+    },
+  }),
+  tabs: Object.freeze({
+    open: (tab: { tabId: string; title: string; route: string; state?: unknown }) => ipcRenderer.invoke(tabCommandChannel, { type: "open", ...tab }),
+    update: (tab: { title: string; route: string; state?: unknown }) => ipcRenderer.invoke(tabCommandChannel, { type: "update", ...tab }),
+    close: () => ipcRenderer.invoke(tabCommandChannel, { type: "close" }),
+  }),
+}));
+
+if (argumentValue("mode") === "ui") {
+  const blockFileAccess = (event: Event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.type.toLowerCase() === "file") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  };
+  window.addEventListener("dragover", (event) => event.preventDefault(), true);
+  window.addEventListener("drop", (event) => event.preventDefault(), true);
+  window.addEventListener("click", blockFileAccess, true);
+  window.addEventListener("keydown", blockFileAccess, true);
+  window.addEventListener("DOMContentLoaded", () => {
+    const disableFileInputs = () => document.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => { input.disabled = true; });
+    disableFileInputs();
+    new MutationObserver(disableFileInputs).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["type"] });
+  },
+  { once: true });
+}

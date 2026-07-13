@@ -664,3 +664,22 @@
     display: none;
   }
 }
+.app-shell .workspace-rail-app-divider {
+  width: 28px;
+  height: 1px;
+  margin: 6px auto;
+  flex: 0 0 auto;
+  background: var(--ui-border);
+}
+
+.app-shell .professional-workspace-rail .workspace-rail-app {
+  position: relative;
+}
+
+@media (max-width: 820px) {
+  .app-shell .workspace-rail-app-divider {
+    width: 1px;
+    height: 28px;
+    margin: auto 6px;
+  }
+}

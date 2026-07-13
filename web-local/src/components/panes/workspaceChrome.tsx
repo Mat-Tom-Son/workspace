@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSPropert
 import {
   ArrowClockwise20Regular,
   ArrowReset20Regular,
+  Apps24Filled,
+  Apps24Regular,
   BookToolbox24Filled,
   BookToolbox24Regular,
   ChatMultiple24Filled,
@@ -20,18 +22,20 @@ import {
   Library24Regular,
   Search20Regular,
 } from "@fluentui/react-icons";
-import { filterWorkspaceIconOptions, workspaceIconOptions } from "../../workspace-icons";
+import { filterWorkspaceIconOptions, workspaceIconOptionFor, workspaceIconOptions } from "../../workspace-icons";
 import { workspaceBannerOptions } from "../../constants";
 import { errorText } from "../../lib/api";
 import { normalizeWorkspaceColor, processWorkspaceBannerImageFile, workspaceColorOptions, workspaceIdentityFor, workspaceIdentityStyle, type WorkspaceIdentity } from "../../lib/workspace-identity";
 import { surfaceDomIdSuffix, workspaceHeaderSourceBadgeLabel } from "../../lib/workspace-ui";
-import type { WorkspaceCustomization, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
+import type { CapabilitySurface, RestrictedAppInstalled, WorkspaceCustomization, WorkspaceCustomizationMap, WorkspaceCustomizationPatch, WorkspaceRailMode, WorkspaceSummary } from "../../types";
 import { WorkspaceIconGlyph } from "../chrome/common";
 
 function WorkspaceModeRail({
   activeMode,
   workspace,
   workspaceIdentity,
+  surfaces,
+  apps,
   onModeChange,
   accountControl,
   onOpenKeyboardShortcuts,
@@ -40,6 +44,8 @@ function WorkspaceModeRail({
   activeMode: WorkspaceRailMode;
   workspace: WorkspaceSummary;
   workspaceIdentity: WorkspaceIdentity;
+  surfaces: CapabilitySurface[];
+  apps: RestrictedAppInstalled[];
   onModeChange: (mode: WorkspaceRailMode) => void;
   accountControl: ReactNode;
   onOpenKeyboardShortcuts: () => void;
@@ -89,6 +95,53 @@ function WorkspaceModeRail({
             <span className="workspace-rail-label">{item.label}</span>
           </button>
         ))}
+        {surfaces.length || apps.length ? <span className="workspace-rail-app-divider" aria-hidden="true" /> : null}
+        {surfaces.map((surface) => {
+          const mode = `app:${surface.key}` as const;
+          const SurfaceIcon = activeMode === mode ? Apps24Filled : Apps24Regular;
+          const contributedIcon = surface.icon ? workspaceIconOptionFor(surface.icon) : null;
+          return (
+            <button
+              className={["workspace-rail-button", "workspace-rail-app", activeMode === mode ? "active" : ""].filter(Boolean).join(" ")}
+              type="button"
+              key={surface.key}
+              onClick={() => onModeChange(mode)}
+              aria-label={surface.title}
+              aria-current={activeMode === mode ? "page" : undefined}
+              data-rail-tooltip={`${surface.title} · ${surface.scope === "project" ? "Pi Extension · This Space" : "Pi Extension · Personal"}`}
+            >
+              <span className="workspace-rail-icon" aria-hidden="true">
+                {contributedIcon
+                  ? <WorkspaceIconGlyph icon={contributedIcon.Icon} size={24} filled={activeMode === mode} className="fluent-rail-icon" />
+                  : <SurfaceIcon className="fluent-rail-icon" />}
+              </span>
+              <span className="workspace-rail-label">{surface.title}</span>
+            </button>
+          );
+        })}
+        {apps.map((app) => {
+          const mode = `app:restricted:${workspace.id}:${app.manifest.id}` as const;
+          const AppIcon = activeMode === mode ? Apps24Filled : Apps24Regular;
+          const contributedIcon = app.manifest.ui.icon ? workspaceIconOptionFor(app.manifest.ui.icon) : null;
+          return (
+            <button
+              className={["workspace-rail-button", "workspace-rail-app", activeMode === mode ? "active" : ""].filter(Boolean).join(" ")}
+              type="button"
+              key={`${app.manifest.id}:${app.digest}`}
+              onClick={() => onModeChange(mode)}
+              aria-label={app.manifest.title}
+              aria-current={activeMode === mode ? "page" : undefined}
+              data-rail-tooltip={`${app.manifest.title} · Sandboxed app · This Space`}
+            >
+              <span className="workspace-rail-icon" aria-hidden="true">
+                {contributedIcon
+                  ? <WorkspaceIconGlyph icon={contributedIcon.Icon} size={24} filled={activeMode === mode} className="fluent-rail-icon" />
+                  : <AppIcon className="fluent-rail-icon" />}
+              </span>
+              <span className="workspace-rail-label">{app.manifest.title}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="workspace-rail-account">
         <div className="workspace-rail-tools">

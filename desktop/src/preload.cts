@@ -55,6 +55,21 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
       return () => ipcRenderer.removeListener("workspace:agent:open-settings", listener);
     },
   },
+  restrictedApps: {
+    mountView: (request: unknown) => ipcRenderer.invoke("workspace:restricted-app-view:mount", request),
+    layoutView: (request: unknown) => ipcRenderer.send("workspace:restricted-app-view:layout", request),
+    unmountView: (mountId: string) => ipcRenderer.invoke("workspace:restricted-app-view:unmount", mountId),
+    onTabCommand: (callback: (command: unknown) => void) => {
+      const listener = (_event: unknown, command: unknown) => callback(command);
+      ipcRenderer.on("workspace:restricted-app-view:tab-command", listener);
+      return () => ipcRenderer.removeListener("workspace:restricted-app-view:tab-command", listener);
+    },
+    onViewState: (callback: (state: unknown) => void) => {
+      const listener = (_event: unknown, state: unknown) => callback(state);
+      ipcRenderer.on("workspace:restricted-app-view:state", listener);
+      return () => ipcRenderer.removeListener("workspace:restricted-app-view:state", listener);
+    },
+  },
   window: {
     material: windowMaterial,
     setTheme: (theme: "light" | "dark", source?: "light" | "dark" | "system") => ipcRenderer.send("workspace:window:set-theme", theme, source),

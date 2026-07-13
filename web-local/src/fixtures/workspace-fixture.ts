@@ -1,4 +1,4 @@
-import type { AgentStatus, ConversationSummary, TreeEntry, WorkspaceCheckpoint, WorkspaceCustomizationMap, WorkspaceFixtureConversation, WorkspaceSummary } from "../types";
+import type { AgentExtensionSurface, AgentStatus, ConversationSummary, TreeEntry, WorkspaceCheckpoint, WorkspaceCustomizationMap, WorkspaceFixtureConversation, WorkspaceSummary } from "../types";
 
 export interface WorkspaceUiFixture {
   workspaces: WorkspaceSummary[];
@@ -7,6 +7,7 @@ export interface WorkspaceUiFixture {
   trees: Record<string, TreeEntry[]>;
   conversations: Record<string, WorkspaceFixtureConversation[]>;
   checkpoints: Record<string, WorkspaceCheckpoint[]>;
+  surfaces: Record<string, AgentExtensionSurface[]>;
   library: TreeEntry[];
   agent: AgentStatus;
 }
@@ -59,6 +60,39 @@ export function buildWorkspaceFixture(): WorkspaceUiFixture {
     checkpoints: {
       [home.id]: [{ checkpointId: "cp-home-1", createdAt: now, label: "Before reorganizing project notes", reason: "before_turn", fileCount: 5 }],
       [trip.id]: [{ checkpointId: "cp-trip-1", createdAt: now, label: "Before itinerary edits", reason: "before_turn", fileCount: 2 }],
+    },
+    surfaces: {
+      [home.id]: [{
+        id: "connected-inbox",
+        title: "Connected inbox",
+        description: "Connected work that needs attention in this Space.",
+        icon: "mail",
+        extensionPath: "C:\\Users\\you\\Documents\\Home projects\\.pi\\npm\\connected-inbox\\index.ts",
+        manifestPath: "C:\\Users\\you\\Documents\\Home projects\\.pi\\npm\\connected-inbox\\surface.json",
+        source: "This Space · local Pi package",
+        scope: "project",
+        origin: "top-level",
+        enabled: true,
+        loaded: true,
+        status: "loaded",
+        views: [{
+          id: "inbox",
+          title: "Inbox",
+          description: "Messages and requests collected by the package.",
+          blocks: [
+            { type: "heading", text: "Connected inbox", level: 2 },
+            { type: "metrics", items: [{ label: "Needs reply", value: "4", detail: "Two from today" }, { label: "Waiting", value: "7", detail: "Oldest is 3 days" }, { label: "Last sync", value: "9:42 AM", detail: "Connected package" }] },
+            { type: "callout", tone: "warning", title: "Needs a reply", text: "Confirm whether the fixed-price quote includes cabinet hardware." },
+            { type: "table", columns: ["From", "Subject", "State"], rows: [["Avery", "Launch window", "Reply"], ["Procurement", "Vendor quote", "Review"]] },
+          ],
+        }, {
+          id: "follow-ups",
+          title: "Follow-ups",
+          description: "A compact connected-work queue.",
+          blocks: [{ type: "list", items: [{ title: "Confirm launch window", detail: "Avery · today", badge: "Reply" }, { title: "Review vendor quote", detail: "Procurement · yesterday", badge: "Review" }] }],
+        }],
+      }],
+      [trip.id]: [],
     },
     library: [{ name: "Templates", path: "Templates", kind: "folder", hasChildren: true, children: [{ name: "comparison-table.docx", path: "Templates/comparison-table.docx", kind: "file", sizeBytes: 18600, updatedAt: now }] }, { name: "packing-list.md", path: "packing-list.md", kind: "file", sizeBytes: 1240, updatedAt: now }],
   };

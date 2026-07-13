@@ -81,7 +81,7 @@ test("workspace operation tokens reject stale completions even after switching b
 
   assert.match(capabilities, /operationGateRef\.current\.activate\(workspace\.id\)/);
   assert.match(capabilities, /loadCatalog\(operation:\s*WorkspaceOperationToken/);
-  for (const functionName of ["setTrust", "reviewDiscoverItem", "installPending", "mutatePackage"]) {
+  for (const functionName of ["reviewDiscoverItem", "installPending", "mutatePackage"]) {
     const body = functionBody(capabilities, functionName);
     assert.match(body, /operationGateRef\.current\.capture\(\)/, `${functionName} must capture the active Space generation`);
     assert.match(body, /operationGateRef\.current\.isCurrent\(operation\)/, `${functionName} must reject stale completion work`);

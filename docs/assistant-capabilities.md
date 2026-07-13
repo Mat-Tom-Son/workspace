@@ -1,12 +1,12 @@
 # Assistant capabilities
 
-Workspace uses Pi's native capability system. This guide explains how Skills, Extensions, packages, scopes, and trust fit the product without confusing them with the user-facing Library.
+Workspace uses Pi's native capability system for full-trust Skills and Extensions and is adding a separate restricted-app package lane for agent-created browser apps. This guide explains how Skills, Extensions, packages, scopes, and authorization fit the product without confusing them with the user-facing Library.
 
 The rail exposes one **Capabilities** destination. Its **Installed** view answers what is present, where it came from, which scope owns it, and whether Pi loaded it. Its **Discover** view searches first-party/reference sources and community Pi packages. Skills and Extensions remain distinct item types inside both views because their behavior and risk are different.
 
 ## Management visibility
 
-`WorkspaceKernel` exposes a read-only, versioned projection of Pi's authoritative catalog so the renderer, installed CLI, and future scoped adapters see the same Skills, Extensions, tools, packages, prompts, themes, commands, trust state, provenance, and diagnostics. It does not create another capability registry, install or remove resources, activate inactive tools, or grant Space trust.
+`WorkspaceKernel` exposes a read-only, versioned projection of Pi's authoritative catalog so the renderer, installed CLI, and future scoped adapters see the same Skills, Extensions, tools, packages, prompts, themes, commands, project authorization, provenance, and diagnostics. It does not install or remove resources, activate inactive tools, or bypass registered-Space authorization.
 
 ```powershell
 workspace capabilities list --space "Personal Space" --json
@@ -74,34 +74,42 @@ If a developer places a Skill directory into a standard Pi scope by another trus
 
 A [Pi Extension](https://pi.dev/docs/latest/extensions) is executable code that can add tools, commands, providers, event behavior, or other runtime capabilities. Workspace uses Pi's normal extension loader and adapts supported extension UI requests—such as confirmation, selection, text/editor input, notifications, status and working messages, text widgets, title/editor updates, OAuth handoffs, clipboard actions, and external links—to desktop UI. Terminal-only custom components, custom headers/footers, custom editor components, and autocomplete providers are reported as unsupported rather than pretending their TUI can render in React.
 
-Extensions are more powerful than Library materials and should be presented with their source, scope, load status, tools, commands, and diagnostics. Installing or trusting an Extension is a code-execution decision, not a content-import decision.
+Extensions are more powerful than Library materials and should be presented with their source, scope, load status, tools, commands, and diagnostics. Installing a native Pi Extension or registering a folder that already contains one is a full-user code-execution decision, not a content-import decision.
 
 Pi's built-in tools remain available alongside loaded Extensions. Workspace does not replace them with a private tool registry.
+
+### Declarative Extension surfaces
+
+A loaded Extension may place a versioned `surface.json` manifest beside its entry point. For the model, the creation and lifecycle unit is the normal Pi package containing that Extension, its tools or connection logic, and the adjacent manifest. Workspace validates the static manifest and can contribute an app destination below the stable primary rail, a left-pane navigator, and Space-bound view tabs. The renderer owns every component; manifests cannot provide HTML, scripts, styles, React modules, event handlers, or direct renderer access. This is the **full-trust Pi Extension lane**.
+
+Surface discovery follows Pi's loaded Extension catalog rather than scanning arbitrary files. Personal surfaces appear where their Personal Extension is loaded. This Space surfaces appear while their folder is registered and Pi loads the adjacent Extension. Invalid, oversized, linked, or unsupported manifests produce capability diagnostics and do not take down other Extensions. See [Extension surfaces](extension-surfaces.md) for the version 1 schema and limits.
+
+The declarative surface does not reduce the trust level of its owning Extension. Extension code still runs with the current user's permissions and can make network requests. The UI must label these contributions as full-trust even though their visible blocks are host-rendered.
+
+### Restricted app packages
+
+Agent-created apps use a second package lane rather than pretending to be native Pi Extensions. A restricted package declares `agentApp` in `package.json` and a strict `agent-app.json` with a `sandboxed-web` HTML entry, an optional Assistant/background worker, bounded host-tool schemas, exact network targets and auth modes, reviewed Space-file needs, and an optional background interval. The preflight rejects lifecycle scripts, binaries, native build metadata, `pi.extensions`, unsafe paths, links, excessive files, and oversized content. Dependency metadata may describe the toolchain used to produce the reviewed assets, but Workspace never installs dependencies or invokes npm. It copies the completed bytes into content-addressed application staging and revalidates the digest without importing JavaScript.
+
+That parser feeds a machine-local reviewed-digest lifecycle and separate sandboxed Chromium hosts for visible UI and optional Assistant/background work. A visible app gets an ephemeral `WebContentsView`, reviewed same-origin assets, CSP/direct-network denial, sender-bound IPC, and narrow context, tab, network, storage, and file bridges. The app occupies its Space rail navigator and may request normal persistent Space-owned tabs; Workspace derives every owner id and shell tab id. Capabilities exposes review/install, exact destination and Space-file grants, host-owned connections, opt-in background work, local-data controls, and removal. Installation and every authority remain separate and revocable. A Node child, worker, or `vm` is not the security boundary. Restricted packages must never declare `pi.extensions`, enter Pi's package manager, or be discovered through the loaded Extension catalog because Pi evaluates Extension factories during catalog loading. See [Restricted app runtime](restricted-app-runtime.md).
 
 ## Scopes
 
 | Product label | Pi scope | Typical location | Availability |
 |---|---|---|---|
 | **Personal** | User/global | The configured Pi agent directory, normally `~/.pi/agent` | Available across Spaces. |
-| **This Space** | Project/local | `.pi/` inside the Space folder | Portable with that folder and loaded only when trust permits. |
+| **This Space** | Project/local | `.pi/` inside the Space folder | Portable with that folder and authorized while it is registered as a Space. |
 
 Personal Skills commonly live below `~/.pi/agent/skills`; personal Extensions below `~/.pi/agent/extensions`. Space-scoped equivalents live below `.pi/skills` and `.pi/extensions` in the Space. Pi also discovers global and project `.agents/skills` locations, packages, and paths added through settings. The Pi catalog is therefore the authority rather than a hard-coded directory scan in the renderer.
 
 Personal scope is convenient for capabilities a person wants everywhere. This Space scope is appropriate when a capability belongs with one activity or should travel with that folder. Scope does not indicate safety: personal executable code still deserves inspection.
 
-## Space trust
+## Registered-Space authorization
 
-Turning a folder into a Space grants filesystem visibility, not permission to execute its project configuration. If the folder contains trust-requiring `.pi` resources, Workspace records a separate, reversible trust decision outside the folder and passes it to Pi.
+Creating or registering a Space is Workspace's authorization to load project Skills, Extensions, packages, scripts, settings, and instructions from that exact folder. There is no second “Trust Space” prompt. The shared host authority derives from the Space registry and overrides Pi's independent project-trust decision only inside Workspace. Removing the Space revokes the Workspace authorization without rewriting Pi's trust store for other Pi clients.
 
-- **Untrusted Space:** content can still be browsed and attached, and personal capabilities remain available. Trust-gated project Skills, Extensions, packages, scripts, and settings do not load.
-- **Trusted Space:** Pi may load the folder's project resources.
-- **Trust removed:** the next catalog/session reload stops treating those project resources as authorized.
+This choice removes redundant ceremony; it does not certify the folder as safe. Existing native Pi Extension code can execute during the first catalog load, and `.pi` content can change later through local edits, source control, or a synchronization tool. Package installation review, restricted-app grants, external connections, provider credentials, and Chat attachments remain separate decisions.
 
-Trust means “allow Pi to load this folder's configuration.” It is not a signature, malware scan, endorsement, or guarantee of behavior.
-
-Pi's native context discovery may still expose `AGENTS.md` instructions even when executable project resources are untrusted. The product should keep that distinction visible: instructional context and executable-resource trust are related risks, but they are not the same Pi mechanism.
-
-Importing a Skill directly into **This Space** also requires Pi to consider that Space trusted, normally through a saved per-Space decision. Importing it into **Personal** scope is an explicit global install action and does not write to the Space.
+Importing a Skill directly into **This Space** requires a registered Space. Importing it into **Personal** scope is an explicit global install action and does not write to the Space.
 
 ## Packages
 
@@ -111,7 +119,7 @@ Supported Pi sources include npm packages, git sources, HTTPS sources, and local
 
 In product language, lead with the outcome (“install this Skill” or “add this Extension”) and show package source, scope, resource types, load state, and diagnostics as provenance. A package can be mixed: installing an item presented as a Skill may also load Extensions, prompts, themes, dependencies, or install scripts. The review step must disclose that package boundary before installation. Do not add **Packages** as a peer to Space, Library, or Capabilities unless the product model is deliberately revisited.
 
-Workspace delegates package update and removal to Pi so its settings, installed paths, pinned references, and deduplication rules stay authoritative. Project package installation, update, and removal require an explicit persistent trust policy: a saved allow decision for that Space, an affirmative host override, or Pi's persistent `always` default. A negative host override or saved Space decision takes precedence and blocks the mutation. Capability mutations are rejected while an affected Space has an active Assistant turn or Chat compaction; switching tabs or minimizing the app must not let a catalog reload terminate background work.
+Workspace delegates package update and removal to Pi so its settings, installed paths, pinned references, and deduplication rules stay authoritative. Project package installation, update, and removal require a registered target Space. Capability mutations are rejected while an affected Space has an active Assistant turn or Chat compaction; switching tabs or minimizing the app must not let a catalog reload terminate background work.
 
 Direct Skill imports and packages have different ownership semantics. Package-provided resources can be updated or removed through their package record. Direct-imported Skills do not yet have an ownership receipt and safe removal workflow; that remains separate follow-up work. Per-resource enable/disable and Pi package filters are likewise future controls, even though the catalog already distinguishes active tools from tools that are merely available.
 
@@ -130,6 +138,10 @@ Results expose their source and link back to it. Search, type filters, and sorti
 
 Provider credentials belong to **Settings → Assistant** and application/Pi storage, never to a Space or Library. The current first-run desktop path supports API-key setup. Pi contains provider OAuth primitives, but Workspace should not claim general native OAuth support until the packaged desktop flow is wired and verified for the relevant provider.
 
+Restricted-app connection credentials use a separate encrypted namespace and host-owned setup UI; they do not reuse model-provider AuthStorage or pass secrets through app JavaScript. Public HTTPS targets can declare `none`, API key, bearer, basic, or OAuth 2 PKCE. PKCE accepts only a public issuer, existing public native-client id, and non-OIDC scopes; Workspace owns discovery, the system-browser callback, encrypted tokens, and refresh. It does not accept a client secret, device-code flow, or package-supplied endpoints. Numeric `127.0.0.1` and `::1` targets are a separate anonymous-only permission with no DNS or redirects; Workspace does not yet verify which process owns the port. The broker derives app and Space identity from the sandbox's sender, injects authorization, strips sensitive headers, and enforces target, method, redirect, size, and time bounds.
+
+For app creation, Pi receives one host-owned `propose_space_app` tool rather than another loaded Extension. The model supplies only the completed package's Space-relative folder. Workspace derives the review and digest, persists the owning Space/Chat receipt, and returns a review-only result. Installation, destination grants, and connection setup remain later human actions; proposal data never carries a credential.
+
 Likewise, an Extension can implement an external connection, but that does not make the core app a native integration with that service. Google Drive currently works by registering a folder synchronized through Google Drive for desktop. Direct Drive API synchronization remains future provider-adapter work.
 
 ## Capability checklist
@@ -139,9 +151,10 @@ For every new Assistant capability, keep these answers visible in code and UI:
 1. What will the Assistant gain: instructions, files, tools, commands, or network access?
 2. Where did it come from?
 3. Is it Personal or This Space?
-4. Does it require Space trust?
-5. Is it loaded, disabled, or failing diagnostics?
-6. How can the person update, disable, remove, or revoke it?
+4. Is it a full-trust Pi Extension or a restricted app package?
+5. Which Space, network destinations, file roots, actions, connections, and background work are granted?
+6. Is it loaded, staged, disabled, or failing diagnostics?
+7. How can the person update, disable, remove, or revoke it?
 
 The current catalog and import/install surfaces expose provenance, scope, status, diagnostics, and package update/removal. Fine-grained permissions, per-resource enable/disable, direct-import receipts/removal, and named Anthropic-pack selection remain lifecycle work to complete.
 

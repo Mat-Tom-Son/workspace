@@ -6,6 +6,7 @@ import {
   type PiCatalogSource,
   type PiResourceCatalog,
 } from "./agent/skill-catalog.js";
+import type { PiSurfaceBlock } from "./agent/surface-manifest.js";
 import {
   isPiProjectMutationTrusted,
   listPiPackages,
@@ -141,6 +142,16 @@ export interface WorkspaceExtensionSnapshot extends WorkspaceLoadedCapabilitySna
   flags: string[];
 }
 
+export interface WorkspaceExtensionSurfaceSnapshot extends WorkspaceLoadedCapabilitySnapshot {
+  id: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  extensionPath: string;
+  manifestPath: string;
+  views: PiResourceCatalog["surfaces"][number]["views"];
+}
+
 export interface WorkspaceToolSnapshot extends WorkspaceLoadedCapabilitySnapshot {
   name: string;
   label: string;
@@ -202,6 +213,7 @@ export interface WorkspaceCapabilityCatalogSnapshot {
   toolManagement: PiResourceCatalog["toolManagement"];
   skills: WorkspaceSkillSnapshot[];
   extensions: WorkspaceExtensionSnapshot[];
+  surfaces: WorkspaceExtensionSurfaceSnapshot[];
   tools: WorkspaceToolSnapshot[];
   prompts: WorkspacePromptSnapshot[];
   themes: WorkspaceThemeSnapshot[];
@@ -377,6 +389,7 @@ export function buildWorkspaceCapabilityCatalog(
   const loadedPackageSources = new Set([
     ...catalog.skills.map((item) => item.source),
     ...catalog.extensions.map((item) => item.source),
+    ...catalog.surfaces.map((item) => item.source),
     ...catalog.prompts.map((item) => item.source),
     ...catalog.themes.flatMap((item) => item.source ? [item.source] : []),
   ].filter((source) => source.origin === "package").map((source) => source.source));
@@ -421,6 +434,25 @@ export function buildWorkspaceCapabilityCatalog(
       commands: [...extension.commands],
       tools: [...extension.tools],
       flags: [...extension.flags],
+    })),
+    surfaces: catalog.surfaces.map((surface) => ({
+      id: surface.id,
+      title: surface.title,
+      ...(surface.description ? { description: surface.description } : {}),
+      ...(surface.icon ? { icon: surface.icon } : {}),
+      extensionPath: surface.extensionPath,
+      manifestPath: surface.manifestPath,
+      views: surface.views.map((view) => ({
+        id: view.id,
+        title: view.title,
+        ...(view.description ? { description: view.description } : {}),
+        blocks: view.blocks.map(copySurfaceBlock),
+      })),
+      source: sourceLabel(surface.source),
+      ...capabilitySourceFields(surface.source),
+      enabled: true,
+      loaded: true,
+      status: "loaded",
     })),
     tools: catalog.tools.map((tool) => ({
       name: tool.name,
@@ -477,6 +509,14 @@ export function buildWorkspaceCapabilityCatalog(
       ...(diagnostic.path ? { path: diagnostic.path } : {}),
     })),
   };
+}
+
+function copySurfaceBlock(block: PiSurfaceBlock): PiSurfaceBlock {
+  if (block.type === "heading" || block.type === "text") return { ...block };
+  if (block.type === "callout") return { ...block };
+  if (block.type === "metrics") return { ...block, items: block.items.map((item) => ({ ...item })) };
+  if (block.type === "table") return { ...block, columns: [...block.columns], rows: block.rows.map((row) => [...row]) };
+  return { ...block, items: block.items.map((item) => ({ ...item })) };
 }
 
 function sourceLabel(source: PiCatalogSource): string {

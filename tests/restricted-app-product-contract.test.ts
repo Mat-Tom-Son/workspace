@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+
+const root = process.cwd();
+const [capabilities, apps, chat, workspaceApp] = await Promise.all([
+  read("web-local/src/components/panes/CapabilitiesPane.tsx"),
+  read("web-local/src/components/panes/RestrictedAppsSection.tsx"),
+  read("web-local/src/components/chat/ChatPanel.tsx"),
+  read("web-local/src/App.tsx"),
+]);
+
+test("Apps product hierarchy starts with the Assistant and keeps local package install advanced", () => {
+  assert.match(apps, /Apps in this Space/);
+  assert.match(apps, /Build with Assistant/);
+  assert.match(apps, /<details className="restricted-app-advanced"><summary>Advanced local install/);
+  assert.match(apps, /Install local package…/);
+  assert.doesNotMatch(capabilities, /Sandboxed app extension|onAddRestrictedApp/);
+  assert.doesNotMatch(apps, />Add app</);
+});
+
+test("review prioritizes requested access and visible contribution over collapsed package mechanics", () => {
+  const access = apps.indexOf("Requested access");
+  const contribution = apps.indexOf("What it adds");
+  assert.ok(access >= 0 && contribution > access);
+  assert.match(apps, /<ReviewDeclarations review=\{review\} \/>[\s\S]*?<details className="restricted-app-package-details"><summary>Package details/);
+  assert.match(apps, /Install, then review access/);
+  assert.match(apps, /Installing grants no network destinations, Space files, or background execution/);
+});
+
+test("Capabilities owns access, connection, and lifecycle management without credential-erasure jargon", () => {
+  const access = apps.indexOf("Access & connections");
+  const runtime = apps.indexOf("Package & runtime");
+  const lifecycle = apps.indexOf("Lifecycle");
+  assert.ok(access >= 0 && runtime > access && lifecycle > runtime);
+  assert.match(apps, /Allow access/);
+  assert.match(apps, /Revoke access/);
+  assert.match(apps, /Replace connection/);
+  assert.match(apps, /Disconnect/);
+  assert.match(apps, /Space files/);
+  assert.match(apps, /App writes create History checkpoints/);
+  assert.match(apps, /Background work/);
+  assert.match(apps, /Local app data/);
+  assert.doesNotMatch(apps, /Delete credential|Credential saved|Credential needed/);
+});
+
+test("owning Chat renders digest review, defers install while running, and opens the installed interactive app", () => {
+  assert.match(chat, /restricted_app_proposal/);
+  assert.match(chat, /restricted_app_proposal_settled/);
+  assert.match(chat, /data\.proposal\.workspaceId === workspace\.id/);
+  assert.match(chat, /data\.proposal\.conversationId === conversationId/);
+  assert.match(chat, /installDisabled=\{running\}/);
+  assert.match(chat, /closeLabel="Decline"/);
+  assert.match(chat, /installRestrictedAppProposal\(workspace\.id, proposal\.conversationId, proposal\.id\)/);
+  assert.match(workspaceApp, /restrictedAppsState\.upsertApp\(app\)/);
+  assert.match(workspaceApp, /setActiveMode\(restrictedAppRailMode\(targetWorkspace\.id, app\.manifest\.id\)\)/);
+  assert.match(workspaceApp, /<RestrictedAppViewport app=\{activeRestrictedApp\} placement="navigator"/);
+  assert.match(workspaceApp, /tabs\.openRestrictedAppSurfaceTab/);
+  assert.doesNotMatch(workspaceApp, /surface\.execution === "restricted-app"/);
+});
+
+async function read(relativePath: string): Promise<string> {
+  return readFile(join(root, relativePath), "utf8");
+}

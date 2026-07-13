@@ -13,6 +13,7 @@
   --ui-accent: #005fb8;
   --ui-accent-hover: #004c96;
   --ui-accent-soft: #e8f1fa;
+  --ui-success: #237a3b;
   --ui-danger: #b42318;
   --ui-tooltip-background: #252525;
   --ui-tooltip-text: #ffffff;
@@ -35,6 +36,7 @@
   --ui-accent: #479ef5;
   --ui-accent-hover: #62abf5;
   --ui-accent-soft: rgba(71, 158, 245, 0.16);
+  --ui-success: #72c78a;
   --ui-danger: #ff9b92;
   --ui-tooltip-background: #f4f4f4;
   --ui-tooltip-text: #202020;

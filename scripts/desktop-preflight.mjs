@@ -20,6 +20,8 @@ assertPath("package.json");
 assertPath("dist/web-local/index.html");
 assertPath("dist/desktop/desktop/src/main.js");
 assertPath("dist/desktop/desktop/src/preload.cjs");
+assertPath("dist/desktop/desktop/src/restricted-app-host.js");
+assertPath("dist/desktop/desktop/src/restricted-app-preload.cjs");
 assertPath("desktop/assets/icon.ico");
 assertPath("desktop/assets/icon.png");
 

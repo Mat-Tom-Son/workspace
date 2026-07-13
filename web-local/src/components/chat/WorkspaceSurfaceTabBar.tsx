@@ -121,7 +121,7 @@ export function WorkspaceSurfaceTabBar({
               style={style}
               title={`${tab.title} - ${workspaceName}`}
               onContextMenu={(event) => {
-                if (!tab.conversationId) return;
+                if (tab.kind !== "chat" || !tab.conversationId) return;
                 onRenameChat(resolvedWorkspace, {
                   id: tab.conversationId,
                   title: chatDisplayTitle({ serverTitle: tab.title }),
