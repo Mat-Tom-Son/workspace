@@ -40,6 +40,9 @@ test("Updater and release workflow keep credentials out of the application", () 
   assert.match(workflow, /WIN_CSC_LINK/);
   assert.match(workflow, /WORKSPACE_TRUSTED_CODE_SIGNING/);
   assert.match(workflow, /latest\.yml/);
+  assert.match(workflow, /docs\/releases\/\$version\.md/);
+  assert.match(workflow, /--notes-file \$notes/);
+  assert.doesNotMatch(workflow, /--generate-notes/);
   assert.match(workflow, /--draft/);
   assert.match(workflow, /--draft=false/);
 });

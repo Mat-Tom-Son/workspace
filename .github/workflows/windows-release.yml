@@ -96,7 +96,11 @@ jobs:
             "out/builder/latest.yml",
             "out/builder/SHA256SUMS.txt"
           )
-          & gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "Workspace $version" --generate-notes @assets
+          $notes = "docs/releases/$version.md"
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+            throw "Checked-in release notes are missing at $notes."
+          }
+          & gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "Workspace $version" --notes-file $notes @assets
           if ($LASTEXITCODE -ne 0) { throw "Could not create the draft GitHub release." }
           & gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw "Could not publish the GitHub release." }
