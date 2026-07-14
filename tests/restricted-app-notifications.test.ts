@@ -45,13 +45,13 @@ function context(overrides: Record<string, unknown> = {}) {
       { id: "export-ready", title: "Export ready", description: "Your export is ready." },
     ],
     grants: ["new-mail", "sync-error", "export-ready"],
-    backgroundEnabled: true,
+    automationEnabled: true,
     invocationId: "invocation-one",
     ...overrides,
   };
 }
 
-test("notification broker renders only reviewed static copy during granted background work", () => {
+test("notification broker renders only reviewed static copy during an enabled automation", () => {
   const sink = new Sink();
   const opened: unknown[] = [];
   const broker = new RestrictedAppNotificationBroker({ sink });
@@ -72,17 +72,17 @@ test("notification broker renders only reviewed static copy during granted backg
   broker.dispose();
 });
 
-test("notification broker rejects dynamic payloads, missing grants, and disabled background authority", () => {
+test("notification broker rejects dynamic payloads, missing grants, and disabled automation authority", () => {
   const sink = new Sink();
   const broker = new RestrictedAppNotificationBroker({ sink });
   assert.throws(() => broker.show(context(), { permissionId: "new-mail", body: "injected" }, () => undefined), /only a valid permissionId/);
   assert.throws(() => broker.show(context({ grants: [] }), { permissionId: "new-mail" }, () => undefined), /not granted/);
-  assert.throws(() => broker.show(context({ backgroundEnabled: false }), { permissionId: "new-mail" }, () => undefined), /Enable background work/);
+  assert.throws(() => broker.show(context({ automationEnabled: false }), { permissionId: "new-mail" }, () => undefined), /Enable this automation/);
   assert.equal(sink.shown.length, 0);
   broker.dispose();
 });
 
-test("notification anti-spam quota survives close, permission churn, background churn, and digest updates", () => {
+test("notification anti-spam quota survives close, permission churn, automation churn, and digest updates", () => {
   let now = 1_000;
   const sink = new Sink();
   const broker = new RestrictedAppNotificationBroker({ sink, now: () => now });
@@ -91,9 +91,9 @@ test("notification anti-spam quota survives close, permission churn, background 
     now += 5 * 60_000 + 1;
   }
   broker.closeApp({ workspaceId: "ws-1111111111111111", appId: "connected-inbox" }, digestOne);
-  const updated = context({ digest: digestTwo, invocationId: "after-update", grants: [], backgroundEnabled: false });
-  assert.throws(() => broker.show(updated, { permissionId: "new-mail" }, () => undefined), /Enable background work/);
-  assert.deepEqual(broker.show({ ...updated, grants: ["new-mail"], backgroundEnabled: true }, { permissionId: "new-mail" }, () => undefined), { status: "rate-limited" });
+  const updated = context({ digest: digestTwo, invocationId: "after-update", grants: [], automationEnabled: false });
+  assert.throws(() => broker.show(updated, { permissionId: "new-mail" }, () => undefined), /Enable this automation/);
+  assert.deepEqual(broker.show({ ...updated, grants: ["new-mail"], automationEnabled: true }, { permissionId: "new-mail" }, () => undefined), { status: "rate-limited" });
   assert.equal(sink.shown.length, 8);
   broker.dispose();
 });

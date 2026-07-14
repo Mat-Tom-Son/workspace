@@ -43,14 +43,24 @@ test("checked-in restricted app example stays valid for the staged contract", as
   assert.equal(inspection.manifest.id, "restricted-connected-inbox");
   assert.deepEqual(inspection.manifest.permissions.network[0]?.target, { kind: "public-https", origin: "https://mail.example.com" });
   assert.deepEqual(inspection.manifest.permissions.notifications, [{
-    id: "inbox-check-finished",
-    title: "Inbox check finished",
-    description: "The background inbox check finished. Open Workspace to review the connection result.",
+    id: "inbox-refresh-finished",
+    title: "Inbox refresh finished",
+    description: "The inbox refresh automation finished. Open Workspace to review the connection result.",
   }]);
   assert.equal(inspection.manifest.runtime.entry, "index.html");
+  assert.deepEqual(inspection.manifest.automations, [{
+    id: "refresh-inbox",
+    title: "Refresh inbox",
+    description: "Check the connected inbox and save the latest connection result.",
+    handler: "refresh-inbox",
+    trigger: { kind: "interval", intervalMinutes: 30 },
+    permissions: { network: ["mail-api"], files: [], notifications: ["inbox-refresh-finished"] },
+    catchUp: "latest",
+    overlap: "skip",
+  }]);
 });
 
-test("checked-in example records failed background network checks after requesting its static notification", async () => {
+test("checked-in example records failed automation network checks after requesting its static notification", async () => {
   type ExampleBridge = {
     request: () => Promise<never>;
     notifications: { show: (request: { permissionId: string }) => Promise<void> };
@@ -81,10 +91,22 @@ test("checked-in example records failed background network checks after requesti
   try {
     const workerUrl = pathToFileURL(join(process.cwd(), "examples", "packages", "restricted-connected-inbox", "worker.js"));
     workerUrl.searchParams.set("test", String(Date.now()));
-    const worker = await import(workerUrl.href) as { handleBackground: (event: { reason: string; scheduledAt: string }) => Promise<void> };
-    await worker.handleBackground({ reason: "manual", scheduledAt: "2026-07-13T12:00:00.000Z" });
+    const worker = await import(workerUrl.href) as { handleAutomation: (event: {
+      runId: string;
+      automationId: string;
+      handler: string;
+      reason: string;
+      scheduledAt: string;
+    }) => Promise<void> };
+    await worker.handleAutomation({
+      runId: "manual-test-run",
+      automationId: "refresh-inbox",
+      handler: "refresh-inbox",
+      reason: "manual",
+      scheduledAt: "2026-07-13T12:00:00.000Z",
+    });
 
-    assert.deepEqual(operations, ["network", "notification:inbox-check-finished", "storage:last-background-sync"]);
+    assert.deepEqual(operations, ["network", "notification:inbox-refresh-finished", "storage:last-automation-refresh"]);
     assert.equal(writes.length, 1);
     assert.deepEqual((writes[0]?.value as { network: unknown }).network, { state: "unavailable", code: "NETWORK_DENIED" });
     assert.deepEqual((writes[0]?.value as { notification: unknown }).notification, { state: "requested" });
@@ -153,12 +175,21 @@ async function writePackage(root: string, appSource: string, extraPackageFields:
     ...extraPackageFields,
   }), "utf8");
   await writeFile(join(root, "agent-app.json"), JSON.stringify({
-    version: 1,
+    version: 2,
     id: "connected-inbox",
     title: "Connected inbox",
     runtime: { kind: "sandboxed-web", entry: "index.html", worker: "worker.js" },
     ui: { icon: "mail" },
     tools: [],
+    automations: [{
+      id: "refresh-inbox",
+      title: "Refresh inbox",
+      handler: "refresh-inbox",
+      trigger: { kind: "interval", intervalMinutes: 30 },
+      permissions: { network: ["inbox-api"], files: [], notifications: [] },
+      catchUp: "latest",
+      overlap: "skip",
+    }],
     permissions: {
       network: [{
         id: "inbox-api",
@@ -175,7 +206,7 @@ async function writePackage(root: string, appSource: string, extraPackageFields:
   }), "utf8");
   await writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8");
   await writeFile(join(root, "app.js"), "export {};\n", "utf8");
-  await writeFile(join(root, "worker.js"), appSource, "utf8");
+  await writeFile(join(root, "worker.js"), `${appSource}\nexport async function handleAutomation() {}\n`, "utf8");
 }
 
 async function missing(path: string): Promise<boolean> {

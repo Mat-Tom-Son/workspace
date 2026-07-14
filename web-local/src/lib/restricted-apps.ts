@@ -1,5 +1,6 @@
 import { api } from "./api";
 import type {
+  RestrictedAppAutomationRunReceipt,
   RestrictedAppConnectionStatus,
   RestrictedAppCredential,
   RestrictedAppInstalled,
@@ -103,27 +104,39 @@ export async function setRestrictedAppNotificationGrant(
   })).app;
 }
 
-export async function setRestrictedAppBackgroundEnabled(
+export async function setRestrictedAppAutomationEnabled(
   workspaceId: string,
   appId: string,
+  automationId: string,
   expectedDigest: string,
   enabled: boolean,
 ): Promise<RestrictedAppInstalled> {
-  return (await api<{ app: RestrictedAppInstalled }>(`${appPath(workspaceId, appId)}/background`, {
+  return (await api<{ app: RestrictedAppInstalled }>(`${appPath(workspaceId, appId)}/automations/${encodeURIComponent(automationId)}`, {
     method: enabled ? "PUT" : "DELETE",
     body: { expectedDigest },
   })).app;
 }
 
-export async function runRestrictedAppBackgroundNow(
+export async function runRestrictedAppAutomationNow(
   workspaceId: string,
   appId: string,
+  automationId: string,
   expectedDigest: string,
-): Promise<RestrictedAppInstalled> {
-  return (await api<{ app: RestrictedAppInstalled }>(`${appPath(workspaceId, appId)}/background/run`, {
+): Promise<{ app: RestrictedAppInstalled; run: RestrictedAppAutomationRunReceipt }> {
+  return api<{ app: RestrictedAppInstalled; run: RestrictedAppAutomationRunReceipt }>(`${appPath(workspaceId, appId)}/automations/${encodeURIComponent(automationId)}/run`, {
     method: "POST",
     body: { expectedDigest },
-  })).app;
+  });
+}
+
+export async function listRestrictedAppAutomationRuns(
+  workspaceId: string,
+  appId: string,
+  automationId: string,
+  expectedDigest: string,
+): Promise<RestrictedAppAutomationRunReceipt[]> {
+  const query = new URLSearchParams({ expectedDigest });
+  return (await api<{ runs: RestrictedAppAutomationRunReceipt[] }>(`${appPath(workspaceId, appId)}/automations/${encodeURIComponent(automationId)}/runs?${query}`)).runs;
 }
 
 export async function getRestrictedAppStorageUsage(workspaceId: string, appId: string, expectedDigest: string): Promise<RestrictedAppStorageUsage> {

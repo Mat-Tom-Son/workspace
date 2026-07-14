@@ -28,6 +28,8 @@ import {
 const spaceOne = "ws-1111111111111111";
 const spaceTwo = "ws-2222222222222222";
 const spaceThree = "ws-3333333333333333";
+const refreshAutomation = "refresh-mail";
+const exportAutomation = "export-digest";
 
 test("RestrictedAppService inspects reviewed bytes and requires the expected digest before installation", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-review-"));
@@ -62,7 +64,10 @@ test("RestrictedAppService inspects reviewed bytes and requires the expected dig
     assert.deepEqual(installed.networkGrants, [], "installation reviews code but does not implicitly grant network access");
     assert.deepEqual(installed.fileGrants, [], "installation does not implicitly grant Space files");
     assert.deepEqual(installed.notificationGrants, [], "installation does not implicitly grant notifications");
-    assert.equal(installed.backgroundEnabled, false, "installation does not implicitly enable background work");
+    assert.deepEqual(installed.automations, [
+      { id: refreshAutomation, enabled: false },
+      { id: exportAutomation, enabled: false },
+    ], "installation does not implicitly enable reviewed automations");
     assert.equal("stagedRoot" in installed, false, "app-data staging paths must remain internal");
     assert.equal(existsSync(join(rootPath, "staged", review.digest, "worker.js")), true);
     assert.match(await readFile(join(rootPath, "staged", review.digest, "worker.js"), "utf8"), /must remain inert/);
@@ -83,6 +88,37 @@ test("RestrictedAppService persists Space-scoped installs and keeps shared stage
     const review = await first.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await first.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await first.install({ workspaceId: spaceTwo, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    const enabledApp = await first.setAutomationEnabled({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+      enabled: true,
+    });
+    const enabledNextRunAt = enabledApp.automations.find(({ id }) => id === refreshAutomation)?.nextRunAt;
+    assert.ok(enabledNextRunAt, "enabling establishes a durable first cadence point");
+    const registryAfterEnable = JSON.parse(await readFile(join(rootPath, "registry.json"), "utf8")) as {
+      apps: Array<{ workspaceId: string; automations: Array<{ id: string; lastScheduledAt?: string }> }>;
+    };
+    const enabledCadenceAnchor = registryAfterEnable.apps.find(({ workspaceId }) => workspaceId === spaceOne)
+      ?.automations.find(({ id }) => id === refreshAutomation)?.lastScheduledAt;
+    assert.ok(enabledCadenceAnchor);
+    const persistedRun = await first.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
+    assert.equal(persistedRun.run.outcome, "success");
+    const registryAfterManualRun = JSON.parse(await readFile(join(rootPath, "registry.json"), "utf8")) as {
+      apps: Array<{ workspaceId: string; automations: Array<{ id: string; lastScheduledAt?: string }> }>;
+    };
+    assert.equal(
+      registryAfterManualRun.apps.find(({ workspaceId }) => workspaceId === spaceOne)
+        ?.automations.find(({ id }) => id === refreshAutomation)?.lastScheduledAt,
+      enabledCadenceAnchor,
+      "a manual run must not move the durable recurring cadence",
+    );
     assert.equal((await first.list(spaceOne)).length, 1);
     assert.equal((await first.list(spaceTwo)).length, 1);
     assert.deepEqual(await first.list("ws-3333333333333333"), []);
@@ -90,7 +126,20 @@ test("RestrictedAppService persists Space-scoped installs and keeps shared stage
 
     const secondRuntime = new RecordingRuntimeHost();
     const reopened = await RestrictedAppService.create({ rootPath, runtimeHost: secondRuntime });
-    assert.equal((await reopened.list(spaceOne))[0]?.digest, review.digest);
+    const reopenedApp = (await reopened.list(spaceOne))[0];
+    assert.equal(reopenedApp?.digest, review.digest);
+    assert.equal(reopenedApp?.automations.find(({ id }) => id === refreshAutomation)?.enabled, true);
+    assert.ok(reopenedApp?.automations.find(({ id }) => id === refreshAutomation)?.lastRunAt);
+    assert.equal(
+      reopenedApp?.automations.find(({ id }) => id === refreshAutomation)?.nextRunAt,
+      enabledNextRunAt,
+      "restarting before the first scheduled run must preserve its due time",
+    );
+    assert.deepEqual(
+      await reopened.listAutomationRuns(spaceOne, "connected-inbox", review.digest, refreshAutomation),
+      [persistedRun.run],
+      "automation receipts and enabled state must survive service restart",
+    );
     assert.equal((await reopened.list(spaceTwo))[0]?.digest, review.digest);
 
     assert.equal(await reopened.remove({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest }), true);
@@ -137,7 +186,10 @@ test("RestrictedAppService keeps installs idempotent, repairs missing staged byt
     assert.equal(repaired.digest, firstReview.digest);
     assert.equal(existsSync(join(rootPath, "staged", firstReview.digest, "worker.js")), true, "idempotent install must restore a missing staged snapshot");
 
-    await writePackage(sourceRoot, { version: "0.2.0", appSource: "export async function handleAction() { return { count: 2 }; }\n" });
+    await writePackage(sourceRoot, {
+      version: "0.2.0",
+      appSource: "export async function handleAction() { return { count: 2 }; }\nexport async function handleAutomation() {}\n",
+    });
     const updateReview = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     const updated = await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: updateReview.digest });
     assert.equal(updated.installedAt, firstInstall.installedAt);
@@ -262,7 +314,7 @@ test("RestrictedAppService delegates declared actions with the installed owner a
   }
 });
 
-test("RestrictedAppService keeps storage across reviewed updates while resetting file, notification, and background authority", async () => {
+test("RestrictedAppService scopes each automation's powers and resets grants, schedules, and receipts on reviewed updates", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-powers-"));
   const workspaceRoot = join(sandbox, "space");
   const sourceRoot = join(workspaceRoot, "apps", "inbox");
@@ -303,25 +355,74 @@ test("RestrictedAppService keeps storage across reviewed updates while resetting
       permissionId: "new-mail",
     });
     assert.deepEqual(withNotifications.notificationGrants, ["new-mail"]);
-    const enabled = await service.setBackgroundEnabled({
+    const withNetwork = await service.grantNetwork({
       workspaceId: spaceOne,
       appId: "connected-inbox",
       expectedDigest: review.digest,
+      destinationId: "mail-api",
+    });
+    assert.deepEqual(withNetwork.networkGrants, ["mail-api"]);
+    const refreshEnabled = await service.setAutomationEnabled({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
       enabled: true,
     });
-    assert.equal(enabled.backgroundEnabled, true);
-    const ran = await service.runBackgroundNow({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest });
-    assert.equal(runtime.backgroundRuns.length, 1);
-    assert.equal(runtime.backgroundRuns[0]?.event.reason, "manual");
-    assert.deepEqual(runtime.backgroundRuns[0]?.app.notificationGrants, ["new-mail"]);
-    assert.ok(ran.backgroundLastRunAt);
+    assert.equal(refreshEnabled.automations.find(({ id }) => id === refreshAutomation)?.enabled, true);
+    await service.setAutomationEnabled({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: exportAutomation,
+      enabled: true,
+    });
+    const refreshed = await service.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
+    const exported = await service.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: exportAutomation,
+    });
+    assert.equal(refreshed.run.outcome, "success");
+    assert.equal(exported.run.outcome, "success");
+    assert.equal(runtime.automationRuns.length, 2);
+    assert.equal(runtime.automationRuns[0]?.event.reason, "manual");
+    assert.equal(runtime.automationRuns[0]?.event.automationId, refreshAutomation);
+    assert.equal(runtime.automationRuns[0]?.event.handler, "refresh-inbox");
+    assert.deepEqual(runtime.automationRuns[0]?.app.networkGrants, ["mail-api"]);
+    assert.deepEqual(runtime.automationRuns[0]?.app.fileGrants, []);
+    assert.deepEqual(runtime.automationRuns[0]?.app.notificationGrants, ["new-mail"]);
+    assert.deepEqual(runtime.automationRuns[0]?.app.automations.map(({ id }) => id), [refreshAutomation]);
+    assert.equal(runtime.automationRuns[1]?.event.handler, "export-digest");
+    assert.equal(runtime.automationRuns[1]?.event.automationId, exportAutomation);
+    assert.deepEqual(runtime.automationRuns[1]?.app.networkGrants, []);
+    assert.deepEqual(runtime.automationRuns[1]?.app.fileGrants, [{ id: "exports", declarationId: "exports", root: "reports", access: "read-write" }]);
+    assert.deepEqual(runtime.automationRuns[1]?.app.notificationGrants, []);
+    assert.deepEqual(runtime.automationRuns[1]?.app.automations.map(({ id }) => id), [exportAutomation]);
+    assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", review.digest, refreshAutomation), [refreshed.run]);
+    assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", review.digest, exportAutomation), [exported.run]);
 
-    await writePackage(sourceRoot, { version: "0.2.0", appSource: "export async function handleAction() { return { count: 2 }; }\nexport async function handleBackground() {}\n" });
+    await writePackage(sourceRoot, {
+      version: "0.2.0",
+      appSource: "export async function handleAction() { return { count: 2 }; }\nexport async function handleAutomation() {}\n",
+    });
     const nextReview = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     const updated = await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: nextReview.digest });
     assert.deepEqual(updated.fileGrants, []);
     assert.deepEqual(updated.notificationGrants, []);
-    assert.equal(updated.backgroundEnabled, false);
+    assert.deepEqual(updated.networkGrants, []);
+    assert.deepEqual(updated.automations, [
+      { id: refreshAutomation, enabled: false },
+      { id: exportAutomation, enabled: false },
+    ]);
+    assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", nextReview.digest, refreshAutomation), []);
+    assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", nextReview.digest, exportAutomation), []);
     assert.deepEqual(await storage.get(owner, "view"), { folder: "inbox" }, "same app storage survives a reviewed digest update");
 
     await service.remove({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: nextReview.digest });
@@ -362,8 +463,8 @@ test("RestrictedAppService removes machine-local app state for only the removed 
   }
 });
 
-test("RestrictedAppService re-reads notification grants after a queued background run acquires a global slot", async () => {
-  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-background-slot-"));
+test("RestrictedAppService re-reads scoped notification grants when a queued automation acquires a global slot", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-automation-slot-"));
   const workspaceRoot = join(sandbox, "space");
   const rootPath = join(sandbox, "state", "restricted-apps");
   const runtime = new QueuedNotificationRuntimeHost();
@@ -375,17 +476,47 @@ test("RestrictedAppService re-reads notification grants after a queued backgroun
     for (const workspaceId of [spaceOne, spaceTwo, spaceThree]) {
       await service.install({ workspaceId, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
       await service.grantNotifications({ workspaceId, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
-      await service.setBackgroundEnabled({ workspaceId, appId: "connected-inbox", expectedDigest: review.digest, enabled: true });
+      await service.setAutomationEnabled({
+        workspaceId,
+        appId: "connected-inbox",
+        expectedDigest: review.digest,
+        automationId: refreshAutomation,
+        enabled: true,
+      });
     }
-    const first = service.runBackgroundNow({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest });
-    const second = service.runBackgroundNow({ workspaceId: spaceTwo, appId: "connected-inbox", expectedDigest: review.digest });
+    const first = service.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
+    const second = service.runAutomationNow({
+      workspaceId: spaceTwo,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
     await runtime.waitForStarts(2);
-    const queued = service.runBackgroundNow({ workspaceId: spaceThree, appId: "connected-inbox", expectedDigest: review.digest });
+    const queued = service.runAutomationNow({
+      workspaceId: spaceThree,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
     await service.revokeNotifications({ workspaceId: spaceThree, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
     runtime.releaseOne();
-    await assert.rejects(queued, /notification category is not granted/i);
+    const failed = await queued;
+    assert.equal(failed.run.outcome, "failure", "manual worker failures must be durable receipts rather than rejected service calls");
+    assert.match(failed.run.error ?? "", /notification category is not granted/i);
+    assert.equal(failed.app.automations.find(({ id }) => id === refreshAutomation)?.lastError, failed.run.error);
+    assert.equal(failed.app.automations.find(({ id }) => id === refreshAutomation)?.lastRunAt, failed.run.finishedAt);
+    assert.deepEqual(
+      await service.listAutomationRuns(spaceThree, "connected-inbox", review.digest, refreshAutomation),
+      [failed.run],
+    );
     runtime.releaseOne();
-    await Promise.all([first, second]);
+    const completed = await Promise.all([first, second]);
+    assert.deepEqual(completed.map(({ run }) => run.outcome), ["success", "success"]);
     assert.deepEqual(runtime.notificationsShown.sort(), [spaceOne, spaceTwo]);
     assert.deepEqual(runtime.notificationsDenied, [spaceThree]);
     await service.close();
@@ -398,8 +529,8 @@ test("RestrictedAppService re-reads notification grants after a queued backgroun
   }
 });
 
-test("RestrictedAppService serializes a background launch started by stop behind the grant mutation", async () => {
-  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-background-stop-race-"));
+test("RestrictedAppService serializes an automation launch started by stop behind the grant mutation", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-automation-stop-race-"));
   const workspaceRoot = join(sandbox, "space");
   const rootPath = join(sandbox, "state", "restricted-apps");
   const runtime = new StopRaceRuntimeHost();
@@ -409,15 +540,25 @@ test("RestrictedAppService serializes a background launch started by stop behind
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await service.grantNotifications({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
-    await service.setBackgroundEnabled({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, enabled: true });
+    await service.setAutomationEnabled({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+      enabled: true,
+    });
 
-    runtime.startBackgroundWhenStopped(service, review.digest);
+    runtime.startAutomationWhenStopped(service, review.digest);
     await service.revokeNotifications({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
-    assert.ok(runtime.backgroundRun);
-    await runtime.backgroundRun;
+    const pendingRun = runtime.automationRun;
+    assert.ok(pendingRun);
+    const run = await pendingRun;
 
-    assert.equal(runtime.backgroundRuns.length, 1);
-    assert.deepEqual(runtime.backgroundRuns[0]?.notificationGrants, [], "the post-stop launch must re-read the committed grant state");
+    assert.equal(run.run.outcome, "success");
+    assert.equal(runtime.automationRuns.length, 1);
+    assert.deepEqual(runtime.automationRuns[0]?.app.notificationGrants, [], "the post-stop launch must re-read the committed grant state");
+    assert.deepEqual(runtime.automationRuns[0]?.app.networkGrants, [], "the named job must not inherit undeclared app powers");
+    assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", review.digest, refreshAutomation), [run.run]);
     await service.close();
   } finally {
     await rm(sandbox, { recursive: true, force: true });
@@ -618,9 +759,17 @@ test("RestrictedAppService confines package sources to normal visible directorie
   }
 });
 
+type AutomationRuntimeEvent = {
+  runId: string;
+  automationId: string;
+  handler: string;
+  reason: "scheduled" | "manual" | "resume";
+  scheduledAt: string;
+};
+
 class RecordingRuntimeHost implements RestrictedAppRuntimeHost {
   readonly invocations: Array<{ app: RestrictedAppRuntimeDescriptor; action: string; input: unknown }> = [];
-  readonly backgroundRuns: Array<{ app: RestrictedAppRuntimeDescriptor; event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string } }> = [];
+  readonly automationRuns: Array<{ app: RestrictedAppRuntimeDescriptor; event: AutomationRuntimeEvent }> = [];
   readonly stops: Array<{ workspaceId: string; appId: string; digest?: string }> = [];
   closeCount = 0;
 
@@ -629,8 +778,8 @@ class RecordingRuntimeHost implements RestrictedAppRuntimeHost {
     return { count: 7 };
   }
 
-  async runBackground(app: RestrictedAppRuntimeDescriptor, event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string }): Promise<void> {
-    this.backgroundRuns.push({ app: structuredClone(app), event: structuredClone(event) });
+  async runAutomation(app: RestrictedAppRuntimeDescriptor, event: AutomationRuntimeEvent): Promise<void> {
+    this.automationRuns.push({ app: structuredClone(app), event: structuredClone(event) });
   }
 
   async stop(workspaceId: string, appId: string, digest?: string): Promise<void> {
@@ -660,7 +809,7 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
 
   async invoke(): Promise<unknown> { return {}; }
 
-  async runBackground(app: RestrictedAppRuntimeDescriptor): Promise<void> {
+  async runAutomation(app: RestrictedAppRuntimeDescriptor, event: AutomationRuntimeEvent): Promise<void> {
     this.#started += 1;
     this.#resolveStartWaiters();
     if (this.#started <= 2) await new Promise<void>((resolvePromise) => this.#releases.push(resolvePromise));
@@ -672,8 +821,8 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
         appTitle: app.manifest.title,
         declarations: app.manifest.permissions.notifications,
         grants: app.notificationGrants,
-        backgroundEnabled: app.backgroundEnabled,
-        invocationId: `background-${app.workspaceId}`,
+        automationEnabled: app.automations.some((automation) => automation.id === event.automationId && automation.enabled),
+        invocationId: event.runId,
       }, { permissionId: "new-mail" }, () => undefined);
     } catch (error) {
       this.notificationsDenied.push(app.workspaceId);
@@ -694,7 +843,7 @@ class QueuedNotificationRuntimeHost implements RestrictedAppRuntimeHost {
       const timeout = setTimeout(() => {
         const index = this.#startWaiters.indexOf(waiter);
         if (index >= 0) this.#startWaiters.splice(index, 1);
-        rejectPromise(new Error(`Timed out waiting for ${count} background runs to start; observed ${this.#started}.`));
+        rejectPromise(new Error(`Timed out waiting for ${count} automation runs to start; observed ${this.#started}.`));
       }, 10_000);
       this.#startWaiters.push(waiter);
       this.#resolveStartWaiters();
@@ -732,20 +881,21 @@ class RejectingStopRuntimeHost implements RestrictedAppRuntimeHost {
 }
 
 class StopRaceRuntimeHost implements RestrictedAppRuntimeHost {
-  readonly backgroundRuns: RestrictedAppRuntimeDescriptor[] = [];
-  backgroundRun?: Promise<unknown>;
+  readonly automationRuns: Array<{ app: RestrictedAppRuntimeDescriptor; event: AutomationRuntimeEvent }> = [];
+  automationRun?: ReturnType<RestrictedAppService["runAutomationNow"]>;
   #onStop?: () => void;
 
   async invoke(): Promise<unknown> { return {}; }
-  async runBackground(app: RestrictedAppRuntimeDescriptor): Promise<void> {
-    this.backgroundRuns.push(structuredClone(app));
+  async runAutomation(app: RestrictedAppRuntimeDescriptor, event: AutomationRuntimeEvent): Promise<void> {
+    this.automationRuns.push({ app: structuredClone(app), event: structuredClone(event) });
   }
-  startBackgroundWhenStopped(service: RestrictedAppService, digest: string): void {
+  startAutomationWhenStopped(service: RestrictedAppService, digest: string): void {
     this.#onStop = () => {
-      this.backgroundRun = service.runBackgroundNow({
+      this.automationRun = service.runAutomationNow({
         workspaceId: spaceOne,
         appId: "connected-inbox",
         expectedDigest: digest,
+        automationId: refreshAutomation,
       });
     };
   }
@@ -803,7 +953,7 @@ async function writePackage(root: string, options: {
     agentApp: "agent-app.json",
   }), "utf8");
   await writeFile(join(root, "agent-app.json"), JSON.stringify({
-    version: 1,
+    version: 2,
     id: appId,
     title: "Connected inbox",
     runtime: { kind: "sandboxed-web", entry: "index.html", worker: "worker.js" },
@@ -825,7 +975,25 @@ async function writePackage(root: string, options: {
         additionalProperties: false,
       },
     }],
-    background: { intervalMinutes: 30 },
+    automations: [{
+      id: refreshAutomation,
+      title: "Refresh inbox",
+      description: "Check for newly arrived messages.",
+      handler: "refresh-inbox",
+      trigger: { kind: "interval", intervalMinutes: 30 },
+      permissions: { network: ["mail-api"], files: [], notifications: ["new-mail"] },
+      catchUp: "latest",
+      overlap: "skip",
+    }, {
+      id: exportAutomation,
+      title: "Export digest",
+      description: "Write a digest into the selected reports folder.",
+      handler: "export-digest",
+      trigger: { kind: "interval", intervalMinutes: 60 },
+      permissions: { network: [], files: ["exports"], notifications: [] },
+      catchUp: "none",
+      overlap: "skip",
+    }],
     permissions: {
       files: [{ id: "exports", target: "directory", access: "read-write" }],
       notifications: [{ id: "new-mail", title: "New mail", description: "New messages are ready." }],
@@ -839,7 +1007,11 @@ async function writePackage(root: string, options: {
   }), "utf8");
   await writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8");
   await writeFile(join(root, "app.js"), "export {};\n", "utf8");
-  await writeFile(join(root, "worker.js"), options.appSource ?? "// This code must remain inert during review and installation.\nexport async function handleAction() { return { count: 0 }; }\n", "utf8");
+  await writeFile(
+    join(root, "worker.js"),
+    options.appSource ?? "// This code must remain inert during review and installation.\nexport async function handleAction() { return { count: 0 }; }\nexport async function handleAutomation() {}\n",
+    "utf8",
+  );
 }
 
 function oauthClient(

@@ -97,8 +97,8 @@ async function runSmoke() {
       manifest: receipt.manifest,
       networkGrants: ["escape"],
       fileGrants: [{ id: "exports", declarationId: "exports", root: "exports", access: "read-write" }],
-      notificationGrants: ["background-update", "post-return", "suspend-probe"],
-      backgroundEnabled: true,
+      notificationGrants: ["automation-update", "post-return", "suspend-probe"],
+      automations: [{ id: "smoke-automation", enabled: true }],
       fileCount: receipt.fileCount,
       totalBytes: receipt.totalBytes,
       installedAt: "2026-07-13T00:00:00.000Z",
@@ -141,8 +141,11 @@ async function runSmoke() {
     assert.equal(hits, 0);
     await mark("recovery-complete");
 
-    await host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:00:00.000Z" });
-    assert.deepEqual(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "background"), {
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:00.000Z"));
+    assert.deepEqual(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "automation"), {
+      runId: "smoke-2026-07-13T00:00:00.000Z",
+      automationId: "smoke-automation",
+      handler: "smoke",
       reason: "manual",
       scheduledAt: "2026-07-13T00:00:00.000Z",
     });
@@ -150,20 +153,20 @@ async function runSmoke() {
       workspaceId: descriptor.workspaceId,
       appId: descriptor.manifest.id,
       digest: descriptor.digest,
-      permissionId: "background-update",
-      title: "Workspace · Restricted Electron smoke — Background update",
+      permissionId: "automation-update",
+      title: "Workspace · Restricted Electron smoke — Automation update",
       body: "New sandboxed app data is ready.",
     }]);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
-    assert.equal(shownNotifications.length, 1, "notification calls after handleBackground returns are denied");
+    assert.equal(shownNotifications.length, 1, "notification calls after handleAutomation returns are denied");
     assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "worker-storage-events"), 0);
-    const suspendedRun = host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:00:30.000Z" });
+    const suspendedRun = host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:30.000Z"));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
     host.suspend();
     await assert.rejects(suspendedRun, (error) => error?.code === "APP_ERROR");
-    assert.equal(shownNotifications.length, 1, "suspend denies an in-flight background notification");
+    assert.equal(shownNotifications.length, 1, "suspend denies an in-flight automation notification");
     host.resume();
-    await mark("background-complete");
+    await mark("automation-complete");
 
     const parent = new BrowserWindow({ show: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
     await parent.loadURL("data:text/html,<main>Workspace owner</main>");
@@ -206,11 +209,11 @@ async function runSmoke() {
       },
     }]);
     assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "ui-notification-denied"), true);
-    await host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:01:00.000Z" });
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:01:00.000Z"));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "active-storage-event"), true, "background storage changes reach the active owning UI");
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "active-storage-event"), true, "automation storage changes reach the active owning UI");
     assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "reset-storage-event"), true, "more than 128 coalesced keys produce a bounded reset hint");
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "background-storage-event-count"), 1, "coalesced background mutations emit once");
+    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "automation-storage-event-count"), 1, "coalesced automation mutations emit once");
     host.layoutUi(parent.webContents.id, {
       mountId,
       placement: "navigator",
@@ -228,7 +231,7 @@ async function runSmoke() {
       networkDenied: true,
     });
     assert.equal(hits, 0, "an inactive app view must not retain file or network powers");
-    await host.runBackground(descriptor, { reason: "manual", scheduledAt: "2026-07-13T00:02:00.000Z" });
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:02:00.000Z"));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "inactive-storage-event"), undefined, "inactive app views receive no storage event or replay");
     await host.unmountUi(parent.webContents.id, mountId);
@@ -269,18 +272,18 @@ async function writeSmokePackage(root, loopbackPort) {
 const bridge = globalThis.workspaceRestrictedApp;
 const context = bridge.context.get();
 let currentActive = context.active;
-let backgroundStorageEventCount = 0;
+let automationStorageEventCount = 0;
 bridge.storage.onChanged(async (event) => {
   if (event.reset) {
-    backgroundStorageEventCount += 1;
+    automationStorageEventCount += 1;
     await bridge.storage.set("reset-storage-event", true);
-    await bridge.storage.set("background-storage-event-count", backgroundStorageEventCount);
+    await bridge.storage.set("automation-storage-event-count", automationStorageEventCount);
     await bridge.storage.set(currentActive ? "active-storage-event" : "inactive-storage-event", true);
     return;
   }
-  if (!event.keys.includes("background")) return;
-  backgroundStorageEventCount += 1;
-  await bridge.storage.set("background-storage-event-count", backgroundStorageEventCount);
+  if (!event.keys.includes("automation")) return;
+  automationStorageEventCount += 1;
+  await bridge.storage.set("automation-storage-event-count", automationStorageEventCount);
   await bridge.storage.set(currentActive ? "active-storage-event" : "inactive-storage-event", true);
 });
 bridge.context.onChanged(async (next) => {
@@ -293,7 +296,7 @@ bridge.context.onChanged(async (next) => {
   await bridge.storage.set("inactive-powers", { fileDenied, networkDenied });
 });
 let uiNotificationDenied = false;
-try { await bridge.notifications.show({ permissionId: "background-update" }); } catch { uiNotificationDenied = true; }
+try { await bridge.notifications.show({ permissionId: "automation-update" }); } catch { uiNotificationDenied = true; }
 await bridge.storage.set("ui-notification-denied", uiNotificationDenied);
 let directFetchBlocked = false;
 try { await fetch(context.state.escapeUrl); } catch { directFetchBlocked = true; }
@@ -309,7 +312,7 @@ let workerTopLevelStorageDenied = false;
 try { await globalThis.workspaceRestrictedApp.storage.set("worker-top-level", true); }
 catch { workerTopLevelStorageDenied = true; }
 let workerTopLevelNotificationDenied = false;
-try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" }); }
+try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "automation-update" }); }
 catch { workerTopLevelNotificationDenied = true; }
 let workerStorageEvents = 0;
 globalThis.workspaceRestrictedApp.storage.onChanged(() => { workerStorageEvents += 1; });
@@ -317,7 +320,7 @@ globalThis.workspaceRestrictedApp.storage.onChanged(() => { workerStorageEvents 
 export async function handleAction(action, input) {
   if (action === "notification") {
     let actionNotificationDenied = false;
-    try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" }); }
+    try { await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "automation-update" }); }
     catch { actionNotificationDenied = true; }
     return { workerTopLevelNotificationDenied, actionNotificationDenied };
   }
@@ -362,19 +365,20 @@ export async function handleAction(action, input) {
   };
 }
 
-export async function handleBackground(event) {
+export async function handleAutomation(event) {
+  if (event.automationId !== "smoke-automation" || event.handler !== "smoke") throw new Error("Unknown automation.");
   if (event.scheduledAt === "2026-07-13T00:00:30.000Z") {
     await new Promise((resolve) => setTimeout(resolve, 200));
     await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "suspend-probe" });
     return;
   }
-  await globalThis.workspaceRestrictedApp.storage.set("background", event);
+  await globalThis.workspaceRestrictedApp.storage.set("automation", event);
   if (event.scheduledAt === "2026-07-13T00:01:00.000Z") {
     await globalThis.workspaceRestrictedApp.storage.transaction({
       set: Array.from({ length: 128 }, (_, index) => ({ key: "bulk-" + String(index).padStart(3, "0"), value: index })),
     });
   }
-  await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "background-update" });
+  await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "automation-update" });
   await new Promise((resolve) => setTimeout(resolve, 120));
   await globalThis.workspaceRestrictedApp.storage.set("worker-storage-events", workerStorageEvents);
   setTimeout(async () => {
@@ -389,12 +393,11 @@ export async function handleBackground(event) {
 function smokeManifest(loopbackPort) {
   const emptyInput = { type: "object", properties: {}, required: [], additionalProperties: false };
   return {
-    version: 1,
+    version: 2,
     id: "restricted-electron-smoke",
     title: "Restricted Electron smoke",
     runtime: { kind: "sandboxed-web", entry: "index.html", worker: "worker.js" },
     ui: { icon: "apps" },
-    background: { intervalMinutes: 30 },
     tools: [
       {
         name: "probe",
@@ -447,10 +450,23 @@ function smokeManifest(loopbackPort) {
       { name: "intrinsics", description: "Tamper with renderer intrinsics.", action: "intrinsics", inputSchema: emptyInput, resultSchema: { type: "string" } },
       { name: "hang", description: "Block the renderer.", action: "hang", inputSchema: emptyInput, resultSchema: { type: "null" } },
     ],
+    automations: [{
+      id: "smoke-automation",
+      title: "Smoke automation",
+      handler: "smoke",
+      trigger: { kind: "interval", intervalMinutes: 30 },
+      permissions: {
+        network: [],
+        files: ["exports"],
+        notifications: ["automation-update", "post-return", "suspend-probe"],
+      },
+      catchUp: "latest",
+      overlap: "skip",
+    }],
     permissions: {
       files: [{ id: "exports", target: "directory", access: "read-write" }],
       notifications: [
-        { id: "background-update", title: "Background update", description: "New sandboxed app data is ready." },
+        { id: "automation-update", title: "Automation update", description: "New sandboxed app data is ready." },
         { id: "post-return", title: "Post-return probe", description: "This notification must never be shown." },
         { id: "suspend-probe", title: "Suspend probe", description: "This notification must never survive suspend." },
       ],
@@ -459,6 +475,16 @@ function smokeManifest(loopbackPort) {
         { id: "escape", target: { kind: "loopback-http", host: "127.0.0.1", port: loopbackPort }, methods: ["GET"], auth: [{ kind: "none" }] },
       ],
     },
+  };
+}
+
+function automationEvent(scheduledAt) {
+  return {
+    runId: `smoke-${scheduledAt}`,
+    automationId: "smoke-automation",
+    handler: "smoke",
+    reason: "manual",
+    scheduledAt,
   };
 }
 

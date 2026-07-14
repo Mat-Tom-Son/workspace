@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "id": "restricted-connected-inbox",
   "title": "Connected inbox",
   "description": "An interactive Space-bound inbox and local service console.",
@@ -34,9 +34,25 @@
       }
     }
   ],
-  "background": {
-    "intervalMinutes": 30
-  },
+  "automations": [
+    {
+      "id": "refresh-inbox",
+      "title": "Refresh inbox",
+      "description": "Check the connected inbox and save the latest connection result.",
+      "handler": "refresh-inbox",
+      "trigger": {
+        "kind": "interval",
+        "intervalMinutes": 30
+      },
+      "permissions": {
+        "network": ["mail-api"],
+        "files": [],
+        "notifications": ["inbox-refresh-finished"]
+      },
+      "catchUp": "latest",
+      "overlap": "skip"
+    }
+  ],
   "permissions": {
     "network": [
       {
@@ -61,9 +77,9 @@
     ],
     "notifications": [
       {
-        "id": "inbox-check-finished",
-        "title": "Inbox check finished",
-        "description": "The background inbox check finished. Open Workspace to review the connection result."
+        "id": "inbox-refresh-finished",
+        "title": "Inbox refresh finished",
+        "description": "The inbox refresh automation finished. Open Workspace to review the connection result."
       }
     ]
   }

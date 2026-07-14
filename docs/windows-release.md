@@ -36,7 +36,7 @@ Use `./scripts/build-signed-windows.ps1` instead of the final `desktop:make` com
 
 `desktop:make` includes `desktop:prepare`; a release candidate therefore must pass both native Pi preflight and the real-Electron restricted-app probe before Electron Builder creates the installer. Do not accept a Node-only sandbox test, a skipped Electron probe, or a package produced after that probe failed.
 
-Review the complete diff and inspect the exact unpacked application and installer as described in [Windows build](windows-build.md). Confirm the version, Files/Space language, tabs, menus, background work, CLI, Mica/fallback, updater surface, and the restricted-app install/review, rail/tab, default-off grant, storage, notification, suspend, and teardown paths. The local and cloud installers are separate builds, so use local QA to validate behavior rather than expecting byte-for-byte identity.
+Review the complete diff and inspect the exact unpacked application and installer as described in [Windows build](windows-build.md). Confirm the version, Files/Space language, tabs, menus, background turn continuity, CLI, Mica/fallback, updater surface, and the restricted-app install/review, rail/tab, default-off grant and automation, run-receipt, storage, notification, suspend, and teardown paths. The local and cloud installers are separate builds, so use local QA to validate behavior rather than expecting byte-for-byte identity.
 
 Prepare a complete checked-in release note at `docs/releases/<version>.md`. The tagged workflow can generate comparison metadata, but the public release body must explain material user-facing behavior, authorization and security boundaries, known limitations, upgrade behavior, and verification. Do not leave a feature release with only a generated changelog link.
 
@@ -95,12 +95,12 @@ GitHub's release API exposes asset names, sizes, URLs, and SHA-256 digests for a
 
 When possible, keep a lower installed version for the final smoke test:
 
-1. Confirm the installed version and `resources/app-update.yml`. Record one installed restricted app's reviewed digest, grants, connection status, background setting, and a harmless local-storage value when available.
+1. Confirm the installed version and `resources/app-update.yml`. Record one installed version-2 restricted app's reviewed digest, grants, connection status, automation settings and recent receipt count, and a harmless local-storage value when available.
 2. Open **Help > Check for Updates…**.
 3. Confirm the new version is offered without a missing-feed or network error.
 4. Choose **Update now** to download it.
 5. Confirm Workspace performs its update-specific shutdown and relaunch after the download. If a ready-update prompt appears instead, exercise **Restart now** or choose **Later** and then explicitly quit the app.
-6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, Pi state, restricted-app installs and reviewed digests, explicit grants, encrypted connection status, background settings, and local app storage. Reopen the app's owning Space and verify its rail surface and any persistent Space-owned tab still resolve to that Space.
+6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, Pi state, version-2 restricted-app installs and reviewed digests, explicit grants, encrypted connection status, automation settings and receipts, and local app storage. Reopen the app's owning Space and verify its rail surface and any persistent Space-owned tab still resolve to that Space.
 
 Do not silently install over a user's test environment merely to verify a release; leave the lower installed version available when the user is meant to exercise the update themselves.
 

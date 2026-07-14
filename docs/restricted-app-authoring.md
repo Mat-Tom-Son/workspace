@@ -29,7 +29,7 @@ The normal product path begins in a Chat belonging to the target Space:
    code, grant a permission, or collect a credential.
 5. Manage the installed app under **Capabilities → Installed → Apps in this
    Space**. Network destinations, file targets, notification categories,
-   connections, and background work are separate grants.
+   connections, and each named automation are separate controls.
 
 **Advanced local install** in that Capabilities section is the developer and
 recovery path for a completed package already inside the current Space. It
@@ -47,7 +47,7 @@ my-space-app/
 ├── index.html
 ├── app.js
 ├── styles.css
-└── worker.js       # required for tools, background work, or notifications
+└── worker.js       # required for tools, automations, or notifications
 ```
 
 `package.json` identifies the data-only manifest and declares ESM:
@@ -79,7 +79,7 @@ template exercises every current section:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "id": "my-space-app",
   "title": "My Space app",
   "description": "A Space-bound app with a connected service.",
@@ -114,9 +114,25 @@ template exercises every current section:
       }
     }
   ],
-  "background": {
-    "intervalMinutes": 30
-  },
+  "automations": [
+    {
+      "id": "refresh-records",
+      "title": "Refresh records",
+      "description": "Fetch and store the latest record summary.",
+      "handler": "refresh-records",
+      "trigger": {
+        "kind": "interval",
+        "intervalMinutes": 30
+      },
+      "permissions": {
+        "network": ["records-api"],
+        "files": [],
+        "notifications": ["refresh-finished"]
+      },
+      "catchUp": "latest",
+      "overlap": "skip"
+    }
+  ],
   "permissions": {
     "network": [
       {
@@ -153,26 +169,34 @@ template exercises every current section:
       {
         "id": "refresh-finished",
         "title": "Refresh finished",
-        "description": "The background refresh finished. Open Workspace to review the result."
+        "description": "The records refresh automation finished. Open Workspace to review the result."
       }
     ]
   }
 }
 ```
 
-Manifest ids use lowercase letters, numbers, and hyphens. `ui` and `tools` are
-required even when they contain `{}` and `[]`. `permissions.network` is also
-required and may be empty; `files` and `notifications` may be omitted and then
-normalize to empty arrays. Tool names may additionally use underscores.
+Manifest ids use lowercase letters, numbers, and hyphens. `ui`, `tools`, and
+`automations` are required even when they are empty (`{}`, `[]`, and `[]`).
+`permissions.network` is also required and may be empty; `files` and
+`notifications` may be omitted and then normalize to empty arrays. Tool names
+may additionally use underscores.
 
 The supported tool-schema subset contains `object`, `array`, `string`,
 `number`, `integer`, `boolean`, and `null`, with closed properties, required
 keys, one `items` schema, scalar enums, and the declared string, number, and
 array bounds. Open-ended or executable schema features are rejected. A worker
-is required when `tools` is nonempty. Background intervals are whole minutes
-from 15 through 1,440; background work requires a worker. Notification
-declarations require both a worker and a background schedule. Notification
-title and description are reviewed, bounded, plain single-line text.
+is required when `tools` is nonempty.
+
+An app may declare up to sixteen automations. Each automation has a unique id,
+reviewed title, optional description, handler id, an interval from 15 through
+1,440 whole minutes, `catchUp` set to `none` or `latest`, and `overlap` set to
+`skip`. Its `permissions` object is required, all three arrays are required,
+and every id must reference an app-level declaration. This is an exact maximum
+for that job: launch-time authority is the intersection of this subset and the
+person's current grants. Automations require a worker. Every notification
+declaration must be referenced by at least one automation. Notification title
+and description are reviewed, bounded, plain single-line text.
 
 Network methods are limited to `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
 Public targets are exact HTTPS origins. Loopback targets are numeric
@@ -332,12 +356,12 @@ limited to 200 entries. Every write is atomic and creates a targeted History
 checkpoint. Grant-relative paths cannot traverse links, metadata roots, or the
 selected Space target.
 
-## Worker tools and background work
+## Worker tools and automations
 
 The optional worker is a separate hidden sandbox. It has the same bridge name,
 Node denial, direct-network denial, and host-derived authority as visible UI.
 It cannot manipulate visible tabs. Export `handleAction` for declared tools and
-`handleBackground` for a declared schedule:
+`handleAutomation` when the manifest declares one or more automations:
 
 ```js
 export async function handleAction(action, input) {
@@ -352,7 +376,10 @@ export async function handleAction(action, input) {
   return { count: Number.isInteger(value.count) ? value.count : 0 };
 }
 
-export async function handleBackground(event) {
+export async function handleAutomation(event) {
+  if (event.automationId !== "refresh-records" || event.handler !== "refresh-records") {
+    throw new Error("Unknown automation.");
+  }
   let network;
   try {
     const response = await globalThis.workspaceRestrictedApp.request({
@@ -386,14 +413,23 @@ export async function handleBackground(event) {
 ```
 
 Tool inputs and results are checked against the manifest schemas and limited
-to 256 KiB. Worker invocations default to a five-second deadline. Background
-events contain `reason` (`scheduled`, `manual`, or `resume`) and ISO
-`scheduledAt`. A background declaration starts disabled. When enabled,
-Workspace runs it only while Workspace is running, with a two-job global
-concurrency limit and at most one staggered resume catch-up.
+to 256 KiB. Worker invocations default to a five-second deadline. Automation
+events contain `runId`, `automationId`, `handler`, `reason` (`scheduled`,
+`manual`, or `resume`), and ISO `scheduledAt`. Treat `automationId` and
+`handler` as the reviewed dispatch pair and reject unknown values.
 
-`notifications.show({ permissionId })` works only inside an enabled background
-invocation and only for a separately granted manifest category. It returns a
+Every automation installs disabled. Enabling one schedules only that job while
+Workspace is running. One scheduler is shared across all Spaces and apps, with
+a two-run global limit, FIFO admission, same-job non-overlap, and at most one
+staggered latest catch-up when requested. **Run now** is a one-off execution:
+it works while the schedule is disabled and does not move the recurring
+cadence. Every attempt receives a durable receipt visible in Capabilities.
+
+At launch, the worker sees only current app grants also named by that
+automation's `permissions` subset. `notifications.show({ permissionId })`
+works only inside an enabled automation invocation and only for a separately
+granted category included in that job. A manual run of a disabled automation
+therefore cannot notify. The method returns a
 status of `shown`, `rate-limited`, or `unsupported`. The host supplies the
 reviewed title and description; the worker cannot add dynamic text, actions,
 or URLs. Notification failure should not discard already completed work. Use
@@ -425,10 +461,10 @@ secret-reading bridge.
 ## Default-off lifecycle and denial handling
 
 Installing a reviewed digest makes its UI available but leaves network, file,
-and notification grants off, stores no connection, and leaves background work
+and notification grants off, stores no connection, and leaves every automation
 disabled. Storage is available without an external-power grant. A reviewed
 update preserves app storage but resets destination grants, file grants,
-notification grants, connections, and background authority. Removal deletes
+notification grants, connections, automation state, and run history. Removal deletes
 app storage and connections but never deletes Space files. Source edits do not
 change the installed bytes; propose and review a new digest.
 

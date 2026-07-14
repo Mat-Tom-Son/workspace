@@ -379,15 +379,30 @@ export interface RestrictedAppNotificationPermission {
   description: string;
 }
 
+export interface RestrictedAppAutomation {
+  id: string;
+  title: string;
+  description?: string;
+  handler: string;
+  trigger: { kind: "interval"; intervalMinutes: number };
+  permissions: {
+    network: string[];
+    files: string[];
+    notifications: string[];
+  };
+  catchUp: "none" | "latest";
+  overlap: "skip";
+}
+
 export interface RestrictedAppManifest {
-  version: 1;
+  version: 2;
   id: string;
   title: string;
   description?: string;
   runtime: { kind: "sandboxed-web"; entry: string; worker?: string };
   ui: { icon?: string };
   tools: RestrictedAppTool[];
-  background?: { intervalMinutes: number };
+  automations: RestrictedAppAutomation[];
   permissions: {
     network: RestrictedAppNetworkDestination[];
     files: RestrictedAppFilePermission[];
@@ -409,11 +424,28 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
   notificationGrants: string[];
-  backgroundEnabled: boolean;
-  backgroundLastRunAt?: string;
-  backgroundLastError?: string;
+  automations: RestrictedAppAutomationState[];
   installedAt: string;
   updatedAt: string;
+}
+
+export interface RestrictedAppAutomationState {
+  id: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastError?: string;
+  nextRunAt?: string;
+}
+
+export interface RestrictedAppAutomationRunReceipt {
+  runId: string;
+  automationId: string;
+  reason: "scheduled" | "manual" | "resume";
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt: string;
+  outcome: "success" | "failure" | "skipped" | "cancelled";
+  error?: string;
 }
 
 export interface RestrictedAppViewRequest {

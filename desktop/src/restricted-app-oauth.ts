@@ -57,12 +57,13 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
   ): Promise<RestrictedAppOAuthJsonResponse> => {
     const destinationId = "oauth-provider";
     const manifest: RestrictedAppManifest = {
-      version: 1,
+      version: 2,
       id: "oauth-host",
       title: "OAuth host",
       runtime: { kind: "sandboxed-web", entry: "index.html" },
       ui: {},
       tools: [],
+      automations: [],
       permissions: {
         network: [{
           id: destinationId,

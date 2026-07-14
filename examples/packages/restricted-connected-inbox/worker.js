@@ -13,7 +13,10 @@ export async function handleAction(action, input) {
   return { count: Number.isInteger(data.count) && data.count >= 0 ? data.count : 0 };
 }
 
-export async function handleBackground(event) {
+export async function handleAutomation(event) {
+  if (event.automationId !== "refresh-inbox" || event.handler !== "refresh-inbox") {
+    throw new Error("Unknown automation.");
+  }
   let network;
   try {
     const response = await globalThis.workspaceRestrictedApp.request({
@@ -31,14 +34,14 @@ export async function handleBackground(event) {
 
   let notification;
   try {
-    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "inbox-check-finished" });
+    await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "inbox-refresh-finished" });
     notification = { state: "requested" };
   } catch (error) {
     notification = { state: "not-shown", code: errorCode(error, "NOTIFICATION_FAILED") };
   }
 
-  await globalThis.workspaceRestrictedApp.storage.set("last-background-sync", {
-    version: 1,
+  await globalThis.workspaceRestrictedApp.storage.set("last-automation-refresh", {
+    version: 2,
     reason: event.reason,
     scheduledAt: event.scheduledAt,
     completedAt: new Date().toISOString(),

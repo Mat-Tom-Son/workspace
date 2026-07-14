@@ -116,7 +116,7 @@ interface RestrictedAppInstance {
   snapshot: RestrictedAppPackageSnapshot;
   window: BrowserWindow;
   session: Session;
-  pendingOperation: { kind: "action" | "background"; id: string } | null;
+  pendingOperation: { kind: "action" | "automation"; id: string } | null;
   idleTimer?: NodeJS.Timeout;
   crashed: boolean;
   abortController: AbortController;
@@ -207,7 +207,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
 
   async invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown> {
     this.#assertOpen();
-    if (!app.manifest.runtime.worker) throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose a background worker.");
+    if (!app.manifest.runtime.worker) throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose a worker.");
     const tool = app.manifest.tools.find((item) => item.action === action);
     if (!tool) throw new RestrictedAppError("ACTION_UNKNOWN", "The restricted app action is not declared.");
     assertBoundedJson(input, "Restricted app input", maxInvocationBytes);
@@ -253,20 +253,30 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     }
   }
 
-  async runBackground(
+  async runAutomation(
     app: RestrictedAppRuntimeDescriptor,
-    event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string },
+    event: {
+      runId: string;
+      automationId: string;
+      handler: string;
+      reason: "scheduled" | "manual" | "resume";
+      scheduledAt: string;
+    },
+    signal?: AbortSignal,
   ): Promise<void> {
     this.#assertOpen();
-    if (!app.manifest.runtime.worker || !app.manifest.background) {
-      throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose background work.");
+    if (signal?.aborted) throw new RestrictedAppError("APP_UNAVAILABLE", "The automation was cancelled before it started.");
+    const automation = app.manifest.automations.find((item) => item.id === event.automationId && item.handler === event.handler);
+    if (!app.manifest.runtime.worker || !automation) {
+      throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose the requested automation.");
     }
-    assertBoundedJson(event, "Restricted app background event", maxInvocationBytes);
+    assertBoundedJson(event, "Restricted app automation event", maxInvocationBytes);
     const generation = this.#generation(app.workspaceId, app.manifest.id);
     const instance = await this.#instance(app, generation);
-    // #instance may await cleanup before registering a replacement launch. A
-    // grant/update/remove stop during that await must invalidate this caller's
-    // authority instead of letting it capture the post-stop generation.
+    if (signal?.aborted) {
+      await this.#destroy(instance);
+      throw new RestrictedAppError("APP_UNAVAILABLE", "The automation was cancelled before it started.");
+    }
     try {
       this.#assertLaunchCurrent(app, generation);
     } catch (error) {
@@ -274,23 +284,26 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       throw error;
     }
     if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling work.");
-    instance.pendingOperation = { kind: "background", id: randomUUID() };
+    instance.pendingOperation = { kind: "automation", id: event.runId };
     const serializedEvent = JSON.stringify(event);
-    const expression = `globalThis.__workspaceRunBackground(JSON.parse(${JSON.stringify(serializedEvent)}))`;
+    const expression = `globalThis.__workspaceRunAutomation(JSON.parse(${JSON.stringify(serializedEvent)}))`;
+    const abort = () => { void this.#destroy(instance); };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
       const envelope = await withDeadline(
         instance.window.webContents.executeJavaScript(expression, false),
         this.#invocationTimeoutMs,
-        () => this.#crash(instance, "Restricted app background work timed out."),
+        () => this.#crash(instance, "Restricted app automation timed out."),
       );
       parseInvocationEnvelope(envelope);
     } catch (error) {
       if (error instanceof RestrictedAppError) throw error;
       if (instance.crashed || instance.window.isDestroyed() || instance.window.webContents.isDestroyed()) {
-        throw new RestrictedAppError("APP_CRASHED", "The restricted app renderer stopped during background work.");
+        throw new RestrictedAppError("APP_CRASHED", "The restricted app renderer stopped during automation work.");
       }
       throw new RestrictedAppError("APP_ERROR", safeRendererError(error));
     } finally {
+      signal?.removeEventListener("abort", abort);
       instance.pendingOperation = null;
       this.#scheduleWorkerIdle(instance);
     }
@@ -851,8 +864,8 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
 
   async #handleNotification(event: IpcMainInvokeEvent, value: unknown): Promise<unknown> {
     const instance = this.#ownedInstance(event.sender, ipcFromMainFrame(event));
-    if (!instance || !("window" in instance) || instance.pendingOperation?.kind !== "background" || this.#notificationsSuspended) {
-      return hostError("NOTIFICATION_DENIED", "Notifications are available only during enabled background work.");
+    if (!instance || !("window" in instance) || instance.pendingOperation?.kind !== "automation" || this.#notificationsSuspended) {
+      return hostError("NOTIFICATION_DENIED", "Notifications are available only during an enabled automation run.");
     }
     try {
       const request = jsonEnvelope(value, maxNotificationEnvelopeBytes, "notification");
@@ -863,7 +876,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         appTitle: instance.app.manifest.title,
         declarations: instance.app.manifest.permissions.notifications,
         grants: instance.app.notificationGrants,
-        backgroundEnabled: instance.app.backgroundEnabled,
+        automationEnabled: instance.app.automations.some((automation) => automation.enabled),
         invocationId: instance.pendingOperation.id,
       }, request, (owner) => this.#onNotificationOpen?.(owner));
       return { ok: true, value: result };
@@ -1006,13 +1019,13 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         "const encode=TextEncoder.prototype.encode.bind(new TextEncoder());",
         `const ready=import(${JSON.stringify(entry)}).then((module)=>{`,
         `if(${snapshot.receipt.manifest.tools.length}>0&&typeof module.handleAction!=="function")throw new Error("Restricted app worker must export handleAction.");`,
-        `if(${snapshot.receipt.manifest.background ? "true" : "false"}&&typeof module.handleBackground!=="function")throw new Error("Restricted app worker must export handleBackground.");`,
+        `if(${snapshot.receipt.manifest.automations.length > 0 ? "true" : "false"}&&typeof module.handleAutomation!=="function")throw new Error("Restricted app worker must export handleAutomation.");`,
         "return module;",
         "});",
         `const maximum=${maxInvocationBytes};`,
         'Object.defineProperty(globalThis,"__workspaceReady",{value:ready.then(()=>true),writable:false,configurable:false});',
         'Object.defineProperty(globalThis,"__workspaceInvoke",{value:async(action,input)=>{try{const module=await ready;const value=await module.handleAction(action,input);let json;try{json=stringify(value);}catch{return "E"+stringify({code:"OUTPUT_INVALID",message:"Restricted app output must be JSON-compatible."});}if(json===undefined||encode(json).byteLength>maximum)return "E"+stringify({code:"OUTPUT_INVALID",message:"Restricted app output exceeds the size limit."});return "S"+json;}catch(error){let message="Restricted app action failed.";try{message=String(error&&error.message||message).slice(0,500);}catch{}return "E"+stringify({code:"APP_ERROR",message});}},writable:false,configurable:false});',
-        'Object.defineProperty(globalThis,"__workspaceRunBackground",{value:async(event)=>{try{const module=await ready;await module.handleBackground(event);return "Snull";}catch(error){let message="Restricted app background work failed.";try{message=String(error&&error.message||message).slice(0,500);}catch{}return "E"+stringify({code:"APP_ERROR",message});}},writable:false,configurable:false});',
+        'Object.defineProperty(globalThis,"__workspaceRunAutomation",{value:async(event)=>{try{const module=await ready;await module.handleAutomation(event);return "Snull";}catch(error){let message="Restricted app automation failed.";try{message=String(error&&error.message||message).slice(0,500);}catch{}return "E"+stringify({code:"APP_ERROR",message});}},writable:false,configurable:false});',
       ].join("\n");
       return response(request.method === "HEAD" ? null : source, 200, "text/javascript; charset=utf-8", true);
     }

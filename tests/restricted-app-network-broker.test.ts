@@ -71,12 +71,13 @@ function manifest(options: {
   origin?: string;
 } = {}): RestrictedAppManifest {
   return parseRestrictedAppManifest({
-    version: 1,
+    version: 2,
     id: "mail-app",
     title: "Mail",
     runtime: { kind: "sandboxed-web", entry: "index.html" },
     ui: {},
     tools: [],
+    automations: [],
     permissions: {
       network: [{
         id: "mail-api",
@@ -90,12 +91,13 @@ function manifest(options: {
 
 function loopbackManifest(port: number): RestrictedAppManifest {
   return parseRestrictedAppManifest({
-    version: 1,
+    version: 2,
     id: "mail-app",
     title: "Mail",
     runtime: { kind: "sandboxed-web", entry: "index.html" },
     ui: {},
     tools: [],
+    automations: [],
     permissions: {
       network: [{
         id: "local-api",

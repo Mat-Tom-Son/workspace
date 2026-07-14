@@ -64,7 +64,13 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.equal(inspected.review.manifest.id, "mail-app");
 
-    const installed = await request<{ app: { digest: string; networkGrants: string[]; fileGrants: unknown[]; notificationGrants: string[]; backgroundEnabled: boolean } }>(
+    const installed = await request<{ app: {
+      digest: string;
+      networkGrants: string[];
+      fileGrants: unknown[];
+      notificationGrants: string[];
+      automations: Array<{ id: string; enabled: boolean }>;
+    } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps`,
       { method: "POST", body: { sourcePath, expectedDigest: inspected.review.digest } },
@@ -73,7 +79,7 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     assert.deepEqual(installed.app.networkGrants, []);
     assert.deepEqual(installed.app.fileGrants, []);
     assert.deepEqual(installed.app.notificationGrants, []);
-    assert.equal(installed.app.backgroundEnabled, false);
+    assert.deepEqual(installed.app.automations, [{ id: "refresh-mail", enabled: false }]);
 
     const granted = await request<{ app: { networkGrants: string[] } }>(
       api.origin,
@@ -102,20 +108,33 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.deepEqual(notificationsRevoked.app.notificationGrants, []);
 
-    const background = await request<{ app: { backgroundEnabled: boolean } }>(
+    const automation = await request<{ app: { automations: Array<{ id: string; enabled: boolean; nextRunAt?: string }> } }>(
       api.origin,
-      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/background`,
+      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/automations/refresh-mail`,
       { method: "PUT", body: { expectedDigest: inspected.review.digest } },
     );
-    assert.equal(background.app.backgroundEnabled, true);
-    const backgroundControl = runtime.blockNextBackground();
-    const backgroundRunRequest = request<{ app: { backgroundLastRunAt?: string } }>(
+    assert.equal(automation.app.automations[0]?.enabled, true);
+    assert.ok(automation.app.automations[0]?.nextRunAt);
+    const automationControl = runtime.blockNextAutomation();
+    const automationRunRequest = request<{
+      app: { automations: Array<{ id: string; enabled: boolean; lastRunAt?: string; lastError?: string }> };
+      run: {
+        runId: string;
+        automationId: string;
+        reason: string;
+        scheduledAt: string;
+        startedAt: string;
+        finishedAt: string;
+        outcome: string;
+        error?: string;
+      };
+    }>(
       api.origin,
-      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/background/run`,
+      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/automations/refresh-mail/run`,
       { method: "POST", body: { expectedDigest: inspected.review.digest } },
     );
     try {
-      await backgroundControl.started;
+      await automationControl.started;
       const blockedMutation = await fetch(
         `${api.origin}/api/workspaces/${workspace.id}/restricted-apps/mail-app/permissions/network/mail-api`,
         {
@@ -124,13 +143,38 @@ test("restricted app API keeps review, install, grants, connections, invocation,
           body: JSON.stringify({ expectedDigest: inspected.review.digest }),
         },
       );
-      assert.equal(blockedMutation.status, 409, "a manual background run must reserve the Space capability-mutation lane");
+      assert.equal(blockedMutation.status, 409, "a manual automation run must reserve the Space capability-mutation lane");
     } finally {
-      backgroundControl.release();
+      automationControl.release();
     }
-    const backgroundRun = await backgroundRunRequest;
-    assert.ok(backgroundRun.app.backgroundLastRunAt);
-    assert.equal(runtime.backgroundRuns.length, 1);
+    const automationRun = await automationRunRequest;
+    assert.equal(automationRun.app.automations[0]?.id, "refresh-mail");
+    assert.equal(automationRun.app.automations[0]?.enabled, true);
+    assert.ok(automationRun.app.automations[0]?.lastRunAt);
+    assert.equal(automationRun.app.automations[0]?.lastError, undefined);
+    assert.equal(automationRun.run.automationId, "refresh-mail");
+    assert.equal(automationRun.run.reason, "manual");
+    assert.equal(automationRun.run.outcome, "success");
+    assert.equal(automationRun.run.error, undefined);
+    assert.ok(automationRun.run.runId);
+    assert.match(automationRun.run.scheduledAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.match(automationRun.run.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.match(automationRun.run.finishedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(runtime.automationRuns.length, 1);
+    assert.equal(runtime.automationRuns[0]?.event.runId, automationRun.run.runId);
+    assert.equal(runtime.automationRuns[0]?.event.automationId, "refresh-mail");
+    assert.equal(runtime.automationRuns[0]?.event.handler, "refresh-mail");
+    assert.equal(runtime.automationRuns[0]?.event.reason, "manual");
+    assert.equal(runtime.automationRuns[0]?.event.scheduledAt, automationRun.run.scheduledAt);
+    assert.deepEqual(runtime.automationRuns[0]?.app.networkGrants, ["mail-api"]);
+    assert.deepEqual(runtime.automationRuns[0]?.app.fileGrants.map((grant) => grant.declarationId), ["exports"]);
+    assert.deepEqual(runtime.automationRuns[0]?.app.notificationGrants, []);
+
+    const automationRuns = await request<{ runs: Array<typeof automationRun.run> }>(
+      api.origin,
+      `/api/workspaces/${workspace.id}/restricted-apps/mail-app/automations/refresh-mail/runs?expectedDigest=${inspected.review.digest}`,
+    );
+    assert.deepEqual(automationRuns.runs, [automationRun.run]);
 
     await storage.set({ workspaceId: workspace.id, appId: "mail-app" }, "view", { folder: "inbox" });
     const usage = await request<{ usage: { keyCount: number } }>(
@@ -296,7 +340,7 @@ async function writePackage(root: string): Promise<void> {
       agentApp: "agent-app.json",
     }), "utf8"),
     writeFile(join(root, "agent-app.json"), JSON.stringify({
-      version: 1,
+      version: 2,
       id: "mail-app",
       title: "Mail",
       runtime: { kind: "sandboxed-web", entry: "index.html", worker: "worker.js" },
@@ -318,7 +362,19 @@ async function writePackage(root: string): Promise<void> {
           additionalProperties: false,
         },
       }],
-      background: { intervalMinutes: 30 },
+      automations: [{
+        id: "refresh-mail",
+        title: "Refresh mail",
+        handler: "refresh-mail",
+        trigger: { kind: "interval", intervalMinutes: 30 },
+        permissions: {
+          network: ["mail-api"],
+          files: ["exports"],
+          notifications: ["new-mail"],
+        },
+        catchUp: "latest",
+        overlap: "skip",
+      }],
       permissions: {
         files: [{ id: "exports", target: "directory", access: "read-write" }],
         notifications: [{ id: "new-mail", title: "New mail", description: "New messages are ready." }],
@@ -335,33 +391,48 @@ async function writePackage(root: string): Promise<void> {
     }), "utf8"),
     writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8"),
     writeFile(join(root, "app.js"), "export {};\n", "utf8"),
-    writeFile(join(root, "worker.js"), "export async function handleAction() { return { count: 3 }; }\nexport async function handleBackground() {}\n", "utf8"),
+    writeFile(join(root, "worker.js"), "export async function handleAction() { return { count: 3 }; }\nexport async function handleAutomation() {}\n", "utf8"),
   ]);
 }
 
 class RuntimeHost implements RestrictedAppRuntimeHost {
   readonly invocations: Array<{ app: RestrictedAppRuntimeDescriptor; action: string; input: unknown }> = [];
-  readonly backgroundRuns: Array<{ app: RestrictedAppRuntimeDescriptor; event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string } }> = [];
-  #backgroundBlock?: { started: () => void; release: Promise<void> };
+  readonly automationRuns: Array<{
+    app: RestrictedAppRuntimeDescriptor;
+    event: {
+      runId: string;
+      automationId: string;
+      handler: string;
+      reason: "scheduled" | "manual" | "resume";
+      scheduledAt: string;
+    };
+  }> = [];
+  #automationBlock?: { started: () => void; release: Promise<void> };
   async invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown> {
     this.invocations.push({ app: structuredClone(app), action, input: structuredClone(input) });
     return { count: 3 };
   }
-  async runBackground(app: RestrictedAppRuntimeDescriptor, event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string }): Promise<void> {
-    this.backgroundRuns.push({ app: structuredClone(app), event: structuredClone(event) });
-    const block = this.#backgroundBlock;
-    this.#backgroundBlock = undefined;
+  async runAutomation(app: RestrictedAppRuntimeDescriptor, event: {
+    runId: string;
+    automationId: string;
+    handler: string;
+    reason: "scheduled" | "manual" | "resume";
+    scheduledAt: string;
+  }): Promise<void> {
+    this.automationRuns.push({ app: structuredClone(app), event: structuredClone(event) });
+    const block = this.#automationBlock;
+    this.#automationBlock = undefined;
     block?.started();
     if (block) await block.release;
   }
-  blockNextBackground(): { started: Promise<void>; release(): void } {
+  blockNextAutomation(): { started: Promise<void>; release(): void } {
     let started!: () => void;
     let release!: () => void;
     const result = {
       started: new Promise<void>((resolvePromise) => { started = resolvePromise; }),
       release: () => release(),
     };
-    this.#backgroundBlock = {
+    this.#automationBlock = {
       started,
       release: new Promise<void>((resolvePromise) => { release = resolvePromise; }),
     };

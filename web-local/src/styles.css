@@ -1729,7 +1729,8 @@ textarea,
 }
 
 .confirm-dialog-backdrop {
-  z-index: 80;
+  /* Confirmations can be requested from inside capability details dialogs. */
+  z-index: 520;
 }
 
 .confirm-dialog {

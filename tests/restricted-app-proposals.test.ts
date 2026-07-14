@@ -37,9 +37,9 @@ test("propose_space_app exposes only a Space-relative path and returns the host-
   assert.deepEqual(Object.keys((tool.parameters as any).properties), ["sourcePath"]);
   assert.equal((tool.parameters as any).additionalProperties, false);
   const guidance = tool.promptGuidelines?.join("\n") ?? "";
-  assert.match(guidance, /agent-app\.json version 1/);
+  assert.match(guidance, /agent-app\.json version 2/);
   assert.match(guidance, /workspaceRestrictedApp/);
-  assert.match(guidance, /handleBackground/);
+  assert.match(guidance, /handleAutomation/);
   assert.match(guidance, /oauth2-pkce/);
 
   const result = await tool.execute("call-1", { sourcePath: " apps/mail " }, undefined, undefined, {} as any);
@@ -47,7 +47,7 @@ test("propose_space_app exposes only a Space-relative path and returns the host-
   const text = result.content.find((item) => item.type === "text")?.text ?? "";
   assert.match(text, /human review/i);
   assert.match(text, /no code was executed or installed/i);
-  assert.match(text, /no network, file, or notification access, credential, or background work was granted/i);
+  assert.match(text, /no network, file, or notification access, credential, or automation was enabled/i);
 });
 
 test("proposal receipts persist, remain Chat-bound, and install only the exact reviewed revision with grants off", async () => {
@@ -120,12 +120,13 @@ async function writePackage(root: string): Promise<void> {
       agentApp: "agent-app.json",
     }), "utf8"),
     writeFile(join(root, "agent-app.json"), JSON.stringify({
-      version: 1,
+      version: 2,
       id: "proposal-mail",
       title: "Proposal mail",
       runtime: { kind: "sandboxed-web", entry: "index.html" },
       ui: { icon: "mail" },
       tools: [],
+      automations: [],
       permissions: { network: [] },
     }), "utf8"),
     writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8"),
@@ -146,12 +147,13 @@ function proposalFixture(input: { workspaceId: string; workspaceRoot: string; co
       version: "0.1.0",
       digest: "a".repeat(64),
       manifest: {
-        version: 1 as const,
+        version: 2 as const,
         id: "proposal-mail",
         title: "Proposal mail",
         runtime: { kind: "sandboxed-web" as const, entry: "index.html" },
         ui: { icon: "mail" },
         tools: [],
+        automations: [],
         permissions: { network: [] },
       },
       fileCount: 4,

@@ -31,7 +31,7 @@ flowchart LR
 
 Domain services still own writes. The kernel does not bypass folder grants, registered-Space authorization, capability-mutation locks, History behavior, or any other mutation policy.
 
-The dotted restricted-app edge is a boundary, not a data flow into the kernel. Space apps have their own reviewed package, grant, encrypted connection, storage, background, notification, and sandbox-host state. Protocol v1 and `workspace.capabilities` intentionally do not list or mutate that state. Future app inventory belongs in a deliberately versioned kernel snapshot only after its content and authorization contract are designed.
+The dotted restricted-app edge is a boundary, not a data flow into the kernel. Space apps have their own reviewed package, grant, encrypted connection, storage, named-automation, notification, and sandbox-host state. Protocol v1 and `workspace.capabilities` intentionally do not list or mutate that state. The machine-wide automation scheduler is an in-process execution coordinator for that domain, not a management-protocol mutation surface. Future app inventory belongs in a deliberately versioned kernel snapshot only after its content and authorization contract are designed.
 
 ## Kernel contract
 
@@ -138,10 +138,10 @@ It does **not** yet provide:
 - imperative APIs for full-trust Pi Extensions to dynamically create or mutate rail items, panes, or tabs beyond the static `surface.json` contribution contract (restricted Space apps already have their separate host-owned navigator and tab bridge);
 - a verified registry that binds a Space-local service to a Workspace-launched process generation;
 - host-owned remote subscriptions or arbitrary push adapters for restricted
-  apps (static reviewed background notifications are already supported);
+  apps (static reviewed automation notifications are already supported);
 - resource isolation comparable to a mobile operating system; the shipped Chromium hosts and brokers do not eliminate renderer exploits or CPU/memory denial-of-service risk.
 
-Restricted apps already have an explicit package, permission, lifecycle, sandbox-host, connection, storage, file-grant, background-work, and UI-surface model. The remaining features should extend those contracts and the kernel's read authority instead of reaching around either boundary.
+Restricted apps already have an explicit package, permission, lifecycle, sandbox-host, connection, storage, file-grant, named-automation, run-receipt, and UI-surface model. The remaining features should extend those contracts and the kernel's read authority instead of reaching around either boundary.
 
 ## Implementation and verification map
 
@@ -155,6 +155,7 @@ Restricted apps already have an explicit package, permission, lifecycle, sandbox
 | Installer shims and PATH integration | `desktop/cli/`, `desktop/nsis/cli-path.nsh` | `tests/desktop-cli-packaging.test.ts` |
 | Real Pi turn driver | `scripts/workspace-drive.ts` | Exercised against the local API when provider credentials are available. |
 | Restricted app review, grants, lifecycle, and storage | `src/local/agent/restricted-app-*.ts` | `tests/restricted-app-*.test.ts` |
+| Machine-wide restricted-app automation scheduling | `src/local/agent/workspace-automation-service.ts` | `tests/workspace-automation-service.test.ts` plus restricted-app service/API tests |
 | Visible and worker sandbox hosts | `desktop/src/restricted-app-host.ts`, `desktop/src/restricted-app-preload.cts` | `npm run desktop:restricted-app:smoke` plus focused host/broker tests. |
 
 See [Architecture](architecture.md) for the surrounding process boundaries, [Product model](product-model.md) for the user-facing mental model, and [Windows build](windows-build.md) for packaging and release verification.

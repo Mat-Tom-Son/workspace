@@ -3,8 +3,8 @@
 This package exercises Workspace's dynamic restricted-app runtime: a real
 interactive rail navigator, persistent Space-owned tabs, brokered public
 HTTPS, a numeric loopback service panel, durable app storage, a reviewed
-Space-folder export, an optional Assistant/background worker, and a reviewed
-static notification category for completed background syncs.
+Space-folder export, an optional worker, a named inbox-refresh automation, and
+a reviewed static notification category for completed automation runs.
 
 Use the canonical [Restricted app authoring guide](../../../docs/restricted-app-authoring.md)
 for the complete package and bridge contract, and
@@ -16,12 +16,12 @@ security architecture.
 - `index.html`, `styles.css`, and `app.js` form the sandboxed app UI. The same
   code adapts to the rail navigator and app-owned work tabs using
   `workspaceRestrictedApp.context`.
-- `worker.js` exposes an Assistant action and a user-enabled background sync;
-  that sync records its remote result and may select the separately granted
-  `inbox-check-finished` notification.
+- `worker.js` exposes an Assistant action and the `refresh-inbox` automation;
+  that automation records its remote result and may select the separately
+  granted `inbox-refresh-finished` notification.
 - Network calls and tab creation go through the narrow
   `workspaceRestrictedApp` bridge; the app has no Node, filesystem, process,
-  or direct network access. Search and background-check state use the host
+  or direct network access. Search and automation status use the host
   storage bridge, active visible UI re-reads after bounded invalidation hints,
   and service exports use a separately granted Space folder plus History
   safety.
@@ -62,18 +62,19 @@ port before brokering a request; it does not verify that this particular
 process owns the port. Stop the helper from its terminal when testing is done.
 
 Notifications are separately off after installation. If allowed, they can be
-shown only during enabled background work while Workspace is running, using
+shown only during an enabled automation run while Workspace is running, using
 the exact title and body reviewed in `agent-app.json`; app code cannot supply
-dynamic notification copy, actions, or URLs.
+dynamic notification copy, actions, or URLs. An explicit **Run now** while the
+automation is disabled has no notification authority.
 
-## Hands-on background check
+## Hands-on automation
 
 1. Open this app and choose **View all** so its Inbox work tab remains selected
    on the right.
-2. Open **Capabilities** on the left, expand this app, enable background work,
-   and choose **Allow notifications** for **Inbox check finished**. The
+2. Open **Capabilities** on the left, expand this app, enable **Refresh inbox**,
+   and choose **Allow notifications** for **Inbox refresh finished**. The
    `mail-api` network grant may remain off.
-3. Choose **Run now**. The selected Inbox tab updates its background-check card
+3. Choose **Run now**. The selected Inbox tab updates its automation-status card
    from a live `storage.onChanged` hint, including the storage revision and the
    honest network outcome. A granted notification is also requested even when
    the fake endpoint is denied or unavailable.

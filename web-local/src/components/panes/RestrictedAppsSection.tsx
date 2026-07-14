@@ -3,6 +3,7 @@ import {
   Add16Regular,
   Alert20Regular,
   ArrowSync16Regular,
+  Clock20Regular,
   Delete16Regular,
   Dismiss20Regular,
   Info20Regular,
@@ -19,16 +20,19 @@ import {
   getRestrictedAppStorageUsage,
   inspectRestrictedApp,
   installRestrictedApp,
+  listRestrictedAppAutomationRuns,
   listRestrictedAppConnections,
   removeRestrictedApp,
-  runRestrictedAppBackgroundNow,
-  setRestrictedAppBackgroundEnabled,
+  runRestrictedAppAutomationNow,
+  setRestrictedAppAutomationEnabled,
   setRestrictedAppConnection,
   setRestrictedAppFileGrant,
   setRestrictedAppNetworkGrant,
   setRestrictedAppNotificationGrant,
 } from "../../lib/restricted-apps";
 import type {
+  RestrictedAppAutomation,
+  RestrictedAppAutomationRunReceipt,
   RestrictedAppAuthDeclaration,
   RestrictedAppConnectionStatus,
   RestrictedAppCredential,
@@ -109,7 +113,7 @@ export function RestrictedAppsSection({
       setReview(null);
       setSourcePath("");
       setSelectedAppId(app.manifest.id);
-      showToast({ text: `${app.manifest.title} installed with network, file, notification, and background access off.`, tone: "success" });
+      showToast({ text: `${app.manifest.title} installed with network, file, notification, and scheduled execution off.`, tone: "success" });
     } catch (caught) {
       if (workspaceIdRef.current === workspaceId) onError(errorText(caught));
     } finally {
@@ -148,7 +152,7 @@ export function RestrictedAppsSection({
         </div>
         {apps.length ? <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={onBuildApp}><Add16Regular />Build with Assistant</button> : null}
       </div>
-      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Installing gives an app bounded local storage, but no network, Space-file, notification, or background access. You approve those powers separately.</p>
+      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Installing gives an app bounded local storage, but no network, Space-file, notification, or scheduled execution. You approve those powers separately.</p>
       {loading && !apps.length ? <div className="restricted-apps-loading"><ArrowSync16Regular className="spin" />Loading sandboxed apps</div> : null}
       {apps.length ? (
         <div className="restricted-app-list">
@@ -158,9 +162,9 @@ export function RestrictedAppsSection({
                 <div className="restricted-app-card-title"><strong>{app.manifest.title}</strong><span>Extension · Sandboxed app</span></div>
                 <p>{app.manifest.description || "A Space-bound app running in Workspace's restricted browser runtime."}</p>
                 <div className="restricted-app-card-meta"><span>This Space</span><span>{app.packageName} {app.version}</span><span>Interactive app UI</span></div>
-                <small>{app.manifest.tools.length} {app.manifest.tools.length === 1 ? "action" : "actions"} · {app.networkGrants.length}/{app.manifest.permissions.network.length} network · {app.fileGrants.length}/{app.manifest.permissions.files.length} files · {app.notificationGrants.length}/{app.manifest.permissions.notifications.length} notifications{app.manifest.background ? ` · background ${app.backgroundEnabled ? "on" : "off"}` : ""}</small>
+                <small>{app.manifest.tools.length} {app.manifest.tools.length === 1 ? "action" : "actions"} · {app.networkGrants.length}/{app.manifest.permissions.network.length} network · {app.fileGrants.length}/{app.manifest.permissions.files.length} files · {app.notificationGrants.length}/{app.manifest.permissions.notifications.length} notifications{app.manifest.automations.length ? ` · ${app.automations.filter((automation) => automation.enabled).length}/${app.manifest.automations.length} automations on` : ""}</small>
               </div>
-              <div className="restricted-app-card-actions"><span className="professional-status-badge enabled">Restricted runtime</span><button className="professional-button professional-button-secondary" type="button" onClick={() => setSelectedAppId(app.manifest.id)}>{app.manifest.permissions.network.length || app.manifest.permissions.files.length || app.manifest.permissions.notifications.length || app.manifest.background ? "Manage access" : "Manage"}</button></div>
+              <div className="restricted-app-card-actions"><span className="professional-status-badge enabled">Restricted runtime</span><button className="professional-button professional-button-secondary" type="button" onClick={() => setSelectedAppId(app.manifest.id)}>{app.manifest.permissions.network.length || app.manifest.permissions.files.length || app.manifest.permissions.notifications.length || app.manifest.automations.length ? "Manage access" : "Manage"}</button></div>
             </article>
           ))}
         </div>
@@ -216,8 +220,8 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
       <div className="capability-dialog-body">
         <ReviewDeclarations review={review} />
         <details className="restricted-app-package-details"><summary>Package details</summary><dl className="capability-review-facts"><div><dt>Source</dt><dd>{sourcePath}</dd></div><div><dt>Package</dt><dd>{review.packageName} {review.version}</dd></div><div><dt>Files</dt><dd>{review.fileCount} · {formatBytes(review.totalBytes)}</dd></div><div><dt>Browser entry</dt><dd>{review.manifest.runtime.entry}</dd></div><div><dt>Reviewed revision</dt><dd><code>{shortDigest(review.digest)}</code></dd></div></dl></details>
-        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Installing grants no network destinations, Space files, notifications, or background execution; you approve those later in app details.</p></div></aside>
-        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the installed revision</strong><p>The updated app starts with network and notification permissions off and must have its access approved again.</p></div></aside> : null}
+        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Installing grants no network destinations, Space files, notifications, or scheduled execution; you approve those later in app details.</p></div></aside>
+        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the installed revision</strong><p>The updated app starts with network, file, notification, and automation permissions off and must have its access approved again.</p></div></aside> : null}
         {installDisabled && !busy ? <p className="restricted-app-install-wait">Finish the current Assistant turn before installing this reviewed revision.</p> : null}
       </div>
       <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onClose}>{closeLabel}</button><button className="professional-button professional-button-primary" type="button" disabled={busy || installDisabled} onClick={onInstall}>{busy ? <ArrowSync16Regular className="spin" /> : null}{installLabel ?? (updating ? "Review update" : "Install, then review access")}</button></div>
@@ -227,8 +231,9 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
 
 function ReviewDeclarations({ review }: { review: RestrictedAppReview }) {
   return <div className="restricted-app-review-groups">
-    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.permissions.notifications.length ? <div>{review.manifest.permissions.notifications.map((permission) => <article key={permission.id}><strong>Workspace · {review.manifest.title} — {permission.title}</strong><span>{permission.description}</span><small>Static Windows notification · {permission.id}</small></article>)}</div> : <p>No notifications requested.</p>}{review.manifest.background ? <p>May run its sandboxed worker every {review.manifest.background.intervalMinutes} minutes after you enable it.</p> : <p>No background work requested.</p>}</section>
-    <section><h3>What it adds</h3><p>Adds an interactive app destination to this Space’s rail. The app can open, update, and close Space-owned work tabs through Workspace.</p>{review.manifest.tools.length ? <div>{review.manifest.tools.map((tool) => <article key={tool.name}><strong>{tool.name}</strong><span>{tool.description}</span><code>{tool.action}</code></article>)}</div> : <p>No background Assistant actions.</p>}</section>
+    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.permissions.notifications.length ? <div>{review.manifest.permissions.notifications.map((permission) => <article key={permission.id}><strong>Workspace · {review.manifest.title} — {permission.title}</strong><span>{permission.description}</span><small>Static Windows notification · {permission.id}</small></article>)}</div> : <p>No notifications requested.</p>}</section>
+    <section><h3>Automations</h3>{review.manifest.automations.length ? <><p>Each reviewed schedule installs off and must be enabled separately.</p><div>{review.manifest.automations.map((automation) => <article key={automation.id}><strong>{automation.title}</strong><span>{automation.description || `Runs the ${automation.handler} handler.`}</span><small>{formatAutomationSchedule(automation)} · {automation.catchUp === "latest" ? "Runs the latest missed occurrence after resume" : "Does not catch up missed occurrences"} · Overlapping runs are skipped</small><small>Power subset: {automationPowerSummary(review.manifest, automation)}</small><code>{automation.handler}</code></article>)}</div></> : <p>No scheduled automations.</p>}</section>
+    <section><h3>What it adds</h3><p>Adds an interactive app destination to this Space’s rail. The app can open, update, and close Space-owned work tabs through Workspace.</p>{review.manifest.tools.length ? <div>{review.manifest.tools.map((tool) => <article key={tool.name}><strong>{tool.name}</strong><span>{tool.description}</span><code>{tool.action}</code></article>)}</div> : <p>No Assistant actions.</p>}</section>
   </div>;
 }
 
@@ -243,6 +248,10 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
 }) {
   const [connections, setConnections] = useState<RestrictedAppConnectionStatus[]>([]);
   const [storageUsage, setStorageUsage] = useState<RestrictedAppStorageUsage | null>(null);
+  const [automationRuns, setAutomationRuns] = useState<Record<string, RestrictedAppAutomationRunReceipt[]>>({});
+  const [automationRunLoading, setAutomationRunLoading] = useState<Record<string, boolean>>({});
+  const [automationRunErrors, setAutomationRunErrors] = useState<Record<string, string>>({});
+  const automationRunRequests = useRef(new Set<string>());
   const [connectionLoading, setConnectionLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const dialogRef = useModalDialog({ onClose, blocked: busy || Boolean(actionBusy) });
@@ -261,6 +270,13 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     void storage.then((value) => { if (!cancelled) setStorageUsage(value); }).catch((caught) => { if (!cancelled) onError(errorText(caught)); });
     return () => { cancelled = true; };
   }, [app.digest, app.manifest.id, app.workspaceId, fixtureMode, onError]);
+
+  useEffect(() => {
+    automationRunRequests.current.clear();
+    setAutomationRuns({});
+    setAutomationRunLoading({});
+    setAutomationRunErrors({});
+  }, [app.digest, app.manifest.id, app.workspaceId]);
 
   async function changeGrant(destination: RestrictedAppNetworkDestination, granted: boolean) {
     if (granted) {
@@ -344,7 +360,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     if (granted) {
       const confirmed = await requestConfirm({
         title: `Allow “${permission.title}” notifications?`,
-        body: `${app.manifest.title} may show this exact notification only during enabled background work while Workspace is running.\n\nTitle: Workspace · ${app.manifest.title} — ${permission.title}\nBody: ${permission.description}`,
+        body: `${app.manifest.title} may show this exact notification only during an enabled automation while Workspace is running.\n\nTitle: Workspace · ${app.manifest.title} — ${permission.title}\nBody: ${permission.description}`,
         confirmLabel: "Allow notifications",
       });
       if (!confirmed) return;
@@ -360,32 +376,58 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     finally { setActionBusy(null); }
   }
 
-  async function changeBackground(enabled: boolean) {
+  async function changeAutomation(automation: RestrictedAppAutomation, enabled: boolean) {
     if (enabled) {
       const confirmed = await requestConfirm({
-        title: `Allow ${app.manifest.title} to run in the background?`,
-        body: `Its sandboxed worker may run about every ${app.manifest.background?.intervalMinutes} minutes while Workspace is running. It can use only currently granted connections and files.`,
-        confirmLabel: "Enable background work",
+        title: `Enable ${automation.title}?`,
+        body: `${app.manifest.title} may run this automation ${formatAutomationSchedule(automation).toLowerCase()} while Workspace is running. Its reviewed power subset is ${automationPowerSummary(app.manifest, automation)}. Those powers still require their separate grants.`,
+        confirmLabel: "Enable automation",
       });
       if (!confirmed) return;
     }
-    setActionBusy("background");
+    const key = `automation:${automation.id}`;
+    setActionBusy(key);
     try {
-      const updated = fixtureMode ? { ...app, backgroundEnabled: enabled } : await setRestrictedAppBackgroundEnabled(app.workspaceId, app.manifest.id, app.digest, enabled);
+      const updated = fixtureMode
+        ? { ...app, automations: app.automations.map((state) => state.id === automation.id ? { ...state, enabled, nextRunAt: enabled ? nextAutomationRunAt(automation) : undefined } : state) }
+        : await setRestrictedAppAutomationEnabled(app.workspaceId, app.manifest.id, automation.id, app.digest, enabled);
       onAppChanged(updated);
-      showToast({ text: `Background work ${enabled ? "enabled" : "disabled"}.`, tone: "success" });
+      showToast({ text: `${automation.title} ${enabled ? "enabled" : "disabled"}.`, tone: "success" });
     } catch (caught) { onError(errorText(caught)); }
     finally { setActionBusy(null); }
   }
 
-  async function runBackground() {
-    setActionBusy("background-run");
+  async function runAutomation(automation: RestrictedAppAutomation) {
+    const key = `automation-run:${automation.id}`;
+    setActionBusy(key);
     try {
-      const updated = fixtureMode ? { ...app, backgroundLastRunAt: new Date().toISOString(), backgroundLastError: undefined } : await runRestrictedAppBackgroundNow(app.workspaceId, app.manifest.id, app.digest);
-      onAppChanged(updated);
-      showToast({ text: "Background work completed.", tone: "success" });
+      const result = fixtureMode
+        ? fixtureAutomationRun(app, automation)
+        : await runRestrictedAppAutomationNow(app.workspaceId, app.manifest.id, automation.id, app.digest);
+      onAppChanged(result.app);
+      setAutomationRuns((current) => ({ ...current, [automation.id]: [result.run, ...(current[automation.id] ?? []).filter((run) => run.runId !== result.run.runId)].slice(0, 20) }));
+      setAutomationRunErrors((current) => ({ ...current, [automation.id]: "" }));
+      showToast({ text: automationRunToast(automation, result.run), tone: result.run.outcome === "success" ? "success" : "info" });
     } catch (caught) { onError(errorText(caught)); }
     finally { setActionBusy(null); }
+  }
+
+  async function loadAutomationRuns(automation: RestrictedAppAutomation) {
+    if (Object.prototype.hasOwnProperty.call(automationRuns, automation.id) || automationRunRequests.current.has(automation.id)) return;
+    automationRunRequests.current.add(automation.id);
+    setAutomationRunLoading((current) => ({ ...current, [automation.id]: true }));
+    setAutomationRunErrors((current) => ({ ...current, [automation.id]: "" }));
+    try {
+      const runs = fixtureMode
+        ? fixtureAutomationRuns(automation)
+        : await listRestrictedAppAutomationRuns(app.workspaceId, app.manifest.id, automation.id, app.digest);
+      setAutomationRuns((current) => ({ ...current, [automation.id]: runs }));
+    } catch (caught) {
+      setAutomationRunErrors((current) => ({ ...current, [automation.id]: errorText(caught) }));
+    } finally {
+      automationRunRequests.current.delete(automation.id);
+      setAutomationRunLoading((current) => ({ ...current, [automation.id]: false }));
+    }
   }
 
   async function clearStorage() {
@@ -444,11 +486,28 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
               <div className="restricted-app-destination-heading"><div><strong>Workspace · {app.manifest.title} — {permission.title}</strong><span>{permission.description}</span></div><code>{permission.id}</code></div>
               <div className="restricted-app-destination-states"><span className={granted ? "enabled" : ""}>Access: <strong>{granted ? "Allowed" : "Off"}</strong></span><span>Copy: <strong>Fixed to this reviewed revision</strong></span></div>
               <div className="restricted-app-destination-actions"><button className={granted ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={Boolean(actionBusy)} onClick={() => void changeNotificationGrant(permission, !granted)}>{actionBusy === `notification:${permission.id}` ? <ArrowSync16Regular className="spin" /> : null}{granted ? "Revoke notifications" : "Allow notifications"}</button></div>
-              <p className="restricted-app-oauth-note">Shown only from enabled background work while Workspace is running. Windows notification settings can still suppress it. Clicking opens this app in its owning Space.</p>
+              <p className="restricted-app-oauth-note">Shown only from an enabled automation while Workspace is running. Windows notification settings can still suppress it. Clicking opens this app in its owning Space.</p>
             </article>;
           })}
         </section>
-        {app.manifest.background ? <section className="restricted-app-lifecycle"><div><h3>Background work</h3><p>Every {app.manifest.background.intervalMinutes} minutes while Workspace is running · {app.backgroundLastRunAt ? `Last ran ${formatTimestamp(app.backgroundLastRunAt)}` : "Not run yet"}{app.backgroundLastError ? ` · Last error: ${app.backgroundLastError}` : ""}</p></div><div className="restricted-app-destination-actions"><button className="professional-button professional-button-secondary" type="button" disabled={Boolean(actionBusy) || !app.backgroundEnabled} onClick={() => void runBackground()}>{actionBusy === "background-run" ? <ArrowSync16Regular className="spin" /> : null}Run now</button><button className={app.backgroundEnabled ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={Boolean(actionBusy)} onClick={() => void changeBackground(!app.backgroundEnabled)}>{actionBusy === "background" ? <ArrowSync16Regular className="spin" /> : null}{app.backgroundEnabled ? "Disable" : "Enable"}</button></div></section> : null}
+        <section className="restricted-app-connections" aria-labelledby="restricted-app-automations-title">
+          <div className="restricted-app-connections-heading"><div><Clock20Regular aria-hidden="true" /><h3 id="restricted-app-automations-title">Automations</h3></div></div>
+          {app.manifest.automations.length ? <><p>Schedules are reviewed with the app and install off. Enable each one separately; Run now is an explicit one-off.</p>
+          {app.manifest.automations.map((automation) => <AutomationCard
+            key={automation.id}
+            app={app}
+            automation={automation}
+            state={app.automations.find((item) => item.id === automation.id)}
+            runs={automationRuns[automation.id]}
+            runsLoading={Boolean(automationRunLoading[automation.id])}
+            runsError={automationRunErrors[automation.id]}
+            busy={Boolean(actionBusy)}
+            activeBusyKey={actionBusy}
+            onEnabledChange={(enabled) => void changeAutomation(automation, enabled)}
+            onRun={() => void runAutomation(automation)}
+            onLoadRuns={() => void loadAutomationRuns(automation)}
+          />)}</> : <p>This app declares no scheduled automations.</p>}
+        </section>
         <section className="restricted-app-lifecycle"><div><h3>Local app data</h3><p>{storageUsage ? `${formatBytes(storageUsage.usageBytes)} of ${formatBytes(storageUsage.quotaBytes)} · ${storageUsage.keyCount} of ${storageUsage.keyLimit} keys` : "Checking usage…"} · Machine-local and preserved across app updates</p></div><button className="professional-button professional-button-secondary" type="button" disabled={Boolean(actionBusy) || !storageUsage?.keyCount} onClick={() => void clearStorage()}>{actionBusy === "storage" ? <ArrowSync16Regular className="spin" /> : null}Clear data</button></section>
         <details className="restricted-app-package-details"><summary>Package & runtime</summary><dl className="capability-review-facts"><div><dt>Package</dt><dd>{app.packageName} {app.version}</dd></div><div><dt>Installed revision</dt><dd><code>{shortDigest(app.digest)}</code></dd></div><div><dt>Runtime</dt><dd>Sandboxed web app</dd></div><div><dt>UI entry</dt><dd>{app.manifest.runtime.entry}</dd></div><div><dt>Worker</dt><dd>{app.manifest.runtime.worker ?? "None"}</dd></div></dl></details>
         <section className="restricted-app-lifecycle"><div><h3>Lifecycle</h3><p>Installed {formatTimestamp(app.installedAt)} · Updated {formatTimestamp(app.updatedAt)}</p></div><button className="professional-button professional-button-danger" type="button" disabled={busy || Boolean(actionBusy)} onClick={onRemove}><Delete16Regular />Remove app</button></section>
@@ -456,6 +515,48 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
       <div className="capability-dialog-footer restricted-app-details-footer"><button className="professional-button professional-button-primary" type="button" disabled={busy || Boolean(actionBusy)} onClick={onClose}>Done</button></div>
     </section>
   </div>;
+}
+
+function AutomationCard({ app, automation, state, runs, runsLoading, runsError, busy, activeBusyKey, onEnabledChange, onRun, onLoadRuns }: {
+  app: RestrictedAppInstalled;
+  automation: RestrictedAppAutomation;
+  state?: RestrictedAppInstalled["automations"][number];
+  runs?: RestrictedAppAutomationRunReceipt[];
+  runsLoading: boolean;
+  runsError?: string;
+  busy: boolean;
+  activeBusyKey: string | null;
+  onEnabledChange: (enabled: boolean) => void;
+  onRun: () => void;
+  onLoadRuns: () => void;
+}) {
+  const enabled = state?.enabled ?? false;
+  const notificationNote = automation.permissions.notifications.length
+    ? "Run now works while the schedule is off, but Windows notifications remain available only when this automation is enabled."
+    : "Run now is available while the schedule is off and does not enable future runs.";
+  return <article className="restricted-app-destination-card">
+    <div className="restricted-app-destination-heading"><div><strong>{automation.title}</strong><span>{automation.description || `Runs the ${automation.handler} worker handler.`}</span></div><code>{automation.id}</code></div>
+    <div className="restricted-app-destination-states">
+      <span className={enabled ? "enabled" : ""}>Schedule: <strong>{enabled ? "On" : "Off"}</strong></span>
+      <span>Frequency: <strong>{formatAutomationSchedule(automation)}</strong></span>
+      <span>Next: <strong>{enabled ? state?.nextRunAt ? formatTimestamp(state.nextRunAt) : "Pending" : "Not scheduled"}</strong></span>
+      <span>Last run: <strong>{state?.lastRunAt ? formatTimestamp(state.lastRunAt) : "Not run yet"}</strong></span>
+    </div>
+    <p className="restricted-app-oauth-note"><strong>Power subset:</strong> {automationPowerSummary(app.manifest, automation)} · {automationGrantedPowerSummary(app, automation)}</p>
+    <p className="restricted-app-oauth-note">Worker handler <code>{automation.handler}</code> · {automation.catchUp === "latest" ? "Latest missed occurrence runs after resume" : "Missed occurrences are not run"} · Overlapping runs are skipped.</p>
+    {state?.lastError ? <p className="restricted-app-oauth-note"><strong>Last error:</strong> {state.lastError}</p> : null}
+    <div className="restricted-app-destination-actions">
+      <button className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onRun}>{activeBusyKey === `automation-run:${automation.id}` ? <ArrowSync16Regular className="spin" /> : null}Run now</button>
+      <button className={enabled ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={busy} onClick={() => onEnabledChange(!enabled)}>{activeBusyKey === `automation:${automation.id}` ? <ArrowSync16Regular className="spin" /> : null}{enabled ? "Disable" : "Enable"}</button>
+    </div>
+    <p className="restricted-app-oauth-note">{notificationNote}</p>
+    <details className="restricted-app-connect-details" onToggle={(event) => { if (event.currentTarget.open) onLoadRuns(); }}>
+      <summary>Recent runs</summary>
+      {runsLoading ? <p><ArrowSync16Regular className="spin" /> Loading run history…</p> : null}
+      {runsError ? <p role="alert">Run history could not be loaded: {runsError}</p> : null}
+      {!runsLoading && !runsError && runs ? runs.length ? <dl className="capability-review-facts">{runs.slice(0, 10).map((run) => <div key={run.runId}><dt>{formatAutomationOutcome(run.outcome)}</dt><dd>{formatAutomationReason(run.reason)} · Scheduled {formatTimestamp(run.scheduledAt)} · Started {formatTimestamp(run.startedAt)} · Finished {formatTimestamp(run.finishedAt)}{run.error ? ` · ${run.error}` : ""}</dd></div>)}</dl> : <p>No recorded runs.</p> : null}
+    </details>
+  </article>;
 }
 
 function FilePermissionCard({ permission, grant, busy, active, onChange }: {
@@ -573,9 +674,94 @@ function upsertConnectionStatus(items: RestrictedAppConnectionStatus[], status: 
   return items.some((item) => item.destinationId === status.destinationId) ? items.map((item) => item.destinationId === status.destinationId ? status : item) : [...items, status];
 }
 
+function formatAutomationSchedule(automation: RestrictedAppAutomation): string {
+  const minutes = automation.trigger.intervalMinutes;
+  return `Every ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+function automationPowerSummary(manifest: RestrictedAppReview["manifest"], automation: RestrictedAppAutomation): string {
+  const network = automation.permissions.network.map((id) => {
+    const destination = manifest.permissions.network.find((item) => item.id === id);
+    return destination ? `network ${id} (${destinationLabel(destination)})` : `network ${id}`;
+  });
+  const files = automation.permissions.files.map((id) => {
+    const permission = manifest.permissions.files.find((item) => item.id === id);
+    return permission ? `${permission.access} file access ${id}` : `file access ${id}`;
+  });
+  const notifications = automation.permissions.notifications.map((id) => {
+    const permission = manifest.permissions.notifications.find((item) => item.id === id);
+    return permission ? `notification ${id} (“${permission.title}”)` : `notification ${id}`;
+  });
+  return [...network, ...files, ...notifications].join("; ") || "no network, file, or notification powers";
+}
+
+function automationGrantedPowerSummary(app: RestrictedAppInstalled, automation: RestrictedAppAutomation): string {
+  const total = automation.permissions.network.length + automation.permissions.files.length + automation.permissions.notifications.length;
+  if (!total) return "no separate grants required";
+  const granted = automation.permissions.network.filter((id) => app.networkGrants.includes(id)).length
+    + automation.permissions.files.filter((id) => app.fileGrants.some((grant) => grant.declarationId === id)).length
+    + automation.permissions.notifications.filter((id) => app.notificationGrants.includes(id)).length;
+  return `${granted} of ${total} currently allowed`;
+}
+
+function nextAutomationRunAt(automation: RestrictedAppAutomation): string {
+  return new Date(Date.now() + automation.trigger.intervalMinutes * 60_000).toISOString();
+}
+
+function formatAutomationOutcome(outcome: RestrictedAppAutomationRunReceipt["outcome"]): string {
+  return outcome === "success" ? "Succeeded" : outcome === "failure" ? "Failed" : outcome === "skipped" ? "Skipped" : "Cancelled";
+}
+
+function formatAutomationReason(reason: RestrictedAppAutomationRunReceipt["reason"]): string {
+  return reason === "manual" ? "Manual run" : reason === "resume" ? "Resume catch-up" : "Scheduled run";
+}
+
+function automationRunToast(automation: RestrictedAppAutomation, run: RestrictedAppAutomationRunReceipt): string {
+  if (run.outcome === "success") return `${automation.title} completed.`;
+  if (run.outcome === "failure") return `${automation.title} finished with an error.`;
+  return `${automation.title} was ${run.outcome}.`;
+}
+
 function shortDigest(digest: string): string { return `${digest.slice(0, 12)}…${digest.slice(-8)}`; }
 function formatBytes(bytes: number): string { return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`; }
 function formatTimestamp(value: string): string { const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : date.toLocaleString(); }
+
+function fixtureAutomationRun(app: RestrictedAppInstalled, automation: RestrictedAppAutomation): { app: RestrictedAppInstalled; run: RestrictedAppAutomationRunReceipt } {
+  const now = new Date().toISOString();
+  const run: RestrictedAppAutomationRunReceipt = {
+    runId: `fixture-${automation.id}-${Date.now()}`,
+    automationId: automation.id,
+    reason: "manual",
+    scheduledAt: now,
+    startedAt: now,
+    finishedAt: now,
+    outcome: "success",
+  };
+  const previous = app.automations.find((state) => state.id === automation.id);
+  const state = {
+    id: automation.id,
+    enabled: previous?.enabled ?? false,
+    lastRunAt: now,
+    ...(previous?.enabled ? { nextRunAt: nextAutomationRunAt(automation) } : {}),
+  };
+  const automations = app.automations.some((item) => item.id === automation.id)
+    ? app.automations.map((item) => item.id === automation.id ? state : item)
+    : [...app.automations, state];
+  return { app: { ...app, automations }, run };
+}
+
+function fixtureAutomationRuns(automation: RestrictedAppAutomation): RestrictedAppAutomationRunReceipt[] {
+  const finishedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  return [{
+    runId: `fixture-scheduled-${automation.id}`,
+    automationId: automation.id,
+    reason: "scheduled",
+    scheduledAt: new Date(Date.now() - 10 * 60_000 - 2_000).toISOString(),
+    startedAt: new Date(Date.now() - 10 * 60_000 - 1_000).toISOString(),
+    finishedAt,
+    outcome: "success",
+  }];
+}
 
 function fixtureReview(): RestrictedAppReview {
   return {
@@ -585,14 +771,23 @@ function fixtureReview(): RestrictedAppReview {
     fileCount: 4,
     totalBytes: 4096,
     manifest: {
-      version: 1,
+      version: 2,
       id: "connected-inbox",
       title: "Connected inbox",
       description: "Messages associated with this Space.",
       runtime: { kind: "sandboxed-web", entry: "index.html", worker: "worker.js" },
       ui: { icon: "mail" },
       tools: [{ name: "inbox_search", description: "Search messages in the connected inbox.", action: "search", inputSchema: { type: "object" }, resultSchema: { type: "object" } }],
-      background: { intervalMinutes: 30 },
+      automations: [{
+        id: "refresh-inbox",
+        title: "Refresh inbox",
+        description: "Checks for new messages associated with this Space.",
+        handler: "refresh-inbox",
+        trigger: { kind: "interval", intervalMinutes: 30 },
+        permissions: { network: ["mail-api"], files: ["export-folder"], notifications: ["new-messages"] },
+        catchUp: "latest",
+        overlap: "skip",
+      }],
       permissions: {
         network: [{ id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "api-key", header: "x-api-key" }, { kind: "bearer" }] }],
         files: [{ id: "export-folder", target: "directory", access: "read-write" }],
@@ -604,5 +799,5 @@ function fixtureReview(): RestrictedAppReview {
 
 function fixtureInstalled(workspaceId: string, review: RestrictedAppReview): RestrictedAppInstalled {
   const now = new Date().toISOString();
-  return { ...review, workspaceId, networkGrants: [], fileGrants: [], notificationGrants: [], backgroundEnabled: false, installedAt: now, updatedAt: now };
+  return { ...review, workspaceId, networkGrants: [], fileGrants: [], notificationGrants: [], automations: review.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })), installedAt: now, updatedAt: now };
 }

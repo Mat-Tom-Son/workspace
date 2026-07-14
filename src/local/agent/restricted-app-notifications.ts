@@ -17,7 +17,7 @@ export interface RestrictedAppNotificationContext extends RestrictedAppNotificat
   appTitle: string;
   declarations: readonly RestrictedAppNotificationDeclaration[];
   grants: readonly string[];
-  backgroundEnabled: boolean;
+  automationEnabled: boolean;
   invocationId: string;
 }
 
@@ -91,8 +91,8 @@ export class RestrictedAppNotificationBroker {
   ): { status: RestrictedAppNotificationStatus } {
     const request = notificationRequest(value);
     validateContext(context);
-    if (!context.backgroundEnabled) {
-      throw new RestrictedAppNotificationError("NOTIFICATION_DENIED", "Enable background work before this app can show notifications.");
+    if (!context.automationEnabled) {
+      throw new RestrictedAppNotificationError("NOTIFICATION_DENIED", "Enable this automation before it can show notifications.");
     }
     const declaration = context.declarations.find((item) => item.id === request.permissionId);
     if (!declaration || !context.grants.includes(declaration.id)) {

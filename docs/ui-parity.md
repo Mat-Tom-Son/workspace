@@ -64,10 +64,10 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 - A reviewed restricted app belongs to exactly one Space and contributes its rail navigator without becoming a full-trust Pi Extension or silently inheriting another Space's identity.
 - App-requested work tabs are ordinary persistent Space-owned tabs. Restoring or activating one restores its owning Space, while removal or a reviewed-digest change cannot leave a stale executable view mounted.
-- Installation, each network destination, each Space-file grant, each notification category, each stored connection, and background execution remain separate, visible controls. Installation grants none of them.
-- Visible UI and optional Assistant/background work use separate sandbox hosts. Direct networking, Node access, arbitrary navigation, and host powers outside an accepted UI/action/background lifecycle remain denied.
+- Installation, each network destination, each Space-file grant, each notification category, each stored connection, and each named automation remain separate, visible controls. Installation grants none of them.
+- Visible UI and optional worker execution use separate sandbox hosts. Direct networking, Node access, arbitrary navigation, and host powers outside an accepted UI/action/automation lifecycle remain denied.
 - Machine-local app storage survives a reviewed app update and an application update. Active visible app UI receives bounded invalidation hints; inactive views recover durable state when reopened instead of receiving queued hidden updates.
-- Windows notifications use only reviewed static copy during separately enabled background work. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.
+- Windows notifications use only reviewed static copy during a separately enabled automation whose permission subset includes the granted category. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.
 
 ## Deliberately removed or replaced
 
@@ -90,8 +90,8 @@ A corrective port is ready for release only when all of the following are true:
 6. The app contains no user-facing Kai, Kymanox, Kits, Sources, SharePoint, or Microsoft-login copy except in migration or historical documentation.
 7. The packaged CLI resolves context, lists Spaces/tasks/capabilities, coexists with the GUI, and cleans its request/response handoff.
 8. No public release is published until the product review is accepted and the release commit is green on main CI.
-9. The checked-in restricted Connected inbox example has been exercised in a disposable Space for default-off grants, rail and persistent-tab ownership, storage invalidation/reload, explicit background work, static notification routing, revocation, suspend/resume, and teardown.
-10. An installed-updater smoke preserves restricted-app reviewed digests, grants, encrypted connection status, background settings, local storage, and Space-owned surfaces across the version change.
+9. The checked-in restricted Connected inbox example has been exercised in a disposable Space for default-off grants and schedules, rail and persistent-tab ownership, storage invalidation/reload, explicit named automation runs and receipts, static notification routing, revocation, suspend/resume, and teardown.
+10. An installed-updater smoke preserves version-2 restricted-app reviewed digests, grants, encrypted connection status, automation settings and receipts, local storage, and Space-owned surfaces across the version change.
 
 ## Accepted public baseline
 
@@ -99,6 +99,6 @@ The first July 10, 2026 local candidate at commit `71e5fa4` was rejected after r
 
 Workspace 0.2.7 at commit `db5c149` established the accepted public baseline on July 12, 2026. It preserves the interaction contract above, uses the compact Fluent icon-only rail with accessible labels/tooltips, applies supported Windows Mica with a safe fallback, and includes the shared management kernel and installed read-only CLI.
 
-Workspace 0.2.8 at commit `27aa329` became the accepted public baseline on July 13, 2026. It retains the 0.2.7 shell and management behavior while adding the reviewed restricted-app lifecycle: Space-owned rail and work-tab surfaces, separate visible and worker sandboxes, default-off network/file/notification/background authority, host-owned connections and storage, static background notifications, deterministic teardown, and a release-gating real-Electron probe. Its complete public release notes are checked in at [releases/0.2.8.md](releases/0.2.8.md).
+The 0.2.8 development checkpoint at commit `27aa329` established the restricted-app sandbox baseline: Space-owned rail and work-tab surfaces, separate visible and worker sandboxes, default-off external authority, host-owned connections and storage, deterministic teardown, and a release-gating real-Electron probe. The current version-2 contract replaces its single-job prototype with named automations; compatibility with that unreleased manifest shape is intentionally not retained. The checkpoint notes remain in [releases/0.2.8.md](releases/0.2.8.md) as development history.
 
 Future changes must retain those behaviors while satisfying [the Workspace visual system](visual-design.md), [the management-layer contract](management-layer.md), and the current build/release gates. Browser review must cover every primary, Assistant, and restricted-app surface in light and dark themes at the true minimum window size and at a tall desktop aspect ratio. Automated checks must continue to guard the Files/Space distinction, Space-bound tabs, Fluent shell-icon contract, compact neutral chrome, JSX-to-CSS contracts, and the restricted-app runtime boundary.

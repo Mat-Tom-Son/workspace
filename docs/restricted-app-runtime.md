@@ -24,15 +24,18 @@ restricted execution boundary before the app opened.
 `agent-app.json` is strict and versioned. It declares:
 
 - a required `sandboxed-web` HTML entry;
-- an optional JavaScript worker entry for Assistant tools and user-enabled
-  background work;
+- an optional JavaScript worker entry for Assistant tools and named
+  automations;
 - optional UI metadata such as a rail icon;
 - bounded Assistant tool declarations using a closed JSON Schema subset; and
 - exact broker destinations, methods, and acceptable authentication modes;
 - reviewed Space-file needs (`file` or `directory`, `read` or `read-write`);
 - optional static notification categories, each with reviewed title and body;
   and
-- an optional bounded background interval.
+- a required `automations` array containing zero to sixteen independently
+  controlled named interval jobs. Each job declares its handler, schedule,
+  catch-up policy, overlap policy, and an exact subset of the app's reviewed
+  network, file, and notification permissions.
 
 Public destinations use `{ "kind": "public-https", "origin": "https://api.example.com" }`.
 Local development services use an explicit numeric target such as
@@ -69,7 +72,7 @@ connected-inbox/
 ├── index.html
 ├── app.js
 ├── styles.css
-└── worker.js       # optional; required for tools, background, or notifications
+└── worker.js       # optional; required for tools, automations, or notifications
 ```
 
 The checked-in [connected inbox app](../examples/packages/restricted-connected-inbox/README.md)
@@ -103,7 +106,8 @@ The preload exposes only `workspaceRestrictedApp`:
   hints;
 - `files` lists, reads, or writes only through current reviewed grants; and
 - `notifications.show({ permissionId })` selects reviewed static copy, only
-  during an enabled background invocation with a separate category grant.
+  during an enabled automation invocation whose permission subset includes a
+  separately granted category.
 
 An app supplies a local `appTabId`, title, route, and JSON state. It never
 supplies the owning Space, app id, digest, or shell tab id. Workspace derives
@@ -115,25 +119,41 @@ persisted old tab.
 
 ## Worker host
 
-Apps that expose Assistant tools declare a separate worker module. Workspace
-loads it in a hidden sandboxed renderer with the same direct-network and Node
-denials. Inputs and outputs are schema checked and bounded; timeouts, crashes,
-cyclic values, intrinsic tampering, and oversized results terminate the worker.
-The worker is optional so a UI-only app does not need background code. A
-manifest background schedule starts disabled and requires the worker to export
-`handleBackground(event)`. Workspace runs enabled jobs with a 15-minute minimum
-interval, a two-job global concurrency limit, bounded worker execution, and at
-most one staggered catch-up after resume. It records the last run and failure;
-disabling or updating the app stops and revokes the schedule.
+Apps that expose Assistant tools or automations declare a separate worker
+module. Workspace loads it in a hidden sandboxed renderer with the same
+direct-network and Node denials. Inputs and outputs are schema checked and
+bounded; timeouts, crashes, cyclic values, intrinsic tampering, and oversized
+results terminate the worker. The worker is optional so a UI-only app does not
+need executable worker code.
+
+Automations are first-class host jobs, not one app-wide background switch.
+Every declared job starts disabled and is enabled separately in Capabilities.
+The worker exports `handleAutomation(event)` and dispatches using the reviewed
+`automationId` and `handler`. Intervals are whole minutes from 15 through
+1,440. `catchUp: "latest"` permits at most one deterministically staggered run
+for the latest missed occurrence after startup or resume; `"none"` skips missed
+occurrences. `overlap` is currently fixed to `"skip"`.
+
+One machine-wide `WorkspaceAutomationService` owns scheduling across every
+Space and restricted app. It uses a FIFO queue, at most two active jobs, and
+never overlaps the same named job. Scheduled, manual, skipped, cancelled, and
+failed attempts produce durable run receipts. The cadence anchor is persisted
+separately from one-off manual runs, so **Run now** does not shift the next
+scheduled occurrence. A manual run is allowed while its schedule is disabled,
+but it receives no notification authority. At launch, Workspace re-reads the
+installed digest and current grants, then intersects those grants with that
+job's reviewed permission subset. Disabling, updating, removing, sleeping, or
+quitting stops stale launches before authority changes take effect.
 
 Notifications are host-owned Windows notifications, not arbitrary renderer
 UI. The manifest title and category copy are single-line reviewed text; the
-runtime cannot add dynamic copy, actions, or URLs. A category grant and enabled
-background schedule are both required. The host limits each invocation,
+runtime cannot add dynamic copy, actions, or URLs. A category grant, an enabled
+automation, and inclusion in that automation's permission subset are all
+required. The host limits each invocation,
 category frequency, hourly app volume, and outstanding notifications. Rate
 history is keyed by Space and app so renderer restarts, permission churn, and
 digest updates cannot reset the anti-spam budget. Clicking revalidates the
-current digest, declaration, grant, and background authority before opening
+current digest, declaration, grant, and automation authority before opening
 the exact owning Space and app. Suspend, disable, update, removal, and shutdown
 close outstanding notifications.
 
@@ -141,7 +161,7 @@ The real-Electron preparation probe covers both hosts: missing Node globals,
 rejected Node imports, direct loopback HTTP/WebSocket denial, WebRTC and popup
 denial, sender-bound broker failure, bounded results, timeout recovery, visible
 UI loading, durable storage, active-only storage invalidation, a
-History-covered Space-file write, background execution, static notification
+History-covered Space-file write, automation execution, static notification
 delivery and cleanup, and an app-requested host-owned tab.
 
 ## Network and credentials
@@ -197,17 +217,20 @@ tool accepts only a Space-relative package folder, inspects it, and creates a
 machine-local review receipt bound to that Space, Chat, source path, and digest.
 The tool cannot execute or install code, grant a destination, or collect a
 credential. Its model-facing guidelines include the complete package, bridge,
-worker, permission, storage, file, tab, background, and OAuth declaration
+worker, permission, storage, file, tab, automation, and OAuth declaration
 contract, so app generation does not depend on a source checkout or hidden
 Workspace-only skill.
 
 Human approval installs the receipt's exact revision with network, file, and
-notification access off and background work disabled. Source changes require a new review.
+notification access off and every automation disabled. Source changes require
+a new review.
 **Capabilities → Installed → Apps in this Space** manages destination, file,
-and notification grants, connections, background scheduling, local data, and removal; advanced
+and notification grants, connections, each automation's schedule and run
+history, local data, and removal; advanced
 local install remains a recovery/developer path. A reviewed update preserves
-app storage but resets network grants, file grants, notification grants, connections, and background
-authority. Removing or updating an app stops its UI views and worker before
+app storage but resets network grants, file grants, notification grants,
+connections, every automation, and prior run receipts. Removing or updating an
+app stops its UI views and worker before
 changing staged bytes.
 
 The restricted app itself appears directly in the contributed rail. Selecting
@@ -222,7 +245,7 @@ should be narrow host services rather than additions to a fixed widget schema.
 The main gaps are:
 
 - host-owned remote subscriptions and arbitrary push adapters (static reviewed
-  background notifications are available);
+  automation notifications are available);
 - a Space-service registry that can verify process ownership and lifecycle,
   replacing raw loopback-port grants for managed project services; and
 - finer resource controls for long-running or memory-heavy web apps.

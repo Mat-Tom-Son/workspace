@@ -504,28 +504,45 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     return;
   }
 
-  const restrictedBackgroundRunMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/background\/run$/);
-  if (restrictedBackgroundRunMatch && method === "POST") {
-    const workspace = await getWorkspace(restrictedBackgroundRunMatch[1]);
+  const restrictedAutomationRunMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/automations\/([^/]+)\/run$/);
+  if (restrictedAutomationRunMatch && method === "POST") {
+    const workspace = await getWorkspace(restrictedAutomationRunMatch[1]);
     const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
     if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
-    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.runBackgroundNow({
+    const result = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.runAutomationNow({
       workspaceId: workspace.id,
-      appId: restrictedBackgroundRunMatch[2],
+      appId: restrictedAutomationRunMatch[2],
+      automationId: restrictedAutomationRunMatch[3],
       expectedDigest: body.expectedDigest!,
     }));
-    sendJson(res, { app });
+    sendJson(res, result);
     return;
   }
 
-  const restrictedBackgroundMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/background$/);
-  if (restrictedBackgroundMatch && (method === "PUT" || method === "DELETE")) {
-    const workspace = await getWorkspace(restrictedBackgroundMatch[1]);
+  const restrictedAutomationRunsMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/automations\/([^/]+)\/runs$/);
+  if (restrictedAutomationRunsMatch && method === "GET") {
+    const workspace = await getWorkspace(restrictedAutomationRunsMatch[1]);
+    const expectedDigest = url.searchParams.get("expectedDigest")?.trim();
+    if (!expectedDigest) throw badRequest("An installed revision is required.");
+    const runs = await state.restrictedApps.listAutomationRuns(
+      workspace.id,
+      restrictedAutomationRunsMatch[2],
+      expectedDigest,
+      restrictedAutomationRunsMatch[3],
+    );
+    sendJson(res, { runs });
+    return;
+  }
+
+  const restrictedAutomationMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/restricted-apps\/([^/]+)\/automations\/([^/]+)$/);
+  if (restrictedAutomationMatch && (method === "PUT" || method === "DELETE")) {
+    const workspace = await getWorkspace(restrictedAutomationMatch[1]);
     const body = await readJsonBody<{ expectedDigest?: string }>(state, req);
     if (!body.expectedDigest?.trim()) throw badRequest("An installed revision is required.");
-    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.setBackgroundEnabled({
+    const app = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.setAutomationEnabled({
       workspaceId: workspace.id,
-      appId: restrictedBackgroundMatch[2],
+      appId: restrictedAutomationMatch[2],
+      automationId: restrictedAutomationMatch[3],
       expectedDigest: body.expectedDigest!,
       enabled: method === "PUT",
     }));

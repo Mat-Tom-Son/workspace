@@ -282,7 +282,10 @@ async function ensureDesktopHost(): Promise<DesktopHost> {
       },
       onNotificationOpen: (request) => {
         void restrictedApps.runtimeDescriptor(request.workspaceId, request.appId, request.digest).then((current) => {
-          if (!current.backgroundEnabled || !current.notificationGrants.includes(request.permissionId)
+          const enabledForNotification = current.automations.some((state) => state.enabled
+            && current.manifest.automations.some((automation) => automation.id === state.id
+              && automation.permissions.notifications.includes(request.permissionId)));
+          if (!enabledForNotification || !current.notificationGrants.includes(request.permissionId)
             || !current.manifest.permissions.notifications.some((item) => item.id === request.permissionId)) return;
           showWindow();
           if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -1052,10 +1055,10 @@ function configurePowerMonitor(): void {
   if (powerMonitorRegistered) return;
   powerMonitorRegistered = true;
   powerMonitor.on("suspend", () => {
-    void desktopHostPromise?.then((host) => host.restrictedApps.suspendBackground());
+    void desktopHostPromise?.then((host) => host.restrictedApps.suspendAutomations());
   });
   powerMonitor.on("resume", () => {
-    void desktopHostPromise?.then((host) => host.restrictedApps.resumeBackground());
+    void desktopHostPromise?.then((host) => host.restrictedApps.resumeAutomations());
     setTimeout(ensureRendererAfterResume, resumeRendererHealthDelayMs);
     setTimeout(() => { void checkForUpdates(false); }, resumeUpdateCheckDelayMs);
   });

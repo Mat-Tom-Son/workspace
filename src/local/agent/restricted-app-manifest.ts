@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { extname, posix } from "node:path";
 
-export const restrictedAppManifestVersion = 1 as const;
+export const restrictedAppManifestVersion = 2 as const;
 export const restrictedAppRuntimeKind = "sandboxed-web" as const;
 
 const idPattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -76,8 +76,22 @@ export interface RestrictedAppNotificationDeclaration {
   description: string;
 }
 
-export interface RestrictedAppBackgroundDeclaration {
-  intervalMinutes: number;
+export interface RestrictedAppAutomationDeclaration {
+  id: string;
+  title: string;
+  description?: string;
+  handler: string;
+  trigger: {
+    kind: "interval";
+    intervalMinutes: number;
+  };
+  permissions: {
+    network: string[];
+    files: string[];
+    notifications: string[];
+  };
+  catchUp: "none" | "latest";
+  overlap: "skip";
 }
 
 export interface RestrictedAppManifest {
@@ -94,12 +108,12 @@ export interface RestrictedAppManifest {
     icon?: string;
   };
   tools: RestrictedAppToolDeclaration[];
-  background?: RestrictedAppBackgroundDeclaration;
   permissions: {
     network: RestrictedAppNetworkDeclaration[];
     files: RestrictedAppFileDeclaration[];
     notifications: RestrictedAppNotificationDeclaration[];
   };
+  automations: RestrictedAppAutomationDeclaration[];
 }
 
 export function validateRestrictedAppValue(
@@ -151,12 +165,13 @@ export function validateRestrictedAppValue(
  * requires an explicit host/version change instead of being silently ignored.
  */
 export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifest {
-  const manifest = objectValue(value, "Restricted app manifest", [
-    "version", "id", "title", "description", "runtime", "ui", "tools", "background", "permissions",
-  ]);
-  if (manifest.version !== restrictedAppManifestVersion) {
+  const candidate = objectValue(value, "Restricted app manifest");
+  if (candidate.version !== restrictedAppManifestVersion) {
     throw new Error(`Restricted app manifest version must be ${restrictedAppManifestVersion}.`);
   }
+  const manifest = objectValue(value, "Restricted app manifest", [
+    "version", "id", "title", "description", "runtime", "ui", "tools", "automations", "permissions",
+  ]);
   const runtime = objectValue(manifest.runtime, "Restricted app runtime", ["kind", "entry", "worker"]);
   if (runtime.kind !== restrictedAppRuntimeKind) {
     throw new Error(`Restricted app runtime kind must be ${restrictedAppRuntimeKind}.`);
@@ -173,11 +188,6 @@ export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifes
   assertUnique(tools.map((tool) => tool.name), "Restricted app tool name");
   assertUnique(tools.map((tool) => tool.action), "Restricted app tool action");
 
-  const background = manifest.background === undefined
-    ? undefined
-    : parseBackground(manifest.background);
-  if (background && !worker) throw new Error("Restricted apps that run in the background must declare a sandboxed worker entry.");
-
   const permissions = objectValue(manifest.permissions, "Restricted app permissions", ["network", "files", "notifications"]);
   const network = arrayValue(permissions.network, "Restricted app network permissions", 0, 16)
     .map((destination, index) => parseNetworkDestination(destination, index));
@@ -192,11 +202,24 @@ export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifes
     : arrayValue(permissions.notifications, "Restricted app notification permissions", 0, 8)
       .map((declaration, index) => parseNotificationDeclaration(declaration, index));
   assertUnique(notifications.map((declaration) => declaration.id), "Restricted app notification permission id");
-  if (notifications.length && (!background || !worker)) {
-    throw new Error("Restricted apps that request notifications must declare a sandboxed background worker and schedule.");
-  }
 
   const description = optionalStringValue(manifest.description, "Restricted app description", 280);
+  const automations = arrayValue(manifest.automations, "Restricted app automations", 0, 16)
+    .map((automation, index) => parseAutomationDeclaration(automation, index, { network, files, notifications }));
+  assertUnique(automations.map((automation) => automation.id), "Restricted app automation id");
+  if (automations.length && !worker) {
+    throw new Error("Restricted apps that declare automations must declare a sandboxed worker entry.");
+  }
+  if (notifications.length) {
+    if (!worker) {
+      throw new Error("Restricted apps that request notifications must declare a sandboxed automation worker.");
+    }
+    const referencedNotifications = new Set(automations.flatMap((automation) => automation.permissions.notifications));
+    const unreferenced = notifications.find((notification) => !referencedNotifications.has(notification.id));
+    if (unreferenced) {
+      throw new Error(`Restricted app notification permission ${unreferenced.id} must be referenced by an automation.`);
+    }
+  }
   return {
     version: restrictedAppManifestVersion,
     id: idValue(manifest.id, "Restricted app id"),
@@ -205,18 +228,68 @@ export function parseRestrictedAppManifest(value: unknown): RestrictedAppManifes
     runtime: { kind: restrictedAppRuntimeKind, entry, ...(worker ? { worker } : {}) },
     ui: { ...(icon ? { icon } : {}) },
     tools,
-    ...(background ? { background } : {}),
     permissions: { network, files, notifications },
+    automations,
   };
 }
 
-function parseBackground(value: unknown): RestrictedAppBackgroundDeclaration {
-  const background = objectValue(value, "Restricted app background schedule", ["intervalMinutes"]);
-  const intervalMinutes = background.intervalMinutes;
-  if (!Number.isInteger(intervalMinutes) || (intervalMinutes as number) < 15 || (intervalMinutes as number) > 1_440) {
-    throw new Error("Restricted app background interval must be between 15 and 1440 minutes.");
+function parseAutomationDeclaration(
+  value: unknown,
+  index: number,
+  declaredPermissions: RestrictedAppManifest["permissions"],
+): RestrictedAppAutomationDeclaration {
+  const label = `Restricted app automation ${index + 1}`;
+  const automation = objectValue(value, label, [
+    "id", "title", "description", "handler", "trigger", "permissions", "catchUp", "overlap",
+  ]);
+  const trigger = objectValue(automation.trigger, `${label} trigger`, ["kind", "intervalMinutes"]);
+  if (trigger.kind !== "interval") throw new Error(`${label} trigger kind must be interval.`);
+  const intervalMinutes = intervalMinutesValue(trigger.intervalMinutes, `${label} interval`);
+
+  const permissions = objectValue(automation.permissions, `${label} permissions`, ["network", "files", "notifications"]);
+  const network = parseAutomationPermissionIds(permissions.network, `${label} network permissions`, declaredPermissions.network);
+  const files = parseAutomationPermissionIds(permissions.files, `${label} file permissions`, declaredPermissions.files);
+  const notifications = parseAutomationPermissionIds(
+    permissions.notifications,
+    `${label} notification permissions`,
+    declaredPermissions.notifications,
+  );
+
+  if (automation.catchUp !== "none" && automation.catchUp !== "latest") {
+    throw new Error(`${label} catch-up policy must be none or latest.`);
   }
-  return { intervalMinutes: intervalMinutes as number };
+  if (automation.overlap !== "skip") throw new Error(`${label} overlap policy must be skip.`);
+  const description = optionalStringValue(automation.description, `${label} description`, 280);
+  return {
+    id: idValue(automation.id, `${label} id`),
+    title: notificationTextValue(automation.title, `${label} title`, 80),
+    ...(description ? { description } : {}),
+    handler: idValue(automation.handler, `${label} handler`),
+    trigger: { kind: "interval", intervalMinutes },
+    permissions: { network, files, notifications },
+    catchUp: automation.catchUp,
+    overlap: "skip",
+  };
+}
+
+function parseAutomationPermissionIds<T extends { id: string }>(
+  value: unknown,
+  label: string,
+  declarations: T[],
+): string[] {
+  const ids = arrayValue(value, label, 0, 16).map((id) => idValue(id, `${label} id`));
+  assertUnique(ids, `${label} id`);
+  const declaredIds = new Set(declarations.map((declaration) => declaration.id));
+  const unknown = ids.find((id) => !declaredIds.has(id));
+  if (unknown) throw new Error(`${label} references undeclared permission id ${unknown}.`);
+  return ids;
+}
+
+function intervalMinutesValue(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || (value as number) < 15 || (value as number) > 1_440) {
+    throw new Error(`${label} must be between 15 and 1440 minutes.`);
+  }
+  return value as number;
 }
 
 function parseFileDeclaration(value: unknown, index: number): RestrictedAppFileDeclaration {

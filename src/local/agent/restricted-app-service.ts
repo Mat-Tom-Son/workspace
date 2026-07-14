@@ -11,7 +11,12 @@ import {
   type RestrictedAppConnectionStore,
   type RestrictedAppCredential,
 } from "./restricted-app-connections.js";
-import { parseRestrictedAppManifest, restrictedAppNetworkOrigin, type RestrictedAppManifest } from "./restricted-app-manifest.js";
+import {
+  parseRestrictedAppManifest,
+  restrictedAppNetworkOrigin,
+  type RestrictedAppAutomationDeclaration,
+  type RestrictedAppManifest,
+} from "./restricted-app-manifest.js";
 import { RestrictedAppFileBroker, type RestrictedAppFileGrant } from "./restricted-app-files.js";
 import type { FileRestrictedAppStorage, RestrictedAppStorageUsage } from "./restricted-app-storage.js";
 import { RestrictedAppOAuthError, type RestrictedAppOAuthPkceClient } from "./restricted-app-oauth.js";
@@ -19,6 +24,12 @@ import {
   inspectRestrictedAppPackage,
   stageRestrictedAppPackage,
 } from "./restricted-app-package.js";
+import {
+  WorkspaceAutomationService,
+  type WorkspaceAutomationClock,
+  type WorkspaceAutomationRunContext,
+  type WorkspaceAutomationRunResult,
+} from "./workspace-automation-service.js";
 export interface RestrictedAppReview {
   packageName: string;
   version: string;
@@ -33,11 +44,28 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
   notificationGrants: string[];
-  backgroundEnabled: boolean;
-  backgroundLastRunAt?: string;
-  backgroundLastError?: string;
+  automations: RestrictedAppAutomationState[];
   installedAt: string;
   updatedAt: string;
+}
+
+export interface RestrictedAppAutomationState {
+  id: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastError?: string;
+  nextRunAt?: string;
+}
+
+export interface RestrictedAppAutomationRunReceipt {
+  runId: string;
+  automationId: string;
+  reason: "scheduled" | "manual" | "resume";
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt: string;
+  outcome: "success" | "failure" | "skipped" | "cancelled";
+  error?: string;
 }
 
 export interface RestrictedAppRuntimeDescriptor extends RestrictedAppInstalled {
@@ -46,7 +74,13 @@ export interface RestrictedAppRuntimeDescriptor extends RestrictedAppInstalled {
 
 export interface RestrictedAppRuntimeHost {
   invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown>;
-  runBackground?(app: RestrictedAppRuntimeDescriptor, event: { reason: "scheduled" | "manual" | "resume"; scheduledAt: string }): Promise<void>;
+  runAutomation?(app: RestrictedAppRuntimeDescriptor, event: {
+    runId: string;
+    automationId: string;
+    handler: string;
+    reason: "scheduled" | "manual" | "resume";
+    scheduledAt: string;
+  }, signal?: AbortSignal): Promise<void>;
   suspend?(): void;
   resume?(): void;
   stop(workspaceId: string, appId: string, digest?: string): Promise<void>;
@@ -63,8 +97,20 @@ export interface RestrictedAppServiceOptions {
 }
 
 interface RestrictedAppRegistryFile {
-  schemaVersion: 1;
+  schemaVersion: 2;
   apps: RestrictedAppRegistryEntry[];
+}
+
+interface RestrictedAppAutomationRegistryState {
+  id: string;
+  enabled: boolean;
+  lastScheduledAt?: string;
+  lastRunAt?: string;
+  lastError?: string;
+}
+
+interface RestrictedAppAutomationRegistryReceipt extends RestrictedAppAutomationRunReceipt {
+  digest: string;
 }
 
 interface RestrictedAppRegistryEntry {
@@ -76,9 +122,8 @@ interface RestrictedAppRegistryEntry {
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
   notificationGrants: string[];
-  backgroundEnabled: boolean;
-  backgroundLastRunAt?: string;
-  backgroundLastError?: string;
+  automations: RestrictedAppAutomationRegistryState[];
+  automationRuns: RestrictedAppAutomationRegistryReceipt[];
   fileCount: number;
   totalBytes: number;
   installedAt: string;
@@ -94,12 +139,9 @@ export class RestrictedAppService {
   readonly #storage?: FileRestrictedAppStorage;
   readonly #oauth?: RestrictedAppOAuthPkceClient;
   readonly #now: () => Date;
+  readonly #automations: WorkspaceAutomationService;
   #registry: RestrictedAppRegistryFile;
   #queue: Promise<void> = Promise.resolve();
-  readonly #backgroundTimers = new Map<string, NodeJS.Timeout>();
-  readonly #backgroundWaiters: Array<() => void> = [];
-  #backgroundActive = 0;
-  #backgroundSuspended = false;
   #closed = false;
 
   private constructor(options: RestrictedAppServiceOptions, registry: RestrictedAppRegistryFile) {
@@ -112,6 +154,21 @@ export class RestrictedAppService {
     this.#oauth = options.oauth;
     this.#now = options.now ?? (() => new Date());
     this.#registry = registry;
+    const clock: WorkspaceAutomationClock = {
+      now: this.#now,
+      setTimeout(callback, delayMs) {
+        const handle = setTimeout(callback, delayMs);
+        handle.unref?.();
+        return handle;
+      },
+      clearTimeout(handle) {
+        clearTimeout(handle as NodeJS.Timeout);
+      },
+    };
+    this.#automations = new WorkspaceAutomationService({
+      clock,
+      onResult: async (result) => this.#recordAutomationResult(result),
+    });
   }
 
   static async create(options: RestrictedAppServiceOptions): Promise<RestrictedAppService> {
@@ -120,7 +177,7 @@ export class RestrictedAppService {
     const registry = await readRegistry(join(rootPath, "registry.json"));
     const service = new RestrictedAppService(options, registry);
     await service.#cleanupStaging();
-    service.#scheduleAllBackgroundApps(true);
+    service.#syncAllAutomations();
     return service;
   }
 
@@ -137,7 +194,7 @@ export class RestrictedAppService {
     return this.#registry.apps
       .filter((item) => item.workspaceId === workspaceId)
       .sort((left, right) => left.manifest.title.localeCompare(right.manifest.title) || left.manifest.id.localeCompare(right.manifest.id))
-      .map(copyInstalled);
+      .map((item) => this.#copyInstalled(item));
   }
 
   async runtimeDescriptor(workspaceId: string, appId: string, expectedDigest: string): Promise<RestrictedAppRuntimeDescriptor> {
@@ -165,7 +222,7 @@ export class RestrictedAppService {
         } catch (error) {
           throw new RestrictedAppError("REVISION_CHANGED", errorMessage(error));
         }
-        return copyInstalled(existing);
+        return this.#copyInstalled(existing);
       }
       if (existing && existing.packageName !== inspection.packageName) {
         throw new RestrictedAppError("INPUT_INVALID", "A different package already owns this restricted app id in the Space.");
@@ -191,7 +248,8 @@ export class RestrictedAppService {
         networkGrants: [],
         fileGrants: [],
         notificationGrants: [],
-        backgroundEnabled: false,
+        automations: staged.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })),
+        automationRuns: [],
         fileCount: staged.fileCount,
         totalBytes: staged.totalBytes,
         installedAt: existing?.installedAt ?? timestamp,
@@ -199,13 +257,14 @@ export class RestrictedAppService {
       };
       const next = this.#registry.apps.filter((item) => !(item.workspaceId === input.workspaceId && item.manifest.id === entry.manifest.id));
       next.push(entry);
-      await this.#writeRegistry({ schemaVersion: 1, apps: next });
+      await this.#writeRegistry({ schemaVersion: 2, apps: next });
       if (existing) {
-        this.#clearBackground(existing.workspaceId, existing.manifest.id);
+        this.#unregisterAppAutomations(existing);
         await this.#connections?.deleteApp(ownerFromEntry(existing));
         await this.#garbageCollectDigest(existing.digest);
       }
-      return copyInstalled(entry);
+      this.#syncAppAutomations(entry);
+      return this.#copyInstalled(entry);
     });
   }
 
@@ -219,11 +278,11 @@ export class RestrictedAppService {
       }
       await this.#runtimeHost?.stop(input.workspaceId, appId, existing.digest);
       await this.#invalidateOAuthApp(existing);
-      this.#clearBackground(input.workspaceId, appId);
       await this.#writeRegistry({
-        schemaVersion: 1,
+        schemaVersion: 2,
         apps: this.#registry.apps.filter((item) => item !== existing),
       });
+      this.#unregisterAppAutomations(existing);
       await this.#connections?.deleteApp(ownerFromEntry(existing));
       await this.#storage?.deleteApp({ workspaceId: existing.workspaceId, appId: existing.manifest.id });
       await this.#garbageCollectDigest(existing.digest);
@@ -237,8 +296,8 @@ export class RestrictedAppService {
       if (!removed.length) return;
       await Promise.all(removed.map((app) => this.#runtimeHost?.stop(workspaceId, app.manifest.id, app.digest)));
       await Promise.all(removed.map((app) => this.#invalidateOAuthApp(app)));
-      for (const app of removed) this.#clearBackground(workspaceId, app.manifest.id);
-      await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.filter((item) => item.workspaceId !== workspaceId) });
+      await this.#writeRegistry({ schemaVersion: 2, apps: this.#registry.apps.filter((item) => item.workspaceId !== workspaceId) });
+      for (const app of removed) this.#unregisterAppAutomations(app);
       for (const app of removed) {
         await this.#connections?.deleteApp(ownerFromEntry(app));
         await this.#storage?.deleteApp({ workspaceId: app.workspaceId, appId: app.manifest.id });
@@ -357,44 +416,89 @@ export class RestrictedAppService {
     return await this.#setNotificationGrant(input, false);
   }
 
-  async setBackgroundEnabled(input: { workspaceId: string; appId: string; expectedDigest: string; enabled: boolean }): Promise<RestrictedAppInstalled> {
+  async setAutomationEnabled(input: {
+    workspaceId: string;
+    appId: string;
+    expectedDigest: string;
+    automationId: string;
+    enabled: boolean;
+  }): Promise<RestrictedAppInstalled> {
     return await this.#mutate(async () => {
       const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
-      if (!app.manifest.background) throw new RestrictedAppError("INPUT_INVALID", "The app did not declare background work.");
-      if (!this.#runtimeHost?.runBackground) throw new RestrictedAppError("APP_UNAVAILABLE", "Background apps require the Workspace desktop host.");
-      if (app.backgroundEnabled === input.enabled) return app;
+      const declaration = automationDeclaration(app.manifest, input.automationId);
+      if (input.enabled) this.#assertAutomationRuntime();
       const existing = this.#registry.apps.find((item) => item.workspaceId === app.workspaceId && item.manifest.id === app.manifest.id)!;
-      if (!input.enabled) await this.#runtimeHost.stop(app.workspaceId, app.manifest.id, app.digest);
+      const state = existing.automations.find((item) => item.id === declaration.id)!;
+      if (state.enabled === input.enabled) return this.#copyInstalled(existing);
+      const nextState: RestrictedAppAutomationRegistryState = {
+        ...state,
+        enabled: input.enabled,
+        ...(input.enabled ? { lastScheduledAt: this.#now().toISOString() } : { lastError: undefined }),
+      };
       const next: RestrictedAppRegistryEntry = {
         ...existing,
-        backgroundEnabled: input.enabled,
-        ...(input.enabled ? {} : { backgroundLastError: undefined }),
+        automations: existing.automations.map((item) => item === state ? nextState : item),
       };
-      await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.map((item) => item === existing ? next : item) });
-      this.#scheduleBackground(next);
-      return copyInstalled(next);
+      if (!input.enabled) this.#syncAutomation(next, declaration);
+      try {
+        if (!input.enabled) await this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest);
+        await this.#writeRegistry({ schemaVersion: 2, apps: this.#registry.apps.map((item) => item === existing ? next : item) });
+      } catch (error) {
+        if (!input.enabled) this.#syncAutomation(existing, declaration);
+        throw error;
+      }
+      this.#syncAutomation(next, declaration);
+      return this.#copyInstalled(next);
     });
   }
 
-  async runBackgroundNow(input: { workspaceId: string; appId: string; expectedDigest: string }): Promise<RestrictedAppInstalled> {
+  async runAutomationNow(input: {
+    workspaceId: string;
+    appId: string;
+    expectedDigest: string;
+    automationId: string;
+  }): Promise<{ app: RestrictedAppInstalled; run: RestrictedAppAutomationRunReceipt }> {
     const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
-    if (!app.backgroundEnabled) throw new RestrictedAppError("INPUT_INVALID", "Enable background work before running it.");
-    await this.#executeBackground(app.workspaceId, app.manifest.id, app.digest, "manual");
-    return this.#installed(input.workspaceId, input.appId, input.expectedDigest);
+    const declaration = automationDeclaration(app.manifest, input.automationId);
+    this.#assertAutomationRuntime();
+    const key = automationKey(app.workspaceId, app.manifest.id, app.digest, declaration.id);
+    if (!this.#automations.has(key)) {
+      const entry = this.#registry.apps.find((item) => item.workspaceId === app.workspaceId && item.manifest.id === app.manifest.id)!;
+      this.#syncAutomation(entry, declaration);
+    }
+    const result = await this.#automations.runNow(key);
+    await this.#recordAutomationResult(result);
+    return {
+      app: this.#installed(input.workspaceId, input.appId, input.expectedDigest),
+      run: publicAutomationRun(result),
+    };
   }
 
-  suspendBackground(): void {
-    this.#backgroundSuspended = true;
+  async listAutomationRuns(
+    workspaceId: string,
+    appId: string,
+    expectedDigest: string,
+    automationId: string,
+  ): Promise<RestrictedAppAutomationRunReceipt[]> {
+    const app = this.#installed(workspaceId, appId, expectedDigest);
+    const declaration = automationDeclaration(app.manifest, automationId);
+    const entry = this.#registry.apps.find((item) => item.workspaceId === app.workspaceId && item.manifest.id === app.manifest.id)!;
+    return entry.automationRuns
+      .filter((run) => run.automationId === declaration.id && run.digest === app.digest)
+      .slice(-50)
+      .reverse()
+      .map(({ digest: _digest, ...run }) => structuredClone(run));
+  }
+
+  suspendAutomations(): void {
+    this.#automations.suspend();
     this.#runtimeHost?.suspend?.();
-    for (const timer of this.#backgroundTimers.values()) clearTimeout(timer);
-    this.#backgroundTimers.clear();
   }
 
-  resumeBackground(): void {
-    if (!this.#backgroundSuspended || this.#closed) return;
-    this.#backgroundSuspended = false;
+  resumeAutomations(): void {
+    if (this.#closed) return;
     this.#runtimeHost?.resume?.();
-    this.#scheduleAllBackgroundApps(true);
+    this.#automations.resume();
   }
 
   async storageUsage(workspaceId: string, appId: string, expectedDigest: string): Promise<RestrictedAppStorageUsage> {
@@ -415,8 +519,7 @@ export class RestrictedAppService {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    for (const timer of this.#backgroundTimers.values()) clearTimeout(timer);
-    this.#backgroundTimers.clear();
+    this.#automations.close();
     await this.#queue.catch(() => undefined);
     await this.#runtimeHost?.close();
   }
@@ -427,7 +530,16 @@ export class RestrictedAppService {
     const entry = this.#registry.apps.find((item) => item.workspaceId === workspaceId && item.manifest.id === id);
     if (!entry) throw new RestrictedAppError("APP_UNAVAILABLE", "The restricted app is not installed in this Space.");
     if (entry.digest !== digest) throw new RestrictedAppError("REVISION_CHANGED", "The restricted app revision changed. Refresh before using it.");
-    return copyInstalled(entry);
+    return this.#copyInstalled(entry);
+  }
+
+  #copyInstalled(entry: RestrictedAppRegistryEntry): RestrictedAppInstalled {
+    const installed = copyInstalled(entry);
+    installed.automations = installed.automations.map((state) => {
+      const nextRunAt = this.#automations.nextScheduledAt(automationKey(entry.workspaceId, entry.manifest.id, entry.digest, state.id));
+      return { ...state, ...(nextRunAt ? { nextRunAt } : {}) };
+    });
+    return installed;
   }
 
   async #setNetworkGrant(
@@ -449,10 +561,10 @@ export class RestrictedAppService {
           : existing.networkGrants.filter((id) => id !== destination.id),
       };
       await this.#writeRegistry({
-        schemaVersion: 1,
+        schemaVersion: 2,
         apps: this.#registry.apps.map((item) => item === existing ? next : item),
       });
-      return copyInstalled(next);
+      return this.#copyInstalled(next);
     });
   }
 
@@ -493,10 +605,10 @@ export class RestrictedAppService {
           : existing.fileGrants.filter((item) => item.declarationId !== permission.id),
       };
       await this.#writeRegistry({
-        schemaVersion: 1,
+        schemaVersion: 2,
         apps: this.#registry.apps.map((item) => item === existing ? next : item),
       });
-      return copyInstalled(next);
+      return this.#copyInstalled(next);
     });
   }
 
@@ -519,88 +631,122 @@ export class RestrictedAppService {
           : existing.notificationGrants.filter((id) => id !== permission.id),
       };
       await this.#writeRegistry({
-        schemaVersion: 1,
+        schemaVersion: 2,
         apps: this.#registry.apps.map((item) => item === existing ? next : item),
       });
-      return copyInstalled(next);
+      return this.#copyInstalled(next);
     });
   }
 
-  #scheduleAllBackgroundApps(catchUp = false): void {
-    for (const app of this.#registry.apps) this.#scheduleBackground(app, catchUp);
+  #syncAllAutomations(): void {
+    for (const app of this.#registry.apps) this.#syncAppAutomations(app);
   }
 
-  #scheduleBackground(app: RestrictedAppRegistryEntry, catchUp = false): void {
-    this.#clearBackground(app.workspaceId, app.manifest.id);
-    if (this.#closed || this.#backgroundSuspended || !app.backgroundEnabled || !app.manifest.background || !this.#runtimeHost?.runBackground) return;
-    const interval = app.manifest.background.intervalMinutes * 60_000;
-    const elapsed = app.backgroundLastRunAt ? Math.max(0, this.#now().getTime() - Date.parse(app.backgroundLastRunAt)) : 0;
-    const overdue = Boolean(catchUp && app.backgroundLastRunAt && elapsed >= interval);
-    const delay = overdue ? backgroundStagger(app.workspaceId, app.manifest.id) : app.backgroundLastRunAt ? Math.max(1_000, interval - elapsed) : interval;
-    const reason = overdue ? "resume" as const : "scheduled" as const;
-    const timer = setTimeout(() => {
-      this.#backgroundTimers.delete(backgroundKey(app.workspaceId, app.manifest.id));
-      void this.#executeBackground(app.workspaceId, app.manifest.id, app.digest, reason)
-        .catch(() => undefined)
-        .finally(() => {
-          const current = this.#registry.apps.find((item) => item.workspaceId === app.workspaceId && item.manifest.id === app.manifest.id);
-          if (current) this.#scheduleBackground(current);
-        });
-    }, delay);
-    timer.unref?.();
-    this.#backgroundTimers.set(backgroundKey(app.workspaceId, app.manifest.id), timer);
+  #syncAppAutomations(app: RestrictedAppRegistryEntry): void {
+    for (const declaration of app.manifest.automations) this.#syncAutomation(app, declaration);
   }
 
-  #clearBackground(workspaceId: string, appId: string): void {
-    const key = backgroundKey(workspaceId, appId);
-    const timer = this.#backgroundTimers.get(key);
-    if (timer) clearTimeout(timer);
-    this.#backgroundTimers.delete(key);
+  #syncAutomation(app: RestrictedAppRegistryEntry, declaration: RestrictedAppAutomationDeclaration): void {
+    const state = app.automations.find((item) => item.id === declaration.id);
+    if (!state) throw new Error(`Restricted app automation state is missing for ${declaration.id}.`);
+    const definition = {
+      key: automationKey(app.workspaceId, app.manifest.id, app.digest, declaration.id),
+      intervalMinutes: declaration.trigger.intervalMinutes,
+      enabled: state.enabled,
+      catchUp: declaration.catchUp,
+      ...(state.lastScheduledAt ? { lastScheduledAt: state.lastScheduledAt } : {}),
+      run: (context: WorkspaceAutomationRunContext) => this.#executeAutomation(
+        app.workspaceId,
+        app.manifest.id,
+        app.digest,
+        declaration.id,
+        context,
+      ),
+    };
+    if (this.#automations.has(definition.key)) this.#automations.update(definition);
+    else this.#automations.register(definition);
   }
 
-  async #executeBackground(workspaceId: string, appId: string, digest: string, reason: "scheduled" | "manual" | "resume"): Promise<void> {
-    const runBackground = this.#runtimeHost?.runBackground?.bind(this.#runtimeHost);
-    if (this.#closed || !runBackground) return;
-    const scheduledAt = this.#now().toISOString();
-    let failure: string | undefined;
-    await this.#acquireBackgroundSlot();
-    try {
-      let execution: Promise<void> | undefined;
-      await this.#mutate(async () => {
-        const current = this.#installed(workspaceId, appId, digest);
-        if (!current.backgroundEnabled || !current.manifest.background || this.#backgroundSuspended) return;
-        // Starting the host promise while still holding the service queue makes
-        // launch linearizable with stop+grant/update/remove mutations. A later
-        // mutation either precedes this snapshot or observes and stops the
-        // registered host launch; no stale launch can enter after stop.
-        execution = runBackground(
-          { ...current, stagedRoot: this.#digestRoot(current.digest) },
-          { reason, scheduledAt },
-        );
-      });
-      if (!execution) return;
-      try {
-        await execution;
-      } catch (error) {
-        failure = errorMessage(error).slice(0, 300);
-      }
-    } finally {
-      this.#releaseBackgroundSlot();
+  #unregisterAppAutomations(app: RestrictedAppRegistryEntry): void {
+    for (const declaration of app.manifest.automations) {
+      this.#automations.unregister(automationKey(app.workspaceId, app.manifest.id, app.digest, declaration.id));
     }
+  }
+
+  async #executeAutomation(
+    workspaceId: string,
+    appId: string,
+    digest: string,
+    automationId: string,
+    context: WorkspaceAutomationRunContext,
+  ): Promise<void> {
+    let execution: Promise<void> | undefined;
     await this.#mutate(async () => {
-      const existing = this.#registry.apps.find((item) => item.workspaceId === workspaceId && item.manifest.id === appId && item.digest === digest);
-      if (!existing || !existing.backgroundEnabled) return;
+      const current = this.#installed(workspaceId, appId, digest);
+      const declaration = automationDeclaration(current.manifest, automationId);
+      const state = current.automations.find((item) => item.id === declaration.id)!;
+      if (context.reason !== "manual" && !state.enabled) {
+        throw new RestrictedAppError("APP_UNAVAILABLE", "The automation was disabled before it could start.");
+      }
+      this.#assertAutomationRuntime();
+      const scoped: RestrictedAppRuntimeDescriptor = {
+        ...current,
+        networkGrants: current.networkGrants.filter((id) => declaration.permissions.network.includes(id)),
+        fileGrants: current.fileGrants.filter((grant) => declaration.permissions.files.includes(grant.declarationId)),
+        notificationGrants: current.notificationGrants.filter((id) => declaration.permissions.notifications.includes(id)),
+        automations: current.automations.filter((automation) => automation.id === declaration.id),
+        stagedRoot: this.#digestRoot(current.digest),
+      };
+      execution = this.#runtimeHost!.runAutomation!(scoped, {
+        runId: context.runId,
+        automationId: declaration.id,
+        handler: declaration.handler,
+        reason: context.reason,
+        scheduledAt: context.scheduledAt,
+      }, context.signal);
+    });
+    if (!execution) throw new RestrictedAppError("APP_UNAVAILABLE", "The automation could not start.");
+    await execution;
+  }
+
+  async #recordAutomationResult(result: WorkspaceAutomationRunResult): Promise<void> {
+    if (this.#closed) return;
+    const owner = automationOwner(result.key.ownerId);
+    await this.#mutate(async () => {
+      const existing = this.#registry.apps.find((item) => item.workspaceId === owner.workspaceId
+        && item.manifest.id === owner.appId && item.digest === owner.digest);
+      if (!existing || existing.automationRuns.some((run) => run.runId === result.runId)) return;
+      const declaration = existing.manifest.automations.find((item) => item.id === result.key.jobId);
+      const state = existing.automations.find((item) => item.id === result.key.jobId);
+      if (!declaration || !state) return;
+      const nextState: RestrictedAppAutomationRegistryState = {
+        ...state,
+        ...(result.reason === "manual" ? {} : { lastScheduledAt: result.scheduledAt }),
+        ...(result.outcome === "success" || result.outcome === "failure" ? { lastRunAt: result.finishedAt } : {}),
+        ...(result.outcome === "failure" ? { lastError: result.error ?? "Automation run failed." }
+          : result.outcome === "success" ? { lastError: undefined }
+          : {}),
+      };
+      const receipt: RestrictedAppAutomationRegistryReceipt = {
+        ...publicAutomationRun(result),
+        digest: existing.digest,
+      };
       const next: RestrictedAppRegistryEntry = {
         ...existing,
-        backgroundLastRunAt: this.#now().toISOString(),
-        ...(failure ? { backgroundLastError: failure } : { backgroundLastError: undefined }),
+        automations: existing.automations.map((item) => item === state ? nextState : item),
+        automationRuns: [...existing.automationRuns, receipt].slice(-200),
       };
-      await this.#writeRegistry({ schemaVersion: 1, apps: this.#registry.apps.map((item) => item === existing ? next : item) });
+      await this.#writeRegistry({ schemaVersion: 2, apps: this.#registry.apps.map((item) => item === existing ? next : item) });
     });
-    if (failure) throw new RestrictedAppError("APP_ERROR", failure);
   }
 
-  async #invalidateOAuthApp(app: RestrictedAppInstalled): Promise<void> {
+  #assertAutomationRuntime(): void {
+    if (!this.#runtimeHost?.runAutomation) {
+      throw new RestrictedAppError("APP_UNAVAILABLE", "Automations require the Workspace desktop host.");
+    }
+  }
+
+  async #invalidateOAuthApp(app: Pick<RestrictedAppRegistryEntry, "workspaceId" | "digest" | "manifest">): Promise<void> {
     if (!this.#oauth) return;
     for (const destination of app.manifest.permissions.network) {
       await this.#invalidateOAuthDestination(app, destination);
@@ -608,7 +754,7 @@ export class RestrictedAppService {
   }
 
   async #invalidateOAuthDestination(
-    app: RestrictedAppInstalled,
+    app: Pick<RestrictedAppRegistryEntry, "workspaceId" | "digest" | "manifest">,
     destination: RestrictedAppManifest["permissions"]["network"][number],
   ): Promise<boolean | undefined> {
     if (!this.#oauth || !destination.auth.some((item) => item.kind === "oauth2-pkce")) return undefined;
@@ -622,20 +768,6 @@ export class RestrictedAppService {
       if (!(error instanceof RestrictedAppOAuthError)) throw error;
       throw new RestrictedAppError(error.code === "STORAGE_FAILED" ? "STORAGE_FAILED" : "AUTH_REQUIRED", error.message);
     }
-  }
-
-  async #acquireBackgroundSlot(): Promise<void> {
-    if (this.#backgroundActive < 2) {
-      this.#backgroundActive += 1;
-      return;
-    }
-    await new Promise<void>((resolvePromise) => this.#backgroundWaiters.push(resolvePromise));
-    this.#backgroundActive += 1;
-  }
-
-  #releaseBackgroundSlot(): void {
-    this.#backgroundActive = Math.max(0, this.#backgroundActive - 1);
-    this.#backgroundWaiters.shift()?.();
   }
 
   async #mutate<T>(operation: () => Promise<T>): Promise<T> {
@@ -701,7 +833,7 @@ export class RestrictedAppService {
 }
 
 async function readRegistry(path: string): Promise<RestrictedAppRegistryFile> {
-  if (!existsSync(path)) return { schemaVersion: 1, apps: [] };
+  if (!existsSync(path)) return { schemaVersion: 2, apps: [] };
   const info = await lstat(path);
   if (info.isSymbolicLink() || !info.isFile() || info.size > 5 * 1024 * 1024) throw new Error("Restricted app registry is unsafe or too large.");
   let value: unknown;
@@ -712,11 +844,13 @@ async function readRegistry(path: string): Promise<RestrictedAppRegistryFile> {
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Restricted app registry must be an object.");
   const record = value as { schemaVersion?: unknown; apps?: unknown };
-  if (record.schemaVersion !== 1 || !Array.isArray(record.apps)) throw new Error("Restricted app registry version is unsupported.");
+  if (record.schemaVersion !== 2 || !Array.isArray(record.apps)) {
+    throw new Error("Restricted app registry version is unsupported.");
+  }
   const apps = record.apps.map((item, index) => registryEntry(item, index));
   const keys = apps.map((item) => `${item.workspaceId}:${item.manifest.id}`);
   if (new Set(keys).size !== keys.length) throw new Error("Restricted app registry contains duplicate Space app ids.");
-  return { schemaVersion: 1, apps };
+  return { schemaVersion: 2, apps };
 }
 
 function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntry {
@@ -742,14 +876,21 @@ function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntr
     || notificationGrants.some((grant) => !manifest.permissions.notifications.some((item) => item.id === grant))) {
     throw new Error("Restricted app registry has invalid notification grants.");
   }
-  const backgroundEnabled = item.backgroundEnabled === true;
-  if (backgroundEnabled && !manifest.background) throw new Error("Restricted app registry enables undeclared background work.");
-  const backgroundLastRunAt = item.backgroundLastRunAt === undefined
-    ? undefined
-    : isoDate(item.backgroundLastRunAt, "Restricted app background run time");
-  const backgroundLastError = item.backgroundLastError === undefined
-    ? undefined
-    : nonempty(item.backgroundLastError, "Restricted app background error", 300);
+  const declarations = manifest.automations;
+  if (!Array.isArray(item.automations)) throw new Error("Restricted app registry automation states are missing.");
+  const automations = item.automations.map((state) => automationRegistryStateValue(state, declarations));
+  if (automations.length !== declarations.length
+    || new Set(automations.map((state) => state.id)).size !== declarations.length
+    || declarations.some((declaration) => !automations.some((state) => state.id === declaration.id))) {
+    throw new Error("Restricted app registry automation states do not match the reviewed manifest.");
+  }
+  if (!Array.isArray(item.automationRuns) || item.automationRuns.length > 200) {
+    throw new Error("Restricted app automation run history is invalid.");
+  }
+  const automationRuns = item.automationRuns.map((run) => automationRunReceiptValue(run, declarations, digest));
+  if (new Set(automationRuns.map((run) => run.runId)).size !== automationRuns.length) {
+    throw new Error("Restricted app automation run history contains duplicate run ids.");
+  }
   return {
     workspaceId,
     packageName,
@@ -759,9 +900,8 @@ function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntr
     networkGrants,
     fileGrants,
     notificationGrants,
-    backgroundEnabled,
-    ...(backgroundLastRunAt ? { backgroundLastRunAt } : {}),
-    ...(backgroundLastError ? { backgroundLastError } : {}),
+    automations,
+    automationRuns,
     fileCount: boundedInteger(item.fileCount, "Restricted app registry file count", 1, 2_048),
     totalBytes: boundedInteger(item.totalBytes, "Restricted app registry byte count", 1, 50 * 1024 * 1024),
     installedAt: isoDate(item.installedAt, "Restricted app installed time"),
@@ -811,9 +951,7 @@ function copyInstalled(item: RestrictedAppRegistryEntry): RestrictedAppInstalled
     networkGrants: item.networkGrants,
     fileGrants: item.fileGrants,
     notificationGrants: item.notificationGrants,
-    backgroundEnabled: item.backgroundEnabled,
-    ...(item.backgroundLastRunAt ? { backgroundLastRunAt: item.backgroundLastRunAt } : {}),
-    ...(item.backgroundLastError ? { backgroundLastError: item.backgroundLastError } : {}),
+    automations: item.automations.map(({ lastScheduledAt: _lastScheduledAt, ...automation }) => automation),
     fileCount: item.fileCount,
     totalBytes: item.totalBytes,
     installedAt: item.installedAt,
@@ -883,12 +1021,117 @@ function restrictedAppGrantRoot(value: unknown): string {
   return segments.join("/");
 }
 
-function backgroundKey(workspaceId: string, appId: string): string {
-  return JSON.stringify([workspaceId, appId]);
+function automationDeclaration(manifest: RestrictedAppManifest, automationId: string): RestrictedAppAutomationDeclaration {
+  const id = appIdValue(automationId);
+  const declaration = manifest.automations.find((automation) => automation.id === id);
+  if (!declaration) throw new RestrictedAppError("INPUT_INVALID", "The app did not declare this automation.");
+  return declaration;
 }
 
-function backgroundStagger(workspaceId: string, appId: string): number {
-  let value = 0;
-  for (const character of `${workspaceId}\0${appId}`) value = (value * 31 + character.charCodeAt(0)) >>> 0;
-  return 1_000 + (value % 30_000);
+function automationKey(workspaceId: string, appId: string, digest: string, automationId: string): {
+  ownerId: string;
+  jobId: string;
+} {
+  return {
+    ownerId: JSON.stringify([workspaceId, appId, digest]),
+    jobId: automationId,
+  };
+}
+
+function automationOwner(value: string): { workspaceId: string; appId: string; digest: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Automation owner id is invalid.");
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 3) throw new Error("Automation owner id is invalid.");
+  return {
+    workspaceId: nonempty(parsed[0], "Automation Space id", 200),
+    appId: appIdValue(parsed[1]),
+    digest: digestValue(parsed[2]),
+  };
+}
+
+function publicAutomationRun(result: WorkspaceAutomationRunResult): RestrictedAppAutomationRunReceipt {
+  return {
+    runId: result.runId,
+    automationId: result.key.jobId,
+    reason: result.reason,
+    scheduledAt: result.scheduledAt,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    outcome: result.outcome,
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+function automationRegistryStateValue(
+  value: unknown,
+  declarations: RestrictedAppAutomationDeclaration[],
+): RestrictedAppAutomationRegistryState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Restricted app automation state is invalid.");
+  }
+  const item = value as Partial<RestrictedAppAutomationRegistryState>;
+  const id = appIdValue(item.id);
+  if (!declarations.some((declaration) => declaration.id === id) || typeof item.enabled !== "boolean") {
+    throw new Error("Restricted app automation state exceeds its reviewed declaration.");
+  }
+  const lastScheduledAt = item.lastScheduledAt === undefined
+    ? undefined
+    : isoDate(item.lastScheduledAt, "Restricted app automation scheduled time");
+  const lastRunAt = item.lastRunAt === undefined
+    ? undefined
+    : isoDate(item.lastRunAt, "Restricted app automation run time");
+  const lastError = item.lastError === undefined
+    ? undefined
+    : nonempty(item.lastError, "Restricted app automation error", 300);
+  return {
+    id,
+    enabled: item.enabled,
+    ...(lastScheduledAt ? { lastScheduledAt } : {}),
+    ...(lastRunAt ? { lastRunAt } : {}),
+    ...(lastError ? { lastError } : {}),
+  };
+}
+
+function automationRunReceiptValue(
+  value: unknown,
+  declarations: RestrictedAppAutomationDeclaration[],
+  expectedDigest: string,
+): RestrictedAppAutomationRegistryReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Restricted app automation run receipt is invalid.");
+  }
+  const item = value as Partial<RestrictedAppAutomationRegistryReceipt>;
+  const runId = nonempty(item.runId, "Restricted app automation run id", 200);
+  const automationId = appIdValue(item.automationId);
+  if (!declarations.some((declaration) => declaration.id === automationId) || digestValue(item.digest) !== expectedDigest) {
+    throw new Error("Restricted app automation run receipt does not match its reviewed revision.");
+  }
+  if (item.reason !== "scheduled" && item.reason !== "manual" && item.reason !== "resume") {
+    throw new Error("Restricted app automation run reason is invalid.");
+  }
+  if (item.outcome !== "success" && item.outcome !== "failure" && item.outcome !== "skipped" && item.outcome !== "cancelled") {
+    throw new Error("Restricted app automation run outcome is invalid.");
+  }
+  const startedAt = isoDate(item.startedAt, "Restricted app automation start time");
+  const finishedAt = isoDate(item.finishedAt, "Restricted app automation finish time");
+  if (Date.parse(finishedAt) < Date.parse(startedAt)) throw new Error("Restricted app automation run times are invalid.");
+  const error = item.error === undefined ? undefined : nonempty(item.error, "Restricted app automation run error", 300);
+  if (item.outcome === "success" ? error !== undefined : error === undefined) {
+    throw new Error("Restricted app automation run error does not match its outcome.");
+  }
+  return {
+    runId,
+    automationId,
+    reason: item.reason,
+    scheduledAt: isoDate(item.scheduledAt, "Restricted app automation scheduled time"),
+    startedAt,
+    finishedAt,
+    outcome: item.outcome,
+    ...(error ? { error } : {}),
+    digest: expectedDigest,
+  };
 }
