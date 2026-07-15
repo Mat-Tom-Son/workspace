@@ -180,8 +180,13 @@ async function runSmoke() {
       occluded: false,
       theme: "dark",
     });
+    const staleMountRejection = assert.rejects(
+      staleMount,
+      (error) => error?.code === "APP_UNAVAILABLE",
+      "stop invalidates an in-flight stale UI mount",
+    );
     await host.stop(descriptor.workspaceId, descriptor.manifest.id, descriptor.digest);
-    await assert.rejects(staleMount, (error) => error?.code === "APP_UNAVAILABLE", "stop invalidates an in-flight stale UI mount");
+    await staleMountRejection;
     const mountId = "11111111-1111-4111-8111-111111111111";
     await host.mountUi(descriptor, parent.webContents, parent, {
       mountId,

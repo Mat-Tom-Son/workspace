@@ -8,8 +8,13 @@ import "./professional-surfaces.css";
 import "./professional-customization.css";
 import { App } from "./App";
 
-if (window.workspaceDesktop?.window.material === "mica") {
-  document.documentElement.dataset.windowMaterial = "mica";
+const platform = window.workspaceDesktop?.app.platform;
+if (platform) document.documentElement.dataset.platform = platform;
+else delete document.documentElement.dataset.platform;
+
+const windowMaterial = window.workspaceDesktop?.window.material;
+if (windowMaterial === "mica" || windowMaterial === "vibrancy") {
+  document.documentElement.dataset.windowMaterial = windowMaterial;
 } else {
   delete document.documentElement.dataset.windowMaterial;
 }

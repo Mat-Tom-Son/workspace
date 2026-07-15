@@ -24,6 +24,11 @@ assertPath("dist/desktop/desktop/src/restricted-app-host.js");
 assertPath("dist/desktop/desktop/src/restricted-app-preload.cjs");
 assertPath("desktop/assets/icon.ico");
 assertPath("desktop/assets/icon.png");
+if (desktopReleasePlatform() === "darwin") {
+  assertPath("desktop/assets/icon.icns");
+  assertPath("desktop/assets/dmg-background.png");
+  assertPath("desktop/cli/workspace-cli.jxa.js");
+}
 
 await verifyNativePiResources();
 
@@ -44,6 +49,11 @@ function assertSupportedNode() {
 
 function assertPath(relativePath) {
   if (!existsSync(join(rootDir, relativePath))) failures.push(`Missing ${relativePath}.`);
+}
+
+function desktopReleasePlatform() {
+  const configured = process.env.WORKSPACE_DESKTOP_RELEASE_PLATFORM?.trim();
+  return configured || process.platform;
 }
 
 async function verifyNativePiResources() {

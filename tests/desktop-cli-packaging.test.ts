@@ -15,7 +15,7 @@ test("Electron Builder packages executable CLI shims outside ASAR and includes P
   assert.deepEqual(builder.extraFiles, [{
     from: "desktop/cli",
     to: "bin",
-    filter: ["workspace", "workspace.cmd", "workspace-cli.ps1"],
+    filter: ["workspace", "workspace.cmd", "workspace-cli.ps1", "workspace-cli.jxa.js"],
   }]);
   assert.equal(basename(builder.nsis.include), "cli-path.nsh");
   assert.equal(builder.asar, true);
@@ -29,7 +29,7 @@ test("retained Forge packaging mirrors the package-root CLI bin layout", async (
   const packageRoot = await mkdtemp(join(tmpdir(), "workspace-forge-cli-"));
   try {
     await hooks[0](packageRoot);
-    for (const name of ["workspace", "workspace.cmd", "workspace-cli.ps1"]) {
+    for (const name of ["workspace", "workspace.cmd", "workspace-cli.ps1", "workspace-cli.jxa.js"]) {
       assert.equal(
         await readFile(join(packageRoot, "bin", name), "utf8"),
         await readFile(join(rootDir, "desktop", "cli", name), "utf8"),
@@ -38,6 +38,29 @@ test("retained Forge packaging mirrors the package-root CLI bin layout", async (
   } finally {
     await rm(packageRoot, { recursive: true, force: true });
   }
+});
+
+test("macOS CLI shim uses the same atomic bounded protocol-v1 handoff", async () => {
+  const [shellShim, jxaHelper] = await Promise.all([
+    read("desktop/cli/workspace"),
+    read("desktop/cli/workspace-cli.jxa.js"),
+  ]);
+  assert.match(shellShim, /uname -s/);
+  assert.match(shellShim, /osascript -l JavaScript/);
+  for (const field of ["protocolVersion", "id", "argv", "cwd", "createdAt"]) {
+    assert.match(jxaHelper, new RegExp(`\\b${field}:`), `request must include ${field}`);
+  }
+  assert.match(jxaHelper, /Library\/Application Support\/Workspace/);
+  assert.match(jxaHelper, /WORKSPACE_DESKTOP_USER_DATA_DIR/);
+  assert.match(jxaHelper, /WORKSPACE_CLI_APP/);
+  assert.match(jxaHelper, /WORKSPACE_CLI_TIMEOUT_MS/);
+  assert.match(jxaHelper, /moveItemAtPathToPathError/);
+  assert.match(jxaHelper, /--workspace-cli-request/);
+  assert.match(jxaHelper, /fileHandleWithStandardOutput/);
+  assert.match(jxaHelper, /fileHandleWithStandardError/);
+  assert.match(jxaHelper, /\$\.exit\(exitCode\)/);
+  const desktopMain = await read("desktop/src/main.ts");
+  assert.match(desktopMain, /process\.env\.WORKSPACE_DESKTOP_USER_DATA_DIR = app\.getPath\("userData"\)/);
 });
 
 test("Windows CLI shim uses an atomic bounded protocol-v1 handoff", async () => {
@@ -98,9 +121,10 @@ test("NSIS manages only the current-user PATH and broadcasts changes", async () 
 
 test("packaged asset verification requires external CLI shims", async () => {
   const verifier = await read("scripts/verify-packaged-app-assets.mjs");
-  assert.match(verifier, /join\(packageDir, "bin", "workspace\.cmd"\)/);
-  assert.match(verifier, /join\(packageDir, "bin", "workspace"\)/);
-  assert.match(verifier, /join\(packageDir, "bin", "workspace-cli\.ps1"\)/);
+  assert.match(verifier, /join\(binDir, "workspace\.cmd"\)/);
+  assert.match(verifier, /join\(binDir, "workspace"\)/);
+  assert.match(verifier, /join\(binDir, "workspace-cli\.ps1"\)/);
+  assert.match(verifier, /join\(binDir, "workspace-cli\.jxa\.js"\)/);
   assert.match(verifier, /CLI shim must remain outside app\.asar/);
 });
 

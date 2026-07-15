@@ -30,9 +30,10 @@ import { useSurfaceTabs } from "./hooks/useSurfaceTabs";
 import { useWorkspaceTree } from "./hooks/useWorkspaceTree";
 import { api, apiForm, apiUrl, errorText } from "./lib/api";
 import { contributedSurfaces, resolveSurfaceForKey, surfaceMatchesTab } from "./lib/capability-surfaces";
-import { hasNativeFiles, hasWorkspacePathDrag } from "./lib/file-actions";
+import { canOpenDirectly, hasNativeFiles, hasWorkspacePathDrag, nativeOpenLabel } from "./lib/file-actions";
 import { formatItemCount } from "./lib/format";
 import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
+import { isMacOS, typographyFontForPlatform, workspaceEntryNativePath } from "./lib/platform";
 import { resolveRestrictedAppOpenRequest, restrictedAppRailMode } from "./lib/restricted-app-navigation";
 import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry, removeTreeEntries } from "./lib/tree";
 import { normalizeWorkspaceCustomizations } from "./lib/workspace-customization";
@@ -109,6 +110,17 @@ export function App() {
 
   const activeWorkspace = useMemo(() => boot?.workspaces.find((item) => item.id === activeWorkspaceId) ?? boot?.workspaces[0] ?? null, [activeWorkspaceId, boot]);
   useEffect(() => { if (activeWorkspace) { if (!fixtureRequested) localStorage.setItem("workspace.active", activeWorkspace.id); setActiveWorkspaceId(activeWorkspace.id); } }, [activeWorkspace?.id]);
+  useEffect(() => {
+    if (fixtureRequested) return;
+    void window.workspaceDesktop?.workspace.setActiveSpace?.(activeWorkspace?.id ?? null).catch((caught) => setError(errorText(caught)));
+  }, [activeWorkspace?.id, activeWorkspace?.name, activeWorkspace?.rootPath]);
+  useEffect(() => {
+    const desktopWorkspace = window.workspaceDesktop?.workspace;
+    if (!desktopWorkspace?.onOpenSpace || !boot) return;
+    return desktopWorkspace.onOpenSpace((workspaceId) => {
+      if (boot.workspaces.some((workspace) => workspace.id === workspaceId)) setActiveWorkspaceId(workspaceId);
+    });
+  }, [boot?.workspaces]);
   useEffect(() => {
     const updates = window.workspaceDesktop?.updates;
     if (!updates) return;
@@ -258,6 +270,11 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
   const activeSurfaceKey = extensionSurfaceIdForMode(activeMode);
   const activeSurface = activeSurfaceKey ? resolveSurfaceForKey(surfaces, activeSurfaceKey) : null;
   const activeRestrictedApp = restrictedApps.find((app) => restrictedAppRailMode(workspace.id, app.manifest.id) === activeMode) ?? null;
+  const previewLocalFile = useCallback((path: string) => {
+    const previewFile = window.workspaceDesktop?.workspace.previewFile;
+    if (!isMacOS() || !previewFile) return;
+    void previewFile(workspace.id, path).catch((caught) => onError(errorText(caught)));
+  }, [onError, workspace.id]);
 
   const openCommandPalette = useCallback(() => {
     if (commandPaletteBlockedByDialog()) return;
@@ -274,6 +291,18 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
 
   useEffect(() => { if (!fixture) localStorage.setItem("workspace.mode", activeMode); }, [activeMode, fixture]);
   useEffect(() => { setActiveMode((current) => current === "workspaces" ? "files" : current); }, [workspace.id]);
+  useEffect(() => {
+    if (!isMacOS() || !window.workspaceDesktop?.workspace.previewFile) return;
+    function previewSelectedFile(event: KeyboardEvent) {
+      if (!isQuickLookShortcut(event) || activeMode !== "files") return;
+      const path = selectedPathRef.current;
+      if (!path || findTreeEntry(tree.tree, path)?.kind !== "file") return;
+      event.preventDefault();
+      previewLocalFile(path);
+    }
+    window.addEventListener("keydown", previewSelectedFile);
+    return () => window.removeEventListener("keydown", previewSelectedFile);
+  }, [activeMode, previewLocalFile, tree.tree]);
   useEffect(() => {
     if (!activeMode.startsWith("app:restricted:") || !restrictedAppCatalogKnown || activeRestrictedApp) return;
     setActiveMode("files");
@@ -441,7 +470,47 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     showToast({ text: `Attached ${path.split("/").pop() ?? path} to Chat`, tone: "success" });
   }
 
-  function openContextMenu(entry: TreeEntry, event: React.MouseEvent<HTMLElement>) { event.preventDefault(); event.stopPropagation(); setFileContextMenu({ entry, x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 390), returnFocusTarget: event.currentTarget as HTMLElement }); }
+  async function openContextMenu(entry: TreeEntry, event: React.MouseEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const returnFocusTarget = event.currentTarget as HTMLElement;
+    const point = { x: Math.round(event.clientX), y: Math.round(event.clientY) };
+    const popupFileMenu = window.workspaceDesktop?.workspace.popupFileMenu;
+    if (isMacOS() && popupFileMenu) {
+      setFileContextMenu(null);
+      try {
+        const command = await popupFileMenu({
+          workspaceId: workspace.id,
+          path: entry.path,
+          kind: entry.kind,
+          capabilities: {
+            open: entry.kind === "folder" || canOpenDirectly(entry.path),
+            attach: entry.kind === "file",
+            history: entry.kind === "file",
+            upload: entry.kind === "folder",
+            rename: Boolean(entry.path),
+            delete: Boolean(entry.path),
+          },
+          point,
+        });
+        if (command === "open") {
+          if (entry.kind === "file") {
+            tree.setSelectedPath(entry.path);
+            tabs.openFileSurfaceTab(workspace, entry.path);
+            await openLocalPath(entry.path, nativeOpenLabel(entry).office ? "open-native" : "open");
+          } else await openLocalPath(entry.path, "open");
+        } else if (command === "reveal") await openLocalPath(entry.path, "reveal");
+        else if (command === "copy-path") await copyPath(entry.path);
+        else if (command === "attach-chat") attachToChat(entry.path);
+        else if (command === "version-history") openVersionHistory(workspace, entry.path);
+        else if (command === "upload-here") chooseUpload(entry.path);
+        else if (command === "rename") renameEntry(entry.path);
+        else if (command === "delete") await deleteEntry(entry.path);
+      } catch (caught) { onError(errorText(caught)); }
+      return;
+    }
+    setFileContextMenu({ entry, x: Math.min(point.x, window.innerWidth - 250), y: Math.min(point.y, window.innerHeight - 390), returnFocusTarget });
+  }
   function openRootContextMenu(event: React.MouseEvent<HTMLElement>) { if ((event.target as HTMLElement).closest("[data-tree-row]")) return; openContextMenu({ name: workspace.name, path: "", kind: "folder" }, event); }
 
   async function uploadFiles(files: DroppedUploadFile[], targetFolderPath: string) {
@@ -531,7 +600,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
     if (fixture) { showToast({ text: "Version history is disabled in the preview", tone: "info" }); return; }
     setVersionHistory({ workspace: targetWorkspace, path, name: path.split("/").pop() ?? path });
   }
-  async function copyPath(path: string) { const full = path ? `${workspace.rootPath}\\${path.replaceAll("/", "\\")}` : workspace.rootPath; await navigator.clipboard.writeText(full); showToast({ text: "Path copied", tone: "success" }); }
+  async function copyPath(path: string) { const full = workspaceEntryNativePath(workspace.rootPath, path); await navigator.clipboard.writeText(full); showToast({ text: "Path copied", tone: "success" }); }
 
   function updateDropTarget(event: React.DragEvent<HTMLElement>, target: string) { event.preventDefault(); if (hasNativeFiles(event) || hasWorkspacePathDrag(event)) { event.dataTransfer.dropEffect = hasNativeFiles(event) ? "copy" : "move"; tree.setDropTargetFolderPath(target); } }
   function clearDropTarget(event?: React.DragEvent<HTMLElement>) { if (event && event.currentTarget.contains(event.relatedTarget as Node | null)) return; tree.setDropTargetFolderPath(null); }
@@ -716,7 +785,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
         >
           {uploadingFiles ? <div className="file-upload-progress" aria-live="polite"><Loader2 className="spin" size={14} />Adding files</div> : null}
           {tree.status === "refreshing" ? <div className="file-tree-refresh-progress" aria-live="polite"><Loader2 className="spin" size={14} />Updating files</div> : null}
-          {tree.status === "loading" ? <FileTreeLoadingState /> : tree.status === "error" ? <EmptyInline text="Couldn't load this Space. Refresh to try again." /> : <FileTree entries={tree.visibleEntries} collapsedPaths={tree.query ? new Set() : tree.collapsedPaths} loadingFolderPaths={tree.loadingFolderPaths} selectedPath={tree.selectedPath} movingTreePath={tree.movingTreePath} dropTargetFolderPath={tree.dropTargetFolderPath} searchQuery={tree.query} onToggleFolder={tree.toggleFolder} onSelectFile={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onOpenFile={(path) => void openLocalPath(path, "open")} onOpenContextMenu={openContextMenu} onUpdateDropTarget={updateDropTarget} onDropOnTarget={dropOnTarget} onNativeDragStartFile={startNativeFileDrag} onDragStartEntry={startTreeDrag} onDragEndEntry={endTreeDrag} />}
+          {tree.status === "loading" ? <FileTreeLoadingState /> : tree.status === "error" ? <EmptyInline text="Couldn't load this Space. Refresh to try again." /> : <FileTree entries={tree.visibleEntries} collapsedPaths={tree.query ? new Set() : tree.collapsedPaths} loadingFolderPaths={tree.loadingFolderPaths} selectedPath={tree.selectedPath} movingTreePath={tree.movingTreePath} dropTargetFolderPath={tree.dropTargetFolderPath} searchQuery={tree.query} onToggleFolder={tree.toggleFolder} onSelectFile={(path) => { tree.setSelectedPath(path); tabs.openFileSurfaceTab(workspace, path); }} onPreviewFile={isMacOS() ? previewLocalFile : undefined} onOpenFile={(path) => void openLocalPath(path, "open")} onOpenContextMenu={openContextMenu} onUpdateDropTarget={updateDropTarget} onDropOnTarget={dropOnTarget} onNativeDragStartFile={startNativeFileDrag} onDragStartEntry={startTreeDrag} onDragEndEntry={endTreeDrag} />}
         </div>
       </div> : null}
       {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.kind === "chat" ? activeTab.conversationId ?? undefined : undefined} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
@@ -800,6 +869,13 @@ function updateActionLabel(status: DesktopUpdateStatus) {
 
 function isCommandPaletteShortcut(event: KeyboardEvent) {
   return (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLocaleLowerCase() === "k";
+}
+
+function isQuickLookShortcut(event: KeyboardEvent) {
+  if ((event.key !== " " && event.code !== "Space") || event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  if (document.querySelector(".modal-backdrop, .publish-review-backdrop, [role='dialog'][aria-modal='true']")) return false;
+  const target = event.target instanceof Element ? event.target : null;
+  return !target?.closest("input, textarea, select, button, a[href], [contenteditable='true'], [role='button'], [role='textbox'], [data-tree-row]");
 }
 
 function commandPaletteBlockedByDialog() {
@@ -898,13 +974,14 @@ function useThemePreference(): [AppTheme, AppThemePreference, (value: AppThemePr
 }
 
 function useTypographyPreference(): [AppTypographyPreference, (update: Partial<AppTypographyPreference>) => void] {
-  const [value, setValue] = useState<AppTypographyPreference>(() => fixtureRequested ? defaultTypographyPreference : readStoredJsonValue(typographyPreferenceKey, (raw) => { const record = raw as Partial<AppTypographyPreference>; return { font: typographyFontValues.includes(record.font as AppTypographyFont) ? record.font as AppTypographyFont : defaultTypographyPreference.font, textSize: textSizeValues.includes(record.textSize as AppTypographyPreference["textSize"]) ? record.textSize as AppTypographyPreference["textSize"] : defaultTypographyPreference.textSize }; }, defaultTypographyPreference));
+  const [value, setValue] = useState<AppTypographyPreference>(() => fixtureRequested ? defaultTypographyPreference : readStoredJsonValue(typographyPreferenceKey, (raw) => { const record = raw as Partial<AppTypographyPreference>; const font = typographyFontValues.includes(record.font as AppTypographyFont) ? record.font as AppTypographyFont : defaultTypographyPreference.font; return { font: typographyFontForPlatform(font), textSize: textSizeValues.includes(record.textSize as AppTypographyPreference["textSize"]) ? record.textSize as AppTypographyPreference["textSize"] : defaultTypographyPreference.textSize }; }, defaultTypographyPreference));
   useEffect(() => { document.documentElement.dataset.workspaceFont = value.font; document.documentElement.dataset.workspaceTextSize = value.textSize; if (!fixtureRequested) writeStoredJsonValue(typographyPreferenceKey, value); }, [value]);
   return [value, (update) => setValue((current) => ({ ...current, ...update }))];
 }
 
 function useScrollbarActivity() {
   useEffect(() => {
+    if (isMacOS()) return;
     const activeClass = "scrollbars-active";
     const nearClass = "scrollbar-near";
     let timer: number | null = null;

@@ -1,8 +1,8 @@
 import { isAbsolute, resolve } from "node:path";
 
 /**
- * Protocol v1 is intentionally a read-only, same-user control surface. Its
- * AppData file exchange is not an authenticated caller boundary. Do not add
+ * Protocol v1 is intentionally a read-only, same-user control surface. The
+ * platform application-data file exchange is not an authenticated caller boundary. Do not add
  * mutating commands without a separate authorization design and authenticated
  * transport (or equivalent per-launch request authentication).
  */
@@ -36,7 +36,7 @@ export type WorkspaceCliJson =
   | WorkspaceCliJson[]
   | { [key: string]: WorkspaceCliJson };
 
-/** Stable on-disk request contract shared by the Windows shim and desktop broker. */
+/** Stable on-disk request contract shared by platform shims and the desktop broker. */
 export interface WorkspaceCliRequestV1 {
   protocolVersion: typeof WORKSPACE_CLI_PROTOCOL_VERSION;
   id: string;
@@ -45,7 +45,7 @@ export interface WorkspaceCliRequestV1 {
   createdAt: string;
 }
 
-/** Stable on-disk response contract shared by the desktop broker and Windows shim. */
+/** Stable on-disk response contract shared by the desktop broker and platform shims. */
 export interface WorkspaceCliResponseV1 {
   protocolVersion: typeof WORKSPACE_CLI_PROTOCOL_VERSION;
   id: string;

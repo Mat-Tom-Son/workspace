@@ -35,7 +35,7 @@ The Space switcher chooses the active root-folder entity. The stable primary nav
 
 The Assistant's model provider, model, API key, and supported provider OAuth connection live in **Settings → Assistant**, rather than adding a setup destination to the primary rail. A restricted Space app's connection is a different, app-scoped object managed with that app in **Capabilities**.
 
-Each open tab belongs to one Space. Selecting a tab takes the user back to that Space and its identity; selecting a Space restores its most recent tab. A Chat that is working remains alive when another tab is selected, when Workspace is minimized, and when the window is hidden to the tray.
+Each open tab belongs to one Space. Selecting a tab takes the user back to that Space and its identity; selecting a Space restores its most recent tab. A Chat that is working remains alive when another tab is selected, when Workspace is minimized, when the Windows window is hidden to the tray, and when the last macOS window is closed and later recreated from the Dock.
 
 ## A Space is a view of a folder, not a new file format
 
@@ -131,8 +131,9 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Render validated declarative `surface.json` contributions from loaded Pi Extensions as a contributed rail destination, left-pane navigator, and Space-bound view tabs without injecting Extension code into the renderer.
 - Let the Assistant submit a completed, Space-relative restricted-app package through a host-owned proposal tool. Workspace persists a Space-and-Chat-bound, digest-pinned review without evaluating JavaScript; only a later human approval installs it, with network, Space-file, and notification access off, no saved connection, and every automation disabled.
 - Give each installed Space app arbitrary reviewed web UI in a sandboxed rail navigator and host-derived persistent Space-owned right tabs, plus optional bounded Assistant actions and named automations in a separate worker sandbox. A machine-wide scheduler shared across Spaces provides two execution slots, FIFO admission, same-job non-overlap, durable cadence, bounded catch-up, and run receipts. Capabilities manages each job independently alongside exact network/file/notification grants, host-owned encrypted connections, local data, reviewed updates, removal, and the secondary advanced local-package path.
-- Provide bounded host-owned JSON storage with active-visible-view invalidation hints, History-covered Space-file grants, exact public-HTTPS or numeric-loopback requests, API-key/bearer/basic/OAuth PKCE connection adapters, and static reviewed Windows notifications from enabled automation runs.
+- Provide bounded host-owned JSON storage with active-visible-view invalidation hints, History-covered Space-file grants, exact public-HTTPS or numeric-loopback requests, API-key/bearer/basic/OAuth PKCE connection adapters, and static reviewed system notifications from enabled automation runs.
 - Build a Windows installer and deliver updates through GitHub Releases.
+- Build, Developer ID-sign, notarize, and publish macOS arm64 app, DMG, ZIP, blockmap, and update metadata from the same source version as Windows, with a verified installed two-version updater lane.
 
 ### Next product layer
 

@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
-import { desktopShortcutModifierLabel } from "../../lib/keyboard";
+import { desktopShortcutKeyLabel, desktopShortcutModifierKey } from "../../lib/keyboard";
+import { isMacOS } from "../../lib/platform";
 import { useEscapeKeyDismiss } from "../../hooks/useEscapeKeyDismiss";
 import type { ShortcutGroup } from "../../types";
 
 function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const modifier = desktopShortcutModifierLabel();
+  const modifier = desktopShortcutModifierKey();
+  const macOS = isMacOS();
   const shortcutGroups: ShortcutGroup[] = [
     {
       title: "Open surfaces",
@@ -32,7 +34,7 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
       title: "File search",
       rows: [
         { keys: ["Esc"], action: "Clear the file search field when it has text." },
-        { keys: ["Alt", "Drag"], action: "Drag a file out to File Explorer. Drag normally to move it inside the Space." },
+        { keys: [macOS ? "Option" : "Alt", "Drag"], action: `Drag a file out to ${macOS ? "Finder" : "File Explorer"}. Drag normally to move it inside the Space.` },
       ],
     },
     {
@@ -91,7 +93,7 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
                 {group.rows.map((row) => (
                   <div className="keyboard-shortcut-row" key={`${group.title}:${row.keys.join("+")}:${row.action}`}>
                     <span className="keyboard-shortcut-keys" aria-label={row.keys.join(" plus ")}>
-                      {row.keys.map((key) => <kbd key={key}>{key}</kbd>)}
+                      {row.keys.map((key) => <kbd key={key}>{desktopShortcutKeyLabel(key)}</kbd>)}
                     </span>
                     <span>{row.action}</span>
                   </div>

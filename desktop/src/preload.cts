@@ -13,7 +13,8 @@ function argumentValue(name: string): string {
 
 const apiBaseUrl = argumentValue("api-base-url");
 const appVersion = argumentValue("app-version");
-const windowMaterial = argumentValue("window-material") === "mica" ? "mica" : "none";
+const rawWindowMaterial = argumentValue("window-material");
+const windowMaterial = rawWindowMaterial === "mica" || rawWindowMaterial === "vibrancy" ? rawWindowMaterial : "none";
 
 contextBridge.exposeInMainWorld("workspaceDesktop", {
   desktop: true,
@@ -42,6 +43,39 @@ contextBridge.exposeInMainWorld("workspaceDesktop", {
       ipcRenderer.invoke("workspace:workspace:open-path", { workspaceId, path, action })
     ),
     startDrag: (workspaceId: string, path: string) => ipcRenderer.invoke("workspace:workspace:start-drag", { workspaceId, path }),
+    previewFile: (workspaceId: string, path: string) => ipcRenderer.invoke("workspace:workspace:preview-file", { workspaceId, path }),
+    ...(process.platform === "darwin" ? {
+      popupFileMenu: (request: {
+        workspaceId: string;
+        path: string;
+        kind: "file" | "folder";
+        capabilities: { open: boolean; attach: boolean; history: boolean; upload: boolean; rename: boolean; delete: boolean };
+        point: { x: number; y: number };
+      }) => ipcRenderer.invoke("workspace:workspace:popup-file-menu", request),
+    } : {}),
+    setActiveSpace: (workspaceId: string | null) => ipcRenderer.invoke("workspace:workspace:set-active-space", workspaceId),
+    onOpenSpace: (callback: (workspaceId: string) => void) => {
+      let disposed = false;
+      const deliveredTokens = new Set<string>();
+      const deliver = (value: unknown) => {
+        if (disposed || !value || typeof value !== "object" || Array.isArray(value)) return;
+        const request = value as { token?: unknown; workspaceId?: unknown };
+        if (typeof request.token !== "string" || !request.token || request.token.length > 128
+          || typeof request.workspaceId !== "string" || !request.workspaceId || request.workspaceId.length > 512) return;
+        if (deliveredTokens.has(request.token)) return;
+        deliveredTokens.add(request.token);
+        if (deliveredTokens.size > 32) deliveredTokens.delete(deliveredTokens.values().next().value as string);
+        callback(request.workspaceId);
+        ipcRenderer.send("workspace:workspace:ack-open-space", request.token);
+      };
+      const listener = (_event: unknown, value: unknown) => deliver(value);
+      ipcRenderer.on("workspace:workspace:open-space", listener);
+      void ipcRenderer.invoke("workspace:workspace:take-open-space").then(deliver).catch(() => undefined);
+      return () => {
+        disposed = true;
+        ipcRenderer.removeListener("workspace:workspace:open-space", listener);
+      };
+    },
     onOpenFolder: (callback: () => void) => {
       const listener = () => callback();
       ipcRenderer.on("workspace:menu:open-folder", listener);

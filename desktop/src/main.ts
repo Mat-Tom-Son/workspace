@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
-import { delimiter, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { basename, delimiter, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   app,
@@ -56,9 +56,19 @@ import { createRestrictedAppOAuthClient } from "./restricted-app-oauth.js";
 import { RestrictedAppHost, restrictedAppProtocol } from "./restricted-app-host.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
-import { shouldUseWindowsMica } from "./window-material.js";
+import { AppLifetimeResource } from "./app-lifetime-resource.js";
+import {
+  nativeFileMenuItems,
+  parseNativeFileMenuRequest,
+  type NativeFileMenuCommand,
+  type NativeFileMenuRequest,
+} from "./file-context-menu.js";
+import { desktopWindowMaterial, shouldUseMacVibrancy, shouldUseWindowsMica } from "./window-material.js";
 
-const productName = "Workspace";
+const productionProductName = "Workspace";
+const localMacSmokeProductName = "Workspace Local Smoke";
+const localMacSmokeBuild = process.platform === "darwin" && app.isPackaged && packagedBuildChannel() === "mac-local-smoke";
+const productName = localMacSmokeBuild ? localMacSmokeProductName : productionProductName;
 const appProtocol = "workspace-desktop";
 const appUserModelId = "io.github.mattomson.workspace";
 const desktopAssetRoutePrefix = "/_desktop-assets/";
@@ -74,6 +84,16 @@ const micaSupported = shouldUseWindowsMica(
   process.getSystemVersion(),
   nativeTheme.prefersReducedTransparency,
 );
+const macVibrancyEnabled = process.env.WORKSPACE_MAC_NATIVE_MATERIAL?.trim() !== "0";
+const macVibrancySupported = shouldUseMacVibrancy(
+  process.platform,
+  nativeTheme.prefersReducedTransparency,
+  macVibrancyEnabled,
+);
+const nativeWindowMaterial = desktopWindowMaterial(process.platform, {
+  windowsMica: micaSupported,
+  macVibrancy: macVibrancySupported,
+});
 const windowBackgroundColors = { light: "#f5f6f8", dark: "#111318" } as const;
 
 function titleBarOverlayFor(theme: "light" | "dark"): Electron.TitleBarOverlay {
@@ -102,7 +122,7 @@ const folderGrants = new Map<string, { rootPath: string; expiresAt: number }>();
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let closeLocalApi: (() => Promise<void>) | null = null;
+const localApiLifetime = new AppLifetimeResource<Awaited<ReturnType<typeof startLocalApi>>>();
 let piRuntime: PackagedPiRuntimeProvider | null = null;
 let secureSettings: SecureSettingsStore | null = null;
 let apiSessionToken = "";
@@ -130,6 +150,11 @@ let interactiveStartupPromise: Promise<void> | null = null;
 let activateRegistered = false;
 let interactiveRequested = false;
 let cliRequestGeneration = 0;
+let activeNativeSpace: { id: string; name: string; rootPath: string } | null = null;
+let activeNativeSpaceGeneration = 0;
+let pendingOpenSpaceRequest: { token: string; workspaceId: string } | null = null;
+const pendingMacOpenPaths: string[] = [];
+let macOpenPathDrainPromise: Promise<void> | null = null;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -151,6 +176,16 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+function packagedBuildChannel(): string {
+  try {
+    const metadata = JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as { workspaceBuildChannel?: unknown };
+    return typeof metadata.workspaceBuildChannel === "string" ? metadata.workspaceBuildChannel : "production";
+  } catch {
+    // Historical production packages predate the explicit channel marker.
+    return "production";
+  }
+}
+
 app.setName(productName);
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 
@@ -165,6 +200,22 @@ try {
 interactiveRequested = initialCliRequestId === null && initialCliArgumentError === null;
 const ownsInstance = app.requestSingleInstanceLock(workspaceCliInstanceData(initialCliRequestId));
 if (!ownsInstance) app.quit();
+
+if (ownsInstance && process.platform === "darwin") {
+  // macOS can deliver this before `ready`. Queue the path so Finder and Dock
+  // launches can be resolved against the registered Space catalog once the
+  // app host is available. Unknown folders are never registered implicitly.
+  app.on("open-file", (event, path) => {
+    event.preventDefault();
+    pendingMacOpenPaths.push(path);
+    interactiveRequested = true;
+    if (app.isReady()) {
+      void startInteractiveApp()
+        .then(drainPendingMacOpenPaths)
+        .catch(reportStartupError);
+    }
+  });
+}
 
 if (ownsInstance) {
   app.on("second-instance", (_event, argv, _workingDirectory, additionalData) => {
@@ -351,6 +402,7 @@ async function startInteractiveApp(): Promise<void> {
   if (interactiveStartupPromise) return interactiveStartupPromise;
   interactiveStartupPromise = (async () => {
     await ensureDesktopHost();
+    await ensureInteractiveLocalApi();
     loadDesktopPreferences();
     registerRendererProtocol();
     registerIpc();
@@ -364,6 +416,7 @@ async function startInteractiveApp(): Promise<void> {
         else showWindow();
       });
     }
+    await drainPendingMacOpenPaths();
   })();
   return interactiveStartupPromise;
 }
@@ -396,32 +449,36 @@ function reportStartupError(error: unknown): void {
   app.quit();
 }
 
+function ensureInteractiveLocalApi(): Promise<Awaited<ReturnType<typeof startLocalApi>>> {
+  return localApiLifetime.ensure(async () => {
+    const userData = app.getPath("userData");
+    const host = await ensureDesktopHost();
+    apiSessionToken = randomUUID();
+    return startLocalApi({
+      appMode: "desktop",
+      port: 0,
+      workspaceBase: join(userData, "workspaces"),
+      stateBase: userData,
+      sessionToken: apiSessionToken,
+      allowedOrigins: [`${appProtocol}://app`],
+      piRuntimeProvider: host.runtime,
+      spaceTrustAuthority: host.spaceTrustAuthority,
+      extensionUiBridge: host.extensionUi,
+      kernel: host.kernel,
+      localFolderGrantProvider: { consumeLocalFolderGrant },
+      restrictedAppService: host.restrictedApps,
+      onAgentTurnActivity: updateAgentPowerState,
+    });
+  });
+}
+
 async function createMainWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
     showWindow();
     return;
   }
 
-  const userData = app.getPath("userData");
-  const host = await ensureDesktopHost();
-
-  apiSessionToken = randomUUID();
-  const api = await startLocalApi({
-    appMode: "desktop",
-    port: 0,
-    workspaceBase: join(userData, "workspaces"),
-    stateBase: userData,
-    sessionToken: apiSessionToken,
-    allowedOrigins: [`${appProtocol}://app`],
-    piRuntimeProvider: host.runtime,
-    spaceTrustAuthority: host.spaceTrustAuthority,
-    extensionUiBridge: host.extensionUi,
-    kernel: host.kernel,
-    localFolderGrantProvider: { consumeLocalFolderGrant },
-    restrictedAppService: host.restrictedApps,
-    onAgentTurnActivity: updateAgentPowerState,
-  });
-  closeLocalApi = api.close;
+  const api = await ensureInteractiveLocalApi();
 
   const state = visibleWindowState(readWindowState());
   const initialState = state ?? defaultWindowState;
@@ -437,9 +494,18 @@ async function createMainWindow(): Promise<void> {
       titleBarStyle: "hidden",
       titleBarOverlay: titleBarOverlayFor(nativeTheme.shouldUseDarkColors ? "dark" : "light"),
     } : {}),
-    // A solid background would paint over the Mica material, so only set one
-    // where Mica is unavailable.
-    ...(micaSupported ? {} : { backgroundColor: windowBackgroundColors[nativeTheme.shouldUseDarkColors ? "dark" : "light"] }),
+    ...(process.platform === "darwin" ? {
+      titleBarStyle: "hiddenInset",
+      ...(macVibrancySupported ? {
+        vibrancy: "sidebar" as const,
+        visualEffectState: "followWindow" as const,
+      } : {}),
+    } : {}),
+    // Solid backgrounds paint over native materials. Reduced-transparency
+    // sessions deliberately receive the opaque theme-matched fallback.
+    ...(nativeWindowMaterial === "none"
+      ? { backgroundColor: windowBackgroundColors[nativeTheme.shouldUseDarkColors ? "dark" : "light"] }
+      : { backgroundColor: "#00000000" }),
     show: false,
     webPreferences: {
       preload: resolvePreloadPath(),
@@ -448,21 +514,32 @@ async function createMainWindow(): Promise<void> {
       sandbox: true,
       spellcheck: true,
       devTools: !app.isPackaged,
-      backgroundThrottling: false,
+      // Assistant turns and automations are owned by the app host, not renderer
+      // paint. Let Chromium throttle hidden/occluded UI to preserve battery life.
+      backgroundThrottling: true,
       additionalArguments: [
         rendererArgument("api-base-url", api.origin),
         rendererArgument("app-version", app.getVersion()),
-        rendererArgument("window-material", micaSupported ? "mica" : "none"),
+        rendererArgument("window-material", nativeWindowMaterial),
       ],
     },
   });
 
-  try {
-    mainWindow.webContents.session.setSpellCheckerLanguages(["en-US"]);
-  } catch (error) {
-    console.warn(`${productName} could not configure spellchecker languages: ${errorMessage(error)}`);
+  applyNativeActiveSpaceToWindow(mainWindow);
+
+  if (process.platform === "win32") {
+    try {
+      mainWindow.webContents.session.setSpellCheckerLanguages(["en-US"]);
+    } catch (error) {
+      console.warn(`${productName} could not configure spellchecker languages: ${errorMessage(error)}`);
+    }
   }
   const rendererWebContentsId = mainWindow.webContents.id;
+  mainWindow.webContents.on("page-title-updated", (event) => {
+    if (process.platform !== "darwin" || !activeNativeSpace) return;
+    event.preventDefault();
+    applyNativeActiveSpaceToWindow(mainWindow);
+  });
   mainWindow.webContents.once("destroyed", () => {
     void desktopHostPromise?.then((host) => host.restrictedAppHost.unmountUiOwner(rendererWebContentsId));
   });
@@ -579,6 +656,42 @@ function registerIpc(): void {
     event.sender.startDrag({ file: filePath, icon });
     return true;
   });
+  ipcMain.handle("workspace:workspace:preview-file", async (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    if (process.platform !== "darwin") return false;
+    const request = workspacePathRequest(value, false);
+    const filePath = await resolveWorkspaceItem(request.workspaceId, request.path);
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error("Only files can be previewed with Quick Look.");
+    const window = mainWindow;
+    if (!window || window.isDestroyed()) throw new Error("The Workspace window is not available.");
+    window.previewFile(filePath, basename(filePath));
+    return true;
+  });
+  ipcMain.handle("workspace:workspace:popup-file-menu", async (event, value: unknown): Promise<NativeFileMenuCommand | null> => {
+    assertTrustedMainRenderer(event);
+    if (process.platform !== "darwin") return null;
+    const request = parseNativeFileMenuRequest(value);
+    await validateNativeFileMenuEntry(request);
+    return popupNativeFileMenu(request);
+  });
+  ipcMain.handle("workspace:workspace:set-active-space", async (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    if (value !== null && (typeof value !== "string" || !value.trim() || value.length > 512)) {
+      throw new Error("A valid Space id is required.");
+    }
+    await setActiveNativeSpace(value === null ? null : value.trim());
+  });
+  ipcMain.handle("workspace:workspace:take-open-space", (event) => {
+    assertTrustedMainRenderer(event);
+    const request = pendingOpenSpaceRequest;
+    pendingOpenSpaceRequest = null;
+    return request;
+  });
+  ipcMain.on("workspace:workspace:ack-open-space", (event, value: unknown) => {
+    assertTrustedMainRenderer(event);
+    if (typeof value === "string" && pendingOpenSpaceRequest?.token === value) pendingOpenSpaceRequest = null;
+  });
   ipcMain.handle("workspace:shell:open-external", async (event, value: unknown) => {
     assertTrustedRenderer(event);
     if (typeof value !== "string") throw new Error("A URL is required.");
@@ -586,7 +699,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("workspace:window:accent-color", (event) => {
     assertTrustedRenderer(event);
-    return getWindowsAccentColor();
+    return getSystemAccentColor();
   });
   ipcMain.handle("workspace:window:get-close-to-tray", (event) => {
     assertTrustedRenderer(event);
@@ -604,9 +717,13 @@ function registerIpc(): void {
     // Keep the OS-drawn chrome (Mica backdrop, frame, menus) on the app theme.
     // "system" preserves prefers-color-scheme change events in the renderer.
     nativeTheme.themeSource = source === "light" || source === "dark" || source === "system" ? source : value;
-    if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.setTitleBarOverlay(titleBarOverlayFor(value));
-    if (!micaSupported) mainWindow.setBackgroundColor(windowBackgroundColors[value]);
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (process.platform === "win32") {
+      mainWindow.setTitleBarOverlay(titleBarOverlayFor(value));
+      if (!micaSupported) mainWindow.setBackgroundColor(windowBackgroundColors[value]);
+    } else if (process.platform === "darwin" && nativeWindowMaterial === "none") {
+      mainWindow.setBackgroundColor(windowBackgroundColors[value]);
+    }
   });
   ipcMain.on("workspace:menu:set-state", (event, value: unknown) => {
     assertTrustedRenderer(event);
@@ -680,6 +797,13 @@ interface RendererMenuState {
 }
 
 function configureMenu(): void {
+  if (process.platform === "darwin") {
+    app.setAboutPanelOptions({
+      applicationName: productName,
+      applicationVersion: app.getVersion(),
+      copyright: "Copyright © Mat-Tom-Son",
+    });
+  }
   Menu.setApplicationMenu(Menu.buildFromTemplate(buildApplicationMenuTemplate()));
   if (process.platform === "win32" && mainWindow) {
     mainWindow.setAutoHideMenuBar(false);
@@ -690,26 +814,37 @@ function configureMenu(): void {
 
 function buildApplicationMenuTemplate(): MenuItemConstructorOptions[] {
   return [
+    ...macApplicationMenu(),
     { id: "file", label: "File", submenu: buildApplicationSubmenuTemplate("file") },
     { id: "edit", label: "Edit", submenu: buildApplicationSubmenuTemplate("edit") },
     { id: "view", label: "View", submenu: buildApplicationSubmenuTemplate("view") },
+    ...macWindowMenu(),
     { id: "help", label: "Help", submenu: buildApplicationSubmenuTemplate("help") },
   ];
 }
 
 function buildApplicationSubmenuTemplate(menuId: ApplicationMenuId): MenuItemConstructorOptions[] {
   if (menuId === "file") {
-    return [
+    const items: MenuItemConstructorOptions[] = [
       { label: "New Space", accelerator: "CommandOrControl+N", click: () => sendRendererMenuCommand("new-space") },
       { label: "Turn Folder into a Space...", accelerator: "CommandOrControl+O", click: () => sendRendererMenuCommand("open-local-folder") },
+      ...(process.platform === "darwin" ? [{
+        label: "Open Recent",
+        role: "recentDocuments" as const,
+        submenu: [{ role: "clearRecentDocuments" as const }],
+      }] : []),
+      { type: "separator" },
       { id: "new-chat", label: "New Chat", accelerator: "CommandOrControl+Shift+N", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("new-chat") },
       { id: "refresh-space", label: "Refresh Space", accelerator: "CommandOrControl+R", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("reload-workspace-state") },
-      { type: "separator" },
-      { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
-      { label: "Settings...", accelerator: "CommandOrControl+,", click: () => sendRendererMenuCommand("open-settings") },
-      { type: "separator" },
-      process.platform === "darwin" ? { role: "close" } : { role: "quit" },
     ];
+    if (process.platform !== "darwin") {
+      items.push(
+        { type: "separator" },
+        { label: "Settings...", accelerator: "CommandOrControl+,", click: () => sendRendererMenuCommand("open-settings") },
+      );
+    }
+    items.push({ type: "separator" }, process.platform === "darwin" ? { role: "close" } : { role: "quit" });
+    return items;
   }
   if (menuId === "edit") {
     return [
@@ -719,9 +854,11 @@ function buildApplicationSubmenuTemplate(menuId: ApplicationMenuId): MenuItemCon
       { role: "cut" },
       { role: "copy" },
       { role: "paste" },
+      ...(process.platform === "darwin" ? [{ role: "pasteAndMatchStyle" as const }] : []),
       { role: "delete" },
       { type: "separator" },
       { role: "selectAll" },
+      ...macEditMenuAdditions(),
     ];
   }
   if (menuId === "view") {
@@ -736,13 +873,77 @@ function buildApplicationSubmenuTemplate(menuId: ApplicationMenuId): MenuItemCon
       { role: "togglefullscreen" },
     ];
   }
-  return [
+  const items: MenuItemConstructorOptions[] = [
     { id: "open-capabilities", label: "Capabilities", accelerator: "CommandOrControl+Shift+S", enabled: rendererMenuState.spaceOpen, click: () => sendRendererMenuCommand("open-capabilities") },
     { label: "Keyboard Shortcuts", accelerator: "CommandOrControl+/", click: () => sendRendererMenuCommand("open-keyboard-shortcuts") },
+  ];
+  if (process.platform !== "darwin") {
+    items.push(
+      { type: "separator" },
+      { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
+      { type: "separator" },
+      { label: `About ${productName} ${app.getVersion()}`, click: () => sendRendererMenuCommand("open-about") },
+    );
+  }
+  return items;
+}
+
+function macApplicationMenu(): MenuItemConstructorOptions[] {
+  if (process.platform !== "darwin") return [];
+  return [{
+    label: productName,
+    submenu: [
+      { role: "about" },
+      {
+        label: "Check for Updates...",
+        click: () => {
+          void checkForUpdatesFromMenu().catch((error) => {
+            console.warn(`${productName} could not present the update check: ${errorMessage(error)}`);
+          });
+        },
+      },
+      { type: "separator" },
+      { label: "Settings...", accelerator: "Command+,", click: () => sendRendererMenuCommand("open-settings") },
+      { type: "separator" },
+      { role: "services" },
+      { type: "separator" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "unhide" },
+      { type: "separator" },
+      { role: "quit" },
+    ],
+  }];
+}
+
+function macWindowMenu(): MenuItemConstructorOptions[] {
+  if (process.platform !== "darwin") return [];
+  return [{ role: "windowMenu" }];
+}
+
+function macEditMenuAdditions(): MenuItemConstructorOptions[] {
+  if (process.platform !== "darwin") return [];
+  return [
     { type: "separator" },
-    { label: "Check for Updates...", click: () => sendRendererMenuCommand("check-for-updates") },
+    {
+      label: "Substitutions",
+      submenu: [
+        { role: "showSubstitutions" },
+        { type: "separator" },
+        { role: "toggleSmartQuotes" },
+        { role: "toggleSmartDashes" },
+        { role: "toggleTextReplacement" },
+      ],
+    },
+    {
+      label: "Speech",
+      submenu: [
+        { role: "startSpeaking" },
+        { role: "stopSpeaking" },
+      ],
+    },
     { type: "separator" },
-    { label: `About ${productName} ${app.getVersion()}`, click: () => sendRendererMenuCommand("open-about") },
+    { label: "Emoji & Symbols", accelerator: "Control+Command+Space", click: () => app.showEmojiPanel() },
   ];
 }
 
@@ -767,7 +968,12 @@ function menuPopupPoint(value: unknown): { x: number; y: number } {
 
 function sendRendererMenuCommand(command: RendererMenuCommand): void {
   const window = mainWindow;
-  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+    if (app.isReady() && !quitting && !quittingForUpdate) {
+      void ensureMainWindow().then(() => sendRendererMenuCommand(command)).catch(reportStartupError);
+    }
+    return;
+  }
   showWindow();
   window.webContents.send("workspace:menu-command", command);
 }
@@ -790,7 +996,9 @@ function setMenuItemEnabled(menu: Menu | null, id: string, enabled: boolean): vo
 }
 
 function configureUpdater(): void {
-  if (workspaceUpdater) return;
+  // Ad hoc verification builds use a separate identity and must never touch
+  // the production update feed or production Workspace Safe Storage key.
+  if (workspaceUpdater || localMacSmokeBuild) return;
   workspaceUpdater = new WorkspaceUpdater({
     getWindow: () => mainWindow,
     prepareToInstall: shutdownForUpdateInstall,
@@ -806,7 +1014,7 @@ function getUpdateStatus(): WorkspaceUpdateStatus {
     availableVersion: null,
     progressPercent: null,
     checkedAt: null,
-    message: "Updates are available after Workspace is installed on Windows.",
+    message: "Updates are not available in this build.",
     error: null,
   };
 }
@@ -815,14 +1023,76 @@ function checkForUpdates(interactive = true): Promise<WorkspaceUpdateStatus> {
   return workspaceUpdater?.check(interactive) ?? Promise.resolve(getUpdateStatus());
 }
 
+async function checkForUpdatesFromMenu(): Promise<void> {
+  const status = await checkForUpdates(true);
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  if (status.phase === "available") {
+    const result = window
+      ? await dialog.showMessageBox(window, {
+        type: "info",
+        message: status.message,
+        detail: "Workspace can download the update now and restart when it is ready.",
+        buttons: ["Download and Install", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      })
+      : await dialog.showMessageBox({
+        type: "info",
+        message: status.message,
+        detail: "Workspace can download the update now and restart when it is ready.",
+        buttons: ["Download and Install", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+    if (result.response === 0) await workspaceUpdater?.updateNow();
+    return;
+  }
+  if (status.phase === "ready") {
+    const result = window
+      ? await dialog.showMessageBox(window, {
+        type: "info",
+        message: status.message,
+        buttons: ["Restart and Install", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      })
+      : await dialog.showMessageBox({
+        type: "info",
+        message: status.message,
+        buttons: ["Restart and Install", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+    if (result.response === 0) await workspaceUpdater?.install();
+    return;
+  }
+  const options = {
+    type: status.phase === "error" ? "error" as const : "info" as const,
+    message: status.message,
+    ...(status.error ? { detail: status.error } : {}),
+    buttons: ["OK"],
+    noLink: true,
+  };
+  if (window) await dialog.showMessageBox(window, options);
+  else await dialog.showMessageBox(options);
+}
+
 function configureStableUserDataPath(): void {
-  const target = join(app.getPath("appData"), productName);
+  const override = process.env.WORKSPACE_DESKTOP_USER_DATA_DIR?.trim();
+  const target = override ? resolve(override) : join(app.getPath("appData"), productName);
   if (app.getPath("userData") !== target) app.setPath("userData", target);
 }
 
 function configurePackagedCliEnvironment(): void {
-  if (!app.isPackaged || process.platform !== "win32") return;
-  const binDirectory = join(dirnameFromFile(process.execPath), "bin");
+  if (!app.isPackaged || (process.platform !== "win32" && process.platform !== "darwin")) return;
+  const executableDirectory = dirnameFromFile(process.execPath);
+  const binDirectory = process.platform === "darwin"
+    ? resolve(executableDirectory, "..", "bin")
+    : join(executableDirectory, "bin");
   const pathKey = Object.keys(process.env).find((key) => key.toLocaleLowerCase() === "path") ?? "Path";
   const currentPath = process.env[pathKey] ?? "";
   const alreadyPresent = currentPath
@@ -834,6 +1104,7 @@ function configurePackagedCliEnvironment(): void {
   // Agent shell tools inherit this process environment. Pinning the executable
   // makes their CLI calls address this exact installed Workspace build.
   process.env.WORKSPACE_CLI_APP = process.execPath;
+  process.env.WORKSPACE_DESKTOP_USER_DATA_DIR = app.getPath("userData");
 }
 
 function createFolderGrant(rootPath: string): string {
@@ -884,6 +1155,121 @@ async function resolveWorkspaceItem(workspaceId: string, itemPath: string): Prom
   return resolvedCandidate;
 }
 
+async function setActiveNativeSpace(workspaceId: string | null): Promise<void> {
+  const generation = ++activeNativeSpaceGeneration;
+  if (workspaceId === null) {
+    activeNativeSpace = null;
+    applyNativeActiveSpaceToWindow(mainWindow);
+    return;
+  }
+
+  // The renderer supplies identity only. Name and root are always loaded from
+  // the host-owned registry before they reach native window or OS APIs.
+  const workspace = await getWorkspace(workspaceId);
+  if (generation !== activeNativeSpaceGeneration) return;
+  activeNativeSpace = { id: workspace.id, name: workspace.name, rootPath: workspace.rootPath };
+  applyNativeActiveSpaceToWindow(mainWindow);
+  if (process.platform === "darwin") app.addRecentDocument(workspace.rootPath);
+}
+
+async function validateNativeFileMenuEntry(request: NativeFileMenuRequest): Promise<void> {
+  let info;
+  if (request.path) {
+    info = await stat(await resolveWorkspaceItem(request.workspaceId, request.path));
+  } else {
+    const workspace = await getWorkspace(request.workspaceId);
+    info = await stat(await realpath(workspace.rootPath));
+  }
+  if ((request.kind === "file" && !info.isFile()) || (request.kind === "folder" && !info.isDirectory())) {
+    throw new Error("The native file menu entry no longer matches this Space.");
+  }
+}
+
+function popupNativeFileMenu(request: NativeFileMenuRequest): Promise<NativeFileMenuCommand | null> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+    return Promise.reject(new Error("The Workspace window is not available."));
+  }
+  return new Promise((resolveCommand) => {
+    let settled = false;
+    const finish = (command: NativeFileMenuCommand | null) => {
+      if (settled) return;
+      settled = true;
+      resolveCommand(command);
+    };
+    const template = nativeFileMenuItems(request).map<MenuItemConstructorOptions>((item) => item.type === "separator"
+      ? { type: "separator" }
+      : { label: item.label, click: () => finish(item.command) });
+    Menu.buildFromTemplate(template).popup({
+      window,
+      x: request.point.x,
+      y: request.point.y,
+      callback: () => finish(null),
+    });
+  });
+}
+
+function applyNativeActiveSpaceToWindow(window: BrowserWindow | null): void {
+  if (process.platform !== "darwin" || !window || window.isDestroyed()) return;
+  window.setRepresentedFilename(activeNativeSpace?.rootPath ?? "");
+  window.setTitle(activeNativeSpace?.name ?? productName);
+}
+
+async function drainPendingMacOpenPaths(): Promise<void> {
+  if (process.platform !== "darwin") return;
+  if (macOpenPathDrainPromise) {
+    await macOpenPathDrainPromise;
+    if (pendingMacOpenPaths.length) await drainPendingMacOpenPaths();
+    return;
+  }
+
+  macOpenPathDrainPromise = (async () => {
+    while (pendingMacOpenPaths.length) {
+      const path = pendingMacOpenPaths.shift();
+      if (!path) continue;
+      await ensureMainWindow();
+      showWindow();
+      const workspaceId = await registeredSpaceIdForOpenPath(path);
+      if (!workspaceId) {
+        console.warn(`${productName} ignored an unregistered Finder folder: ${path}`);
+        continue;
+      }
+      await setActiveNativeSpace(workspaceId);
+      const request = { token: randomUUID(), workspaceId };
+      pendingOpenSpaceRequest = request;
+      const window = mainWindow;
+      if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send("workspace:workspace:open-space", request);
+      }
+    }
+  })().finally(() => {
+    macOpenPathDrainPromise = null;
+  });
+
+  await macOpenPathDrainPromise;
+  if (pendingMacOpenPaths.length) await drainPendingMacOpenPaths();
+}
+
+async function registeredSpaceIdForOpenPath(path: string): Promise<string | null> {
+  try {
+    const info = await stat(path);
+    if (!info.isDirectory()) return null;
+    const openedRoot = await realpath(path);
+    for (const workspace of await listWorkspaces()) {
+      try {
+        const registeredRoot = await realpath(workspace.rootPath);
+        if (samePath(openedRoot, registeredRoot)) return workspace.id;
+      } catch {
+        // Missing registered folders are already excluded from normal bootstrap;
+        // one stale registration must not block another exact match.
+      }
+    }
+  } catch {
+    // Finder may pass a path that moved before Workspace was ready.
+  }
+  return null;
+}
+
 function assertPathInsideRoot(rootPath: string, candidate: string): void {
   const child = relative(rootPath, candidate);
   if (!child || /^\.\.(?:[\\/]|$)/.test(child) || isAbsolute(child)) throw new Error("The requested item is outside this Space.");
@@ -911,14 +1297,12 @@ async function shutdown(): Promise<void> {
   if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
   rendererRecoveryTimer = null;
   updateAgentPowerState(0);
-  const close = closeLocalApi;
-  closeLocalApi = null;
   const runtime = piRuntime;
   piRuntime = null;
   const restrictedApps = desktopHostPromise?.then((host) => host.restrictedApps.close()) ?? Promise.resolve();
   shutdownPromise = (async () => {
     const outcomes = await Promise.allSettled([
-      withShutdownTimeout(close?.() ?? Promise.resolve(), "local API"),
+      withShutdownTimeout(localApiLifetime.close(), "local API"),
       withShutdownTimeout(runtime?.flush() ?? Promise.resolve(), "Pi state"),
       withShutdownTimeout(restrictedApps, "restricted apps"),
     ]);
@@ -1066,15 +1450,22 @@ function configurePowerMonitor(): void {
 }
 
 function configureAccentColorMonitor(): void {
-  if (accentColorMonitorRegistered || process.platform !== "win32") return;
+  if (accentColorMonitorRegistered || (process.platform !== "win32" && process.platform !== "darwin")) return;
   accentColorMonitorRegistered = true;
-  systemPreferences.on("accent-color-changed", () => {
-    mainWindow?.webContents.send("workspace:window:accent-color-changed", getWindowsAccentColor());
-  });
+  const sendAccentColor = () => {
+    const window = mainWindow;
+    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    window.webContents.send("workspace:window:accent-color-changed", getSystemAccentColor());
+  };
+  if (process.platform === "darwin") {
+    systemPreferences.subscribeNotification("AppleColorPreferencesChangedNotification", sendAccentColor);
+  } else {
+    systemPreferences.on("accent-color-changed", sendAccentColor);
+  }
 }
 
-function getWindowsAccentColor(): string | null {
-  if (process.platform !== "win32") return null;
+function getSystemAccentColor(): string | null {
+  if (process.platform !== "win32" && process.platform !== "darwin") return null;
   try {
     const raw = systemPreferences.getAccentColor().replace(/^#/, "");
     return /^[0-9a-fA-F]{8}$/.test(raw) ? `#${raw.slice(0, 6)}` : null;
@@ -1192,7 +1583,7 @@ function configureWindowNavigation(window: BrowserWindow): void {
 function configureContextMenu(window: BrowserWindow): void {
   window.webContents.on("context-menu", (_event, params) => {
     const template = buildContextMenuTemplate(window, params);
-    if (template) Menu.buildFromTemplate(template).popup({ window });
+    if (template) Menu.buildFromTemplate(template).popup({ window, frame: params.frame ?? undefined });
   });
 }
 
@@ -1291,7 +1682,8 @@ function resolveRestrictedAppPreloadPath(): string {
 }
 
 function resolveWindowIcon(): string {
-  return app.isPackaged ? join(process.resourcesPath, "assets", "icon.ico") : join(repoRoot, "desktop", "assets", "icon.ico");
+  const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
+  return app.isPackaged ? join(process.resourcesPath, "assets", iconFile) : join(repoRoot, "desktop", "assets", iconFile);
 }
 
 function resolveDesktopAssetsDir(): string {

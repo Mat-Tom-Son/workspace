@@ -4,7 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  hasPackagedWindowsUpdateFeed,
+  hasPackagedDesktopUpdateFeed,
+  hasDownloadedUpdatePayload,
   WorkspaceUpdater,
   type WorkspaceUpdateCheckResultLike,
   type WorkspaceUpdateMessage,
@@ -13,20 +14,29 @@ import {
   type WorkspaceUpdaterHost,
 } from "../desktop/src/updater.js";
 
-test("only installed Windows builds with an updater feed enable update controls", () => {
+test("installed Windows and macOS builds with an updater feed enable update controls", () => {
   const resourcesPath = "C:\\Program Files\\Workspace\\resources";
   const expectedFeed = join(resourcesPath, "app-update.yml");
   const fileExists = (path: string) => path === expectedFeed;
 
-  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists }), true);
-  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists: () => false }), false);
-  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: false, platform: "win32", resourcesPath, fileExists }), false);
-  assert.equal(hasPackagedWindowsUpdateFeed({ isPackaged: true, platform: "darwin", resourcesPath, fileExists }), false);
+  assert.equal(hasPackagedDesktopUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists }), true);
+  assert.equal(hasPackagedDesktopUpdateFeed({ isPackaged: true, platform: "darwin", resourcesPath, fileExists }), true);
+  assert.equal(hasPackagedDesktopUpdateFeed({ isPackaged: true, platform: "win32", resourcesPath, fileExists: () => false }), false);
+  assert.equal(hasPackagedDesktopUpdateFeed({ isPackaged: false, platform: "win32", resourcesPath, fileExists }), false);
+  assert.equal(hasPackagedDesktopUpdateFeed({ isPackaged: true, platform: "linux", resourcesPath, fileExists }), false);
+});
+
+test("downloaded payload readiness follows each platform updater", () => {
+  assert.equal(hasDownloadedUpdatePayload({ platform: "darwin", updateDownloadedEventReceived: false, installerPath: null, installerExists: false }), false);
+  assert.equal(hasDownloadedUpdatePayload({ platform: "darwin", updateDownloadedEventReceived: true, installerPath: null, installerExists: false }), true);
+  assert.equal(hasDownloadedUpdatePayload({ platform: "win32", updateDownloadedEventReceived: true, installerPath: null, installerExists: false }), false);
+  assert.equal(hasDownloadedUpdatePayload({ platform: "win32", updateDownloadedEventReceived: true, installerPath: "C:\\updates\\Workspace.exe", installerExists: true }), true);
 });
 
 class FakeUpdater extends EventEmitter implements WorkspaceUpdaterAdapter {
   autoDownload = true;
   autoInstallOnAppQuit = true;
+  autoRunAppAfterInstall = false;
   allowDowngrade = true;
   allowPrerelease = true;
   installerPath: string | null = "C:\\updates\\Workspace-Setup.exe";
@@ -58,6 +68,7 @@ class FakeUpdater extends EventEmitter implements WorkspaceUpdaterAdapter {
 
 class FakeHost implements WorkspaceUpdaterHost {
   supported = true;
+  platformValue: NodeJS.Platform = "win32";
   version = "1.0.0";
   nowValue = "2026-07-10T12:00:00.000Z";
   installerPresent = true;
@@ -67,6 +78,7 @@ class FakeHost implements WorkspaceUpdaterHost {
   progress: number[] = [];
 
   isSupported(): boolean { return this.supported; }
+  platform(): NodeJS.Platform { return this.platformValue; }
   currentVersion(): string { return this.version; }
   now(): string { return this.nowValue; }
   installerExists(): boolean { return this.installerPresent; }
@@ -78,9 +90,10 @@ class FakeHost implements WorkspaceUpdaterHost {
   emitStatus(status: WorkspaceUpdateStatus): void { this.statuses.push(status); }
 }
 
-function createHarness(options: { prepare?: () => Promise<void> } = {}) {
+function createHarness(options: { prepare?: () => Promise<void>; platform?: NodeJS.Platform } = {}) {
   const adapter = new FakeUpdater();
   const host = new FakeHost();
+  host.platformValue = options.platform ?? "win32";
   let prepareCalls = 0;
   const updater = new WorkspaceUpdater({
     updater: adapter,
@@ -144,6 +157,7 @@ test("Update now downloads, performs update-specific shutdown, and forces the ap
 
   assert.equal(adapter.autoDownload, false);
   assert.equal(adapter.autoInstallOnAppQuit, false);
+  assert.equal(adapter.autoRunAppAfterInstall, true);
   assert.equal(prepareCalls(), 1);
   assert.deepEqual(adapter.quitCalls, [{ silent: true, forceRunAfter: true }]);
   assert.equal(updater.getStatus().phase, "installing");
@@ -159,9 +173,24 @@ test("install refuses to quit when the downloaded installer path is missing", as
   const status = await updater.install();
 
   assert.equal(status.phase, "error");
-  assert.match(status.message, /installer is missing/i);
+  assert.match(status.message, /payload is missing/i);
   assert.equal(adapter.quitCalls.length, 0);
   assert.equal(updater.shouldInstallOnQuit(), false);
+  updater.dispose();
+});
+
+test("macOS installs after update-downloaded without a Windows installer path", async () => {
+  const { adapter, host, updater, prepareCalls } = createHarness({ platform: "darwin" });
+  adapter.installerPath = null;
+  host.installerPresent = false;
+  adapter.emit("update-downloaded", { version: "1.1.0" });
+  await nextTurn();
+
+  const status = await updater.install();
+
+  assert.equal(status.phase, "installing");
+  assert.equal(prepareCalls(), 1);
+  assert.deepEqual(adapter.quitCalls, [{ silent: true, forceRunAfter: true }]);
   updater.dispose();
 });
 

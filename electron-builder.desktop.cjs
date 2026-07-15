@@ -1,20 +1,32 @@
 const path = require("node:path");
 
 const root = __dirname;
+const macReleaseBuild = process.env.WORKSPACE_MAC_RELEASE_BUILD === "1";
+const unsignedMacBuild = process.env.WORKSPACE_ALLOW_UNSIGNED_MAC_BUILD === "1";
+const macSignIdentity = process.env.WORKSPACE_MAC_SIGN_IDENTITY?.trim();
+const electronBuilderMacIdentity = macSignIdentity?.replace(/^Developer ID Application:\s*/i, "");
+const macReleaseOwner = process.env.WORKSPACE_MAC_RELEASE_OWNER?.trim() || "Mat-Tom-Son";
+const macReleaseRepo = process.env.WORKSPACE_MAC_RELEASE_REPO?.trim() || "workspace-mac-releases";
+const macFeedBuild = process.env.WORKSPACE_DESKTOP_RELEASE_PLATFORM === "darwin";
+const macSmokeProductName = "Workspace Local Smoke";
+const macSmokeAppId = "io.github.mattomson.workspace.local-smoke";
 
 module.exports = {
-  appId: "io.github.mattomson.workspace",
-  productName: "Workspace",
+  appId: unsignedMacBuild ? macSmokeAppId : "io.github.mattomson.workspace",
+  productName: unsignedMacBuild ? macSmokeProductName : "Workspace",
+  extraMetadata: {
+    workspaceBuildChannel: unsignedMacBuild ? "mac-local-smoke" : "production",
+  },
   copyright: "Copyright © 2026 Mat-Tom-Son",
-  artifactName: "Workspace-${version}-${os}.${ext}",
-  forceCodeSigning: process.env.WORKSPACE_REQUIRE_CODE_SIGNING === "1",
+  artifactName: "Workspace-${version}-${os}-${arch}.${ext}",
+  forceCodeSigning: macReleaseBuild || process.env.WORKSPACE_REQUIRE_CODE_SIGNING === "1",
   electronUpdaterCompatibility: ">=2.16",
   generateUpdatesFilesForAllChannels: false,
   publish: [
     {
       provider: "github",
-      owner: "Mat-Tom-Son",
-      repo: "workspace",
+      owner: macFeedBuild ? macReleaseOwner : "Mat-Tom-Son",
+      repo: macFeedBuild ? macReleaseRepo : "workspace",
       releaseType: "release",
     },
   ],
@@ -37,7 +49,7 @@ module.exports = {
     {
       from: "desktop/cli",
       to: "bin",
-      filter: ["workspace", "workspace.cmd", "workspace-cli.ps1"],
+      filter: ["workspace", "workspace.cmd", "workspace-cli.ps1", "workspace-cli.jxa.js"],
     },
   ],
   extraResources: [
@@ -70,6 +82,44 @@ module.exports = {
       signingHashAlgorithms: ["sha256"],
       rfc3161TimeStampServer: "http://timestamp.digicert.com",
     },
+  },
+  mac: {
+    target: ["dmg", "zip"],
+    icon: path.join(root, "desktop", "assets", "icon.icns"),
+    category: "public.app-category.productivity",
+    minimumSystemVersion: "12.0",
+    darkModeSupport: true,
+    executableName: unsignedMacBuild ? macSmokeProductName : "Workspace",
+    identity: macReleaseBuild ? electronBuilderMacIdentity : unsignedMacBuild ? "-" : undefined,
+    hardenedRuntime: macReleaseBuild,
+    notarize: macReleaseBuild,
+    entitlements: path.join(root, "desktop", "entitlements.plist"),
+    entitlementsInherit: path.join(root, "desktop", "entitlements.plist"),
+  },
+  dmg: {
+    artifactName: "Workspace-${version}-mac-${arch}.${ext}",
+    title: "Workspace ${version}",
+    icon: path.join(root, "desktop", "assets", "icon.icns"),
+    background: path.join(root, "desktop", "assets", "dmg-background.png"),
+    iconSize: 112,
+    iconTextSize: 14,
+    window: {
+      width: 720,
+      height: 440,
+    },
+    contents: [
+      {
+        x: 180,
+        y: 260,
+        type: "file",
+      },
+      {
+        x: 540,
+        y: 260,
+        type: "link",
+        path: "/Applications",
+      },
+    ],
   },
   nsis: {
     include: path.join(root, "desktop", "nsis", "cli-path.nsh"),

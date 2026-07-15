@@ -45,6 +45,9 @@
   justify-items: center;
   gap: 4px;
   overflow: visible;
+}
+
+:root:not([data-platform="darwin"]) .app-shell .professional-workspace-rail .workspace-rail-nav {
   scrollbar-width: thin;
 }
 
@@ -528,6 +531,9 @@
     gap: 3px;
     overflow-x: auto;
     overflow-y: hidden;
+  }
+
+  :root:not([data-platform="darwin"]) .app-shell .professional-workspace-rail .workspace-rail-nav {
     scrollbar-width: thin;
   }
 

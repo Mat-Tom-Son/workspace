@@ -45,7 +45,8 @@ test("Capabilities owns access, connection, and lifecycle management without cre
   assert.match(apps, /App writes create History checkpoints/);
   assert.match(apps, /Automations/);
   assert.match(apps, /Local app data/);
-  assert.match(apps, /Windows notifications/);
+  assert.match(apps, /<h3 id="restricted-app-notifications-title">Notifications<\/h3>/);
+  assert.doesNotMatch(apps, /Windows notifications|Windows notification settings/);
   assert.match(apps, /Workspace · \{app\.manifest\.title\} — \{permission\.title\}/);
   assert.match(apps, /Allow notifications/);
   assert.match(apps, /Revoke notifications/);

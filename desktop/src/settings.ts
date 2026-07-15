@@ -22,6 +22,7 @@ const emptySettings = (): SecureSettingsFile => ({
 /** Encrypted, application-scoped credentials. Never stored inside a workspace. */
 export class SecureSettingsStore implements PiAuthStorageHost {
   private queue: Promise<void> = Promise.resolve();
+  private cache: SecureSettingsFile | undefined;
 
   constructor(private readonly filePath: string) {}
 
@@ -79,14 +80,19 @@ export class SecureSettingsStore implements PiAuthStorageHost {
   }
 
   private async read(): Promise<SecureSettingsFile> {
-    if (!existsSync(this.filePath) && !existsSync(this.backupPath())) return emptySettings();
+    if (this.cache) return structuredClone(this.cache);
+    if (!existsSync(this.filePath) && !existsSync(this.backupPath())) {
+      this.cache = emptySettings();
+      return structuredClone(this.cache);
+    }
     this.assertEncryptionAvailable();
     let firstError: unknown;
     for (const candidate of [this.filePath, this.backupPath()]) {
       if (!existsSync(candidate)) continue;
       try {
         const decrypted = safeStorage.decryptString(await readFile(candidate));
-        return normalizeSettings(JSON.parse(decrypted));
+        this.cache = normalizeSettings(JSON.parse(decrypted));
+        return structuredClone(this.cache);
       } catch (error) {
         firstError ??= error;
       }
@@ -102,6 +108,7 @@ export class SecureSettingsStore implements PiAuthStorageHost {
     try {
       if (existsSync(this.filePath)) await copyFile(this.filePath, this.backupPath());
       await rename(temporaryPath, this.filePath);
+      this.cache = structuredClone(data);
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;

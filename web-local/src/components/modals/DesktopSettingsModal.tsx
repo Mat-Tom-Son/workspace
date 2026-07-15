@@ -13,7 +13,7 @@ import {
   WeatherMoon20Regular,
   WeatherSunny20Regular,
 } from "@fluentui/react-icons";
-import { textSizeOptions, typographyFontOptions } from "../../constants";
+import { textSizeOptions, typographyFontOptionsForPlatform } from "../../constants";
 import { useEscapeKeyDismiss } from "../../hooks/useEscapeKeyDismiss";
 import { errorText } from "../../lib/api";
 import type { AgentStatus, AppTheme, AppThemePreference, AppTypographyPreference, DesktopUpdateStatus, WorkspaceSummary } from "../../types";
@@ -36,6 +36,7 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
   updateStatus: DesktopUpdateStatus | null;
   onUpdateAction?: () => void;
 }) {
+  const typographyFontOptions = typographyFontOptionsForPlatform(window.workspaceDesktop?.app.platform);
   const [page, setPage] = useState<SettingsPage>(initialPage);
   const [closeToTray, setCloseToTray] = useState<{ supported: boolean; enabled: boolean } | null>(null);
   const [closeToTrayBusy, setCloseToTrayBusy] = useState(false);
@@ -115,7 +116,7 @@ export function DesktopSettingsModal({ theme, themePreference, onThemePreference
                     <div className="settings-section-heading"><h3 id="appearance-theme-title">Theme</h3></div>
                     <div className="theme-segmented-control" role="radiogroup" aria-label="Color mode">
                       <button className={themePreference === "system" ? "active" : ""} type="button" role="radio" aria-checked={themePreference === "system"} aria-label={`Device setting, currently ${theme}`} onClick={() => onThemePreferenceChange("system")}>
-                        <Laptop20Regular /><span className="theme-choice-copy"><span>Device setting</span><small>Match Windows light or dark mode</small></span>
+                        <Laptop20Regular /><span className="theme-choice-copy"><span>Device setting</span><small>Match your device’s appearance</small></span>
                       </button>
                       <button className={themePreference === "light" ? "active" : ""} type="button" role="radio" aria-checked={themePreference === "light"} onClick={() => onThemePreferenceChange("light")}>
                         <WeatherSunny20Regular /><span className="theme-choice-copy"><span>Light</span></span>

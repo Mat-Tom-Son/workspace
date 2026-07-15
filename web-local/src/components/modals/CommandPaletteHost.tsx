@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Search } from "lucide-react";
 import { commandPaletteGroupCap, commandPaletteGroupOrder, commandPaletteOverallCap } from "../../constants";
-import { desktopShortcutModifierLabel } from "../../lib/keyboard";
+import { desktopShortcutKeyLabel, desktopShortcutModifierKey } from "../../lib/keyboard";
 import { normalizeSearchQuery } from "../../lib/format";
 import { useEscapeKeyDismiss } from "../../hooks/useEscapeKeyDismiss";
 import type { CommandPaletteGroupId } from "../../types";
@@ -54,7 +54,7 @@ function CommandPaletteHost({
   }, [commands, query]);
   const activeResult = flatResults[highlightedIndex] ?? null;
   const activeOptionId = activeResult ? `command-palette-option-${highlightedIndex}` : undefined;
-  const modifier = desktopShortcutModifierLabel();
+  const modifier = desktopShortcutModifierKey();
 
   useEffect(() => {
     window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -134,7 +134,7 @@ function CommandPaletteHost({
             onKeyDown={handleInputKeyDown}
           />
           <span className="command-palette-shortcut" aria-hidden="true">
-            <kbd>{modifier}</kbd>
+            <kbd>{desktopShortcutKeyLabel(modifier)}</kbd>
             <kbd>K</kbd>
           </span>
         </div>

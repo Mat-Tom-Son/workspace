@@ -231,7 +231,7 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
 
 function ReviewDeclarations({ review }: { review: RestrictedAppReview }) {
   return <div className="restricted-app-review-groups">
-    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.permissions.notifications.length ? <div>{review.manifest.permissions.notifications.map((permission) => <article key={permission.id}><strong>Workspace · {review.manifest.title} — {permission.title}</strong><span>{permission.description}</span><small>Static Windows notification · {permission.id}</small></article>)}</div> : <p>No notifications requested.</p>}</section>
+    <section><h3>Requested access</h3>{review.manifest.permissions.network.length ? <div>{review.manifest.permissions.network.map((destination) => <article key={destination.id}><strong>{destinationLabel(destination)}</strong><span>{destination.methods.join(", ")}</span><small>{destination.auth.map(authLabel).join(" · ")}</small></article>)}</div> : <p>No network access requested.</p>}{review.manifest.permissions.files.length ? <div>{review.manifest.permissions.files.map((permission) => <article key={permission.id}><strong>{permission.access === "read-write" ? "Read and write" : "Read"} a {permission.target} you choose</strong><span>{permission.id}</span></article>)}</div> : <p>No Space files requested.</p>}{review.manifest.permissions.notifications.length ? <div>{review.manifest.permissions.notifications.map((permission) => <article key={permission.id}><strong>Workspace · {review.manifest.title} — {permission.title}</strong><span>{permission.description}</span><small>Static system notification · {permission.id}</small></article>)}</div> : <p>No notifications requested.</p>}</section>
     <section><h3>Automations</h3>{review.manifest.automations.length ? <><p>Each reviewed schedule installs off and must be enabled separately.</p><div>{review.manifest.automations.map((automation) => <article key={automation.id}><strong>{automation.title}</strong><span>{automation.description || `Runs the ${automation.handler} handler.`}</span><small>{formatAutomationSchedule(automation)} · {automation.catchUp === "latest" ? "Runs the latest missed occurrence after resume" : "Does not catch up missed occurrences"} · Overlapping runs are skipped</small><small>Power subset: {automationPowerSummary(review.manifest, automation)}</small><code>{automation.handler}</code></article>)}</div></> : <p>No scheduled automations.</p>}</section>
     <section><h3>What it adds</h3><p>Adds an interactive app destination to this Space’s rail. The app can open, update, and close Space-owned work tabs through Workspace.</p>{review.manifest.tools.length ? <div>{review.manifest.tools.map((tool) => <article key={tool.name}><strong>{tool.name}</strong><span>{tool.description}</span><code>{tool.action}</code></article>)}</div> : <p>No Assistant actions.</p>}</section>
   </div>;
@@ -479,14 +479,14 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
           />)}
         </section>
         <section className="restricted-app-connections" aria-labelledby="restricted-app-notifications-title">
-          <div className="restricted-app-connections-heading"><div><Alert20Regular aria-hidden="true" /><h3 id="restricted-app-notifications-title">Windows notifications</h3></div></div>
+          <div className="restricted-app-connections-heading"><div><Alert20Regular aria-hidden="true" /><h3 id="restricted-app-notifications-title">Notifications</h3></div></div>
           {!app.manifest.permissions.notifications.length ? <p>This app declares no notifications.</p> : app.manifest.permissions.notifications.map((permission) => {
             const granted = app.notificationGrants.includes(permission.id);
             return <article className="restricted-app-destination-card" key={permission.id}>
               <div className="restricted-app-destination-heading"><div><strong>Workspace · {app.manifest.title} — {permission.title}</strong><span>{permission.description}</span></div><code>{permission.id}</code></div>
               <div className="restricted-app-destination-states"><span className={granted ? "enabled" : ""}>Access: <strong>{granted ? "Allowed" : "Off"}</strong></span><span>Copy: <strong>Fixed to this reviewed revision</strong></span></div>
               <div className="restricted-app-destination-actions"><button className={granted ? "professional-button professional-button-secondary" : "professional-button professional-button-primary"} type="button" disabled={Boolean(actionBusy)} onClick={() => void changeNotificationGrant(permission, !granted)}>{actionBusy === `notification:${permission.id}` ? <ArrowSync16Regular className="spin" /> : null}{granted ? "Revoke notifications" : "Allow notifications"}</button></div>
-              <p className="restricted-app-oauth-note">Shown only from an enabled automation while Workspace is running. Windows notification settings can still suppress it. Clicking opens this app in its owning Space.</p>
+              <p className="restricted-app-oauth-note">Shown only from an enabled automation while Workspace is running. System notification settings can still suppress it. Clicking opens this app in its owning Space.</p>
             </article>;
           })}
         </section>
@@ -532,7 +532,7 @@ function AutomationCard({ app, automation, state, runs, runsLoading, runsError, 
 }) {
   const enabled = state?.enabled ?? false;
   const notificationNote = automation.permissions.notifications.length
-    ? "Run now works while the schedule is off, but Windows notifications remain available only when this automation is enabled."
+    ? "Run now works while the schedule is off, but notifications remain available only when this automation is enabled."
     : "Run now is available while the schedule is off and does not enable future runs.";
   return <article className="restricted-app-destination-card">
     <div className="restricted-app-destination-heading"><div><strong>{automation.title}</strong><span>{automation.description || `Runs the ${automation.handler} worker handler.`}</span></div><code>{automation.id}</code></div>

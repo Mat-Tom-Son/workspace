@@ -67,7 +67,7 @@ Capability snapshots are projections of Pi's native catalog. They do not create 
 
 ## Workspace CLI
 
-The Windows installer places `workspace.cmd`, an extensionless `workspace` shim, and the private `workspace-cli.ps1` helper in `<install>\bin`, then adds that directory to the current user's `PATH`. Open a new terminal after installation if an existing shell has not picked up the environment change.
+The Windows installer places `workspace.cmd`, an extensionless `workspace` shim, and the private `workspace-cli.ps1` helper in `<install>\bin`, then adds that directory to the current user's `PATH`. The Mac bundle places the extensionless shim and `workspace-cli.jxa.js` under `Workspace.app/Contents/bin`; Workspace adds that directory to child-process `PATH` for Pi shell tools without editing a person's Terminal profile.
 
 ```powershell
 workspace context --json
@@ -86,8 +86,8 @@ The current CLI is intentionally content-free and read-only. It returns Space na
 
 The public command does not run Electron as Node; the `RunAsNode` fuse remains disabled. Instead it uses a bounded protocol-v1 file handoff:
 
-1. The shim writes an atomic UUID-named request beneath `%APPDATA%\Workspace\cli\requests` containing the arguments, current working directory, protocol version, and timestamp.
-2. It starts or contacts the exact installed `Workspace.exe` with that request id. Electron's single-instance handoff routes the request to the existing desktop host when the app is already open.
+1. The shim writes an atomic UUID-named request beneath the platform profile (`%APPDATA%\Workspace\cli\requests` on Windows or `~/Library/Application Support/Workspace/cli/requests` on macOS) containing the arguments, current working directory, protocol version, and timestamp.
+2. It starts or contacts the exact installed Windows executable or Mac app executable with that request id. Electron's single-instance handoff routes the request to the existing desktop host when the app is already open.
 3. The desktop host claims and serializes the request, executes it through `WorkspaceCliKernelAdapter`, and atomically writes stdout, stderr, structured result, and exit code beneath `responses`.
 4. The shim returns that output and removes its request and response files. The broker also removes stale bounded files during initialization.
 
@@ -97,7 +97,7 @@ The broker rejects unsafe roots, symbolic-link or non-regular request files, pat
 
 ## Security boundary
 
-`%APPDATA%\Workspace\cli` is a same-Windows-user coordination channel, not a public API or authenticated caller boundary. Another process running as the same user may be able to submit requests and read the resulting local metadata. Protocol v1 therefore remains read-only.
+The platform CLI directory is a same-operating-system-user coordination channel, not a public API or authenticated caller boundary. Another process running as the same user may be able to submit requests and read the resulting local metadata. Protocol v1 therefore remains read-only.
 
 Do not add mutations to protocol v1. A future write surface needs, at minimum:
 

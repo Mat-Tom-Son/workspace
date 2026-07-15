@@ -21,7 +21,7 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 
 ## Typography and spacing
 
-- The default is Segoe UI Variable Text with 15px body copy and weights 400, 600, and 700.
+- Windows defaults to Segoe UI Variable Text; macOS defaults to the system font. Both use 15px body copy and weights 400, 600, and 700.
 - User-selected fonts and text sizes may change type, but must not change shell geometry or push controls out of bounds.
 - Use the 4, 8, 12, 16, 24, and 32px spacing scale.
 - Controls are 36–40px tall with 4–8px radii.
@@ -55,6 +55,14 @@ Workspace uses a quiet desktop-tool aesthetic. The interface should feel native,
 - App-requested tabs use the same Space-bound tab strip, focus, restore, close, and cross-Space behavior as built-in tabs. Titles should describe the current object or view, not repeat the app name on every tab.
 - Host theme changes are delivered through app context. App content must remain legible in both themes, but it cannot make the shell transparent, recolor structural chrome, or draw over native menus and modals.
 
+## macOS chrome
+
+- Use the hidden-inset native macOS title bar, traffic lights, application menu, and Window menu. Do not render the Windows custom title bar on macOS.
+- Keep Settings and About in the application menu, standard editing roles in Edit, and minimize/zoom/front roles in Window.
+- Use sidebar vibrancy only for structural chrome when reduced transparency is off. Keep work surfaces opaque and fall back to theme-matched solid chrome.
+- Use the macOS system font, system accent color, shortcut glyphs, and native overlay scrollbars without changing the shared Space, Files, Capabilities, Chats, Library, and History interaction contract.
+- Support Finder-oriented file behavior: Show in Finder, Quick Look, represented Space folders, and recent Space documents. Keep all host actions path-confined to the owning Space.
+
 ## Visual acceptance
 
 Before a handoff, exercise every primary surface and every Settings section in light and dark themes at 1440×900, 1280×800, and a tall/narrow desktop window. Reject the candidate for:
@@ -68,7 +76,7 @@ Before a handoff, exercise every primary surface and every Settings section in l
 - empty states that leave unexplained split-pane chrome;
 - focus, hover, active, and disabled states that are not visually distinct.
 
-For Electron-integrated changes, repeat a packaged-app pass that confirms Mica or its solid fallback, light/dark/system transitions, custom menus, updater state, and the minimum window size. Browser fixtures cannot prove native material or titlebar behavior.
+For Electron-integrated changes, repeat a packaged-app pass that confirms the platform material or its solid fallback, light/dark/system transitions, native menus, updater state, and the minimum window size. Browser fixtures cannot prove native material or titlebar behavior.
 
 ## Appearance scopes
 

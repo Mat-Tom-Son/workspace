@@ -145,7 +145,7 @@ installed digest and current grants, then intersects those grants with that
 job's reviewed permission subset. Disabling, updating, removing, sleeping, or
 quitting stops stale launches before authority changes take effect.
 
-Notifications are host-owned Windows notifications, not arbitrary renderer
+Notifications are host-owned system notifications, not arbitrary renderer
 UI. The manifest title and category copy are single-line reviewed text; the
 runtime cannot add dynamic copy, actions, or URLs. A category grant, an enabled
 automation, and inclusion in that automation's permission subset are all

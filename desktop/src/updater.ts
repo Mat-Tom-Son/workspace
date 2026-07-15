@@ -47,6 +47,7 @@ export interface WorkspaceUpdateCheckResultLike {
 export interface WorkspaceUpdaterAdapter {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  autoRunAppAfterInstall: boolean;
   allowDowngrade: boolean;
   allowPrerelease: boolean;
   installerPath?: string | null;
@@ -70,6 +71,7 @@ export interface WorkspaceUpdateMessage {
 
 export interface WorkspaceUpdaterHost {
   isSupported(): boolean;
+  platform(): NodeJS.Platform;
   currentVersion(): string;
   now(): string;
   installerExists(path: string): boolean;
@@ -91,14 +93,26 @@ export interface WorkspaceUpdaterOptions {
   }>;
 }
 
-export function hasPackagedWindowsUpdateFeed(options: {
+export function hasPackagedDesktopUpdateFeed(options: {
   isPackaged: boolean;
   platform: NodeJS.Platform;
   resourcesPath: string;
   fileExists?: (path: string) => boolean;
 }): boolean {
-  if (!options.isPackaged || options.platform !== "win32") return false;
+  if (!options.isPackaged || (options.platform !== "win32" && options.platform !== "darwin")) return false;
   return (options.fileExists ?? existsSync)(join(options.resourcesPath, "app-update.yml"));
+}
+
+export function hasDownloadedUpdatePayload(options: {
+  platform: NodeJS.Platform;
+  updateDownloadedEventReceived: boolean;
+  installerPath: string | null;
+  installerExists: boolean;
+}): boolean {
+  if (!options.updateDownloadedEventReceived) return false;
+  // Squirrel.Mac owns the downloaded ZIP and does not expose installerPath.
+  if (options.platform === "darwin") return true;
+  return Boolean(options.installerPath && options.installerExists);
 }
 
 /**
@@ -119,6 +133,7 @@ export class WorkspaceUpdater {
   private backgroundCheckInFlight = false;
   private installAfterDownload = false;
   private installOnQuit = false;
+  private downloadedUpdateReady = false;
   private checkPromise: Promise<WorkspaceUpdateStatus> | null = null;
   private installPromise: Promise<WorkspaceUpdateStatus> | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
@@ -142,7 +157,7 @@ export class WorkspaceUpdater {
       checkedAt: null,
       message: this.supported
         ? "Ready to check for updates."
-        : "Updates are available after Workspace is installed on Windows.",
+        : "Updates are not available in this build.",
       error: null,
     };
   }
@@ -155,12 +170,13 @@ export class WorkspaceUpdater {
     if (this.disposed || this.configured) return;
     this.configured = true;
     if (!this.supported) {
-      this.setStatus({ phase: "unsupported", message: "Updates are available after Workspace is installed on Windows." });
+      this.setStatus({ phase: "unsupported", message: "Updates are not available in this build." });
       return;
     }
 
     this.updater.autoDownload = false;
     this.updater.autoInstallOnAppQuit = false;
+    this.updater.autoRunAppAfterInstall = true;
     this.updater.allowDowngrade = false;
     this.updater.allowPrerelease = false;
     this.updater.on("checking-for-update", this.onCheckingForUpdate);
@@ -217,6 +233,7 @@ export class WorkspaceUpdater {
       return this.getStatus();
     } catch (error) {
       this.installAfterDownload = false;
+      this.downloadedUpdateReady = false;
       return this.setStatus({
         phase: "error",
         progressPercent: null,
@@ -302,13 +319,21 @@ export class WorkspaceUpdater {
     if (this.installPromise) return this.installPromise;
 
     const installerPath = this.downloadedInstallerPath();
-    if (!installerPath || !this.host.installerExists(installerPath)) {
+    if (!hasDownloadedUpdatePayload({
+      platform: this.host.platform(),
+      updateDownloadedEventReceived: this.downloadedUpdateReady,
+      installerPath,
+      installerExists: Boolean(installerPath && this.host.installerExists(installerPath)),
+    })) {
       this.installOnQuit = false;
+      this.downloadedUpdateReady = false;
       return Promise.resolve(this.setStatus({
         phase: "error",
         progressPercent: null,
-        message: "Downloaded update installer is missing.",
-        error: installerPath ? `Installer not found at ${installerPath}.` : "No downloaded update installer path was available.",
+        message: "Downloaded update payload is missing.",
+        error: this.host.platform() === "darwin"
+          ? "Squirrel.Mac has no downloaded update ready to install."
+          : installerPath ? `Installer not found at ${installerPath}.` : "No downloaded update installer path was available.",
       }));
     }
 
@@ -334,7 +359,12 @@ export class WorkspaceUpdater {
   private restoreReadyAfterInstallFailure(message: string): WorkspaceUpdateStatus {
     this.installPromise = null;
     const installerPath = this.downloadedInstallerPath();
-    if (installerPath && this.host.installerExists(installerPath)) {
+    if (hasDownloadedUpdatePayload({
+      platform: this.host.platform(),
+      updateDownloadedEventReceived: this.downloadedUpdateReady,
+      installerPath,
+      installerExists: Boolean(installerPath && this.host.installerExists(installerPath)),
+    })) {
       this.installOnQuit = true;
       return this.setStatus({
         phase: "ready",
@@ -344,6 +374,7 @@ export class WorkspaceUpdater {
       });
     }
     this.installOnQuit = false;
+    this.downloadedUpdateReady = false;
     return this.setStatus({
       phase: "error",
       progressPercent: null,
@@ -384,6 +415,7 @@ export class WorkspaceUpdater {
 
   private readonly onUpdateAvailable = (info: WorkspaceUpdateInfoLike): void => {
     this.installOnQuit = false;
+    this.downloadedUpdateReady = false;
     this.setStatus({
       phase: "available",
       availableVersion: info.version,
@@ -396,6 +428,7 @@ export class WorkspaceUpdater {
 
   private readonly onUpdateNotAvailable = (info: WorkspaceUpdateInfoLike): void => {
     this.installOnQuit = false;
+    this.downloadedUpdateReady = false;
     this.setStatus({
       phase: "not_available",
       availableVersion: null,
@@ -417,6 +450,7 @@ export class WorkspaceUpdater {
 
   private readonly onUpdateDownloaded = (info: WorkspaceUpdateInfoLike): void => {
     this.installOnQuit = true;
+    this.downloadedUpdateReady = true;
     this.setStatus({
       phase: "ready",
       availableVersion: info.version,
@@ -435,6 +469,7 @@ export class WorkspaceUpdater {
   private readonly onUpdateCancelled = (): void => {
     this.installAfterDownload = false;
     this.installOnQuit = false;
+    this.downloadedUpdateReady = false;
     this.setStatus({ phase: "idle", progressPercent: null, message: "The update download was cancelled.", error: null });
   };
 
@@ -449,6 +484,7 @@ export class WorkspaceUpdater {
       this.deferTransientCheck(message);
       return;
     }
+    if (this.status.phase === "downloading") this.downloadedUpdateReady = false;
     this.setStatus({ phase: "error", progressPercent: null, message: "Update check failed.", error: message });
   };
 
@@ -530,11 +566,12 @@ function defaultUpdaterAdapter(): WorkspaceUpdaterAdapter {
 function defaultElectronHost(getWindow: () => BrowserWindow | null): WorkspaceUpdaterHost {
   const electron = require("electron") as typeof import("electron");
   return {
-    isSupported: () => hasPackagedWindowsUpdateFeed({
+    isSupported: () => hasPackagedDesktopUpdateFeed({
       isPackaged: electron.app.isPackaged,
       platform: process.platform,
       resourcesPath: process.resourcesPath,
     }),
+    platform: () => process.platform,
     currentVersion: () => electron.app.getVersion(),
     now: () => new Date().toISOString(),
     installerExists: existsSync,

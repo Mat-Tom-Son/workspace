@@ -301,8 +301,8 @@ test("Space customization is visible, compact, and separate from structural chro
   );
 
   assert.match(foundationCss, /--workspace-ui-font:\s*var\(--workspace-font-family/);
-  assert.match(rendererMainSource, /window\.workspaceDesktop\?\.window\.material === "mica"[\s\S]*?dataset\.windowMaterial = "mica"/, "window material must be applied before React's first paint");
-  assert.match(rendererMainSource, /delete document\.documentElement\.dataset\.windowMaterial/, "non-Mica sessions must clear stale material state");
+  assert.match(rendererMainSource, /windowMaterial === "mica" \|\| windowMaterial === "vibrancy"[\s\S]*?dataset\.windowMaterial = windowMaterial/, "window material must be applied before React's first paint");
+  assert.match(rendererMainSource, /delete document\.documentElement\.dataset\.windowMaterial/, "solid-material sessions must clear stale material state");
   assert.doesNotMatch(appSource, /dataset\.windowMaterial/, "window material must not wait for a passive React effect");
   assert.doesNotMatch(foundationCss, /--workspace-font-size:/, "the professional layer must not override the user's text-size preference");
   assert.doesNotMatch(desktopSettingsSource, /from\s+["']lucide-react["']/);

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractFile, listPackage } from "@electron/asar";
@@ -21,23 +21,44 @@ if (!packageDir) {
 }
 if (!existsSync(packageDir)) failures.push(`Packaged app directory does not exist: ${packageDir}.`);
 
-const resourcesDir = join(packageDir, "resources");
+const packagedPlatform = readArgument("--platform") ?? inferPackagedPlatform(packageDir);
+const macAppBundleName = process.env.WORKSPACE_ALLOW_UNSIGNED_MAC_BUILD === "1"
+  ? "Workspace Local Smoke.app"
+  : "Workspace.app";
+const macExecutableName = process.env.WORKSPACE_ALLOW_UNSIGNED_MAC_BUILD === "1"
+  ? "Workspace Local Smoke"
+  : "Workspace";
+const appDir = packagedPlatform === "darwin" && !packageDir.endsWith(".app")
+  ? join(packageDir, macAppBundleName)
+  : packageDir;
+const resourcesDir = packagedPlatform === "darwin"
+  ? join(appDir, "Contents", "Resources")
+  : join(appDir, "resources");
+const binDir = packagedPlatform === "darwin" ? join(appDir, "Contents", "bin") : join(appDir, "bin");
 const asarPath = join(resourcesDir, "app.asar");
-const executablePath = process.platform === "win32"
-  ? join(packageDir, "Workspace.exe")
-  : process.platform === "darwin"
-    ? join(packageDir, "Workspace.app")
-    : join(packageDir, "workspace");
+const executablePath = packagedPlatform === "win32"
+  ? join(appDir, "Workspace.exe")
+  : packagedPlatform === "darwin"
+    ? join(appDir, "Contents", "MacOS", macExecutableName)
+    : join(appDir, "workspace");
 
 assertPath(executablePath, "Workspace executable");
 assertPath(asarPath, "app.asar");
 assertPath(join(resourcesDir, "web-local", "index.html"), "renderer index");
 assertPath(join(resourcesDir, "assets", "icon.png"), "desktop icon");
-assertPath(join(packageDir, "bin", "workspace.cmd"), "Workspace CLI command shim");
-assertPath(join(packageDir, "bin", "workspace"), "Workspace CLI shell shim");
-assertPath(join(packageDir, "bin", "workspace-cli.ps1"), "Workspace CLI PowerShell helper");
+assertPath(join(binDir, "workspace"), "Workspace CLI shell shim");
+if (packagedPlatform === "win32") {
+  assertPath(join(binDir, "workspace.cmd"), "Workspace CLI command shim");
+  assertPath(join(binDir, "workspace-cli.ps1"), "Workspace CLI PowerShell helper");
+} else if (packagedPlatform === "darwin") {
+  assertPath(join(binDir, "workspace-cli.jxa.js"), "Workspace CLI macOS helper");
+  assertPath(join(resourcesDir, "icon.icns"), "macOS application icon");
+  if (existsSync(join(binDir, "workspace")) && !(statSync(join(binDir, "workspace")).mode & 0o111)) {
+    failures.push("Workspace CLI shell shim is not executable.");
+  }
+}
 
-if (existsSync(executablePath) && process.platform === "win32") {
+if (existsSync(executablePath) && (packagedPlatform === "win32" || packagedPlatform === "darwin")) {
   try {
     const wire = await getCurrentFuseWire(executablePath);
     const expectedFuses = new Map([
@@ -79,9 +100,11 @@ if (existsSync(asarPath)) {
     "/bin/workspace.cmd",
     "/bin/workspace",
     "/bin/workspace-cli.ps1",
+    "/bin/workspace-cli.jxa.js",
     "/desktop/cli/workspace.cmd",
     "/desktop/cli/workspace",
     "/desktop/cli/workspace-cli.ps1",
+    "/desktop/cli/workspace-cli.jxa.js",
   ]) {
     if (entries.has(externalOnly)) failures.push(`CLI shim must remain outside app.asar: ${externalOnly}.`);
   }
@@ -90,6 +113,10 @@ if (existsSync(asarPath)) {
     const packaged = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
     if (packaged.name !== "workspace-desktop") failures.push(`Packaged npm name is ${packaged.name ?? "missing"}.`);
     if (packaged.productName !== "Workspace") failures.push(`Packaged product name is ${packaged.productName ?? "missing"}.`);
+    const expectedBuildChannel = process.env.WORKSPACE_ALLOW_UNSIGNED_MAC_BUILD === "1" ? "mac-local-smoke" : "production";
+    if (packaged.workspaceBuildChannel !== expectedBuildChannel) {
+      failures.push(`Packaged build channel is ${packaged.workspaceBuildChannel ?? "missing"}; expected ${expectedBuildChannel}.`);
+    }
   } catch (error) {
     failures.push(`Could not inspect packaged package.json: ${formatError(error)}`);
   }
@@ -105,11 +132,23 @@ console.log(`Verified packaged Workspace app at ${packageDir}.`);
 
 function findPackageDir() {
   if (!existsSync(outDir)) return null;
-  const candidates = [join(outDir, "builder", "win-unpacked"), ...readdirSync(outDir, { withFileTypes: true })
+  const builderDir = join(outDir, "builder");
+  const builderCandidates = existsSync(builderDir)
+    ? readdirSync(builderDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && (entry.name === "win-unpacked" || /^mac(?:-|$)/.test(entry.name)))
+      .map((entry) => join(builderDir, entry.name))
+    : [];
+  const candidates = [...builderCandidates, ...readdirSync(outDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^Workspace-(?:win32|darwin|linux)-/.test(entry.name))
     .map((entry) => join(outDir, entry.name))]
     .filter((candidate) => existsSync(candidate));
   return candidates[0] ?? null;
+}
+
+function inferPackagedPlatform(packagePath) {
+  if (packagePath.endsWith(".app") || existsSync(join(packagePath, "Workspace.app")) || existsSync(join(packagePath, "Workspace Local Smoke.app"))) return "darwin";
+  if (existsSync(join(packagePath, "Workspace.exe"))) return "win32";
+  return process.platform;
 }
 
 function readArgument(name) {

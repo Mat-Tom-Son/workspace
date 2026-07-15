@@ -32,11 +32,11 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 ### Desktop shell
 
-- Preserve the custom title bar and File, Edit, View, and Help menus.
+- Preserve the Windows custom title bar and the platform menu contract; macOS uses its native hidden-inset title bar plus application, File, Edit, View, Window, and Help menus.
 - Preserve window size, position, maximized state, theme integration, and renderer recovery behavior.
-- Closing the window may hide Workspace to the system tray when the preference is enabled; explicit Quit exits cleanly.
+- On Windows, closing the window may hide Workspace to the system tray when the preference is enabled. On macOS, closing the last window keeps the application host alive and the Dock icon recreates the window. Explicit Quit exits cleanly on both.
 - The tray exposes clear Show and Quit actions and does not strand an invisible process.
-- Update status and commands remain available from both the desktop menu and settings surface.
+- Update status and commands remain available from both the platform-appropriate desktop menu and settings surface.
 
 ### Files and folders
 
@@ -67,7 +67,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 - Installation, each network destination, each Space-file grant, each notification category, each stored connection, and each named automation remain separate, visible controls. Installation grants none of them.
 - Visible UI and optional worker execution use separate sandbox hosts. Direct networking, Node access, arbitrary navigation, and host powers outside an accepted UI/action/automation lifecycle remain denied.
 - Machine-local app storage survives a reviewed app update and an application update. Active visible app UI receives bounded invalidation hints; inactive views recover durable state when reopened instead of receiving queued hidden updates.
-- Windows notifications use only reviewed static copy during a separately enabled automation whose permission subset includes the granted category. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.
+- System notifications use only reviewed static copy during a separately enabled automation whose permission subset includes the granted category. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.
 
 ## Deliberately removed or replaced
 

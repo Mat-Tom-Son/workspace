@@ -1,12 +1,13 @@
 import type React from "react";
 import { workspacePathDragType } from "../constants";
+import { desktopPlatform, type DesktopPlatform } from "./platform";
 import { fileExtension } from "./tree";
 import type { ChangeEntry, TreeEntry } from "../types";
 
-function nativeOpenLabel(entry: TreeEntry): { text: string; office: boolean } {
+function nativeOpenLabel(entry: TreeEntry, platform: DesktopPlatform = desktopPlatform()): { text: string; office: boolean } {
   if (entry.kind === "folder") return { text: "Open folder", office: false };
   const extension = fileExtension(entry.path);
-  if ([".doc", ".docm", ".dot", ".dotm", ".xls", ".xlsb", ".xlsm", ".ppt", ".pptm"].includes(extension)) return { text: "Show in File Explorer", office: true };
+  if ([".doc", ".docm", ".dot", ".dotm", ".xls", ".xlsb", ".xlsm", ".ppt", ".pptm"].includes(extension)) return { text: revealInFileManagerLabel(platform), office: true };
   if ([".docx", ".dotx"].includes(extension)) return { text: "Open in Word", office: true };
   if ([".xlsx", ".csv"].includes(extension)) return { text: "Open in Excel", office: true };
   if ([".pptx", ".potx"].includes(extension)) return { text: "Open in PowerPoint", office: true };
@@ -38,8 +39,7 @@ function canOpenDirectly(path: string): boolean {
   ]).has(extension);
 }
 
-function revealInFileManagerLabel(): string {
-  const platform = window.workspaceDesktop?.app?.platform;
+function revealInFileManagerLabel(platform: DesktopPlatform = desktopPlatform()): string {
   if (platform === "win32") return "Show in File Explorer";
   if (platform === "darwin") return "Show in Finder";
   return "Show in file manager";

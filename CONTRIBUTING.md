@@ -12,6 +12,8 @@ Before changing navigation, terminology, storage, trust, or Assistant behavior, 
 - [Restricted app authoring](docs/restricted-app-authoring.md)
 - [Architecture](docs/architecture.md)
 - [Workspace management layer](docs/management-layer.md)
+- [macOS build and release lane](docs/macos-build.md)
+- [macOS release runbook](docs/macos-release.md)
 - [Workspace contributor guide](AGENTS.md) — the canonical policy for Codex and every contributor.
 - [Claude Code entrypoint](CLAUDE.md) — imports `AGENTS.md` rather than duplicating it.
 
@@ -19,7 +21,7 @@ The central constraint is that a Space remains an ordinary folder. Workspace may
 
 ## Report an issue
 
-Use [GitHub Issues](https://github.com/Mat-Tom-Son/workspace/issues) for reproducible bugs and focused feature proposals. Include the Workspace version, Windows version, what you expected, what happened, and the smallest safe reproduction you can provide.
+Use [GitHub Issues](https://github.com/Mat-Tom-Son/workspace/issues) for reproducible bugs and focused feature proposals. Include the Workspace version, operating system and version, what you expected, what happened, and the smallest safe reproduction you can provide.
 
 Do not put API keys, tokens, private file contents, personal paths, or security vulnerabilities in a public issue. Follow [the security policy](SECURITY.md) for vulnerabilities.
 
@@ -62,6 +64,8 @@ npm run desktop:prepare
 Use `npm run desktop:package:smoke` when packaged behavior or assets change. It verifies the canonical unpacked release layout without building an NSIS installer. Use `npm run desktop:make` only for an installer/release candidate. The purpose of each lane is explained in [Windows build](docs/windows-build.md).
 
 For restricted-app manifest, bridge, broker, sandbox, storage, file, notification, connection, or lifecycle changes, run the focused tests and `npm run desktop:restricted-app:smoke`. That command exercises the real Electron visible and worker sandboxes; browser fixtures or Node-only tests do not prove the security boundary. `desktop:prepare`, the package lanes, and the release lane include this probe.
+
+On macOS, use Node 24 and `npm run desktop:make:mac` for the non-interactive `Workspace Local Smoke` app/DMG/ZIP structural candidate. Do not rename or install that ad hoc app over production. Developer ID, notarized, interactive candidates use `npm run desktop:make:mac:release`; see [macOS build and release lane](docs/macos-build.md). Never publish ad hoc artifacts as releases.
 
 Add or update tests for behavior changes. Update README and focused docs when a change affects shipped behavior, terminology, privacy, security, trust, build commands, or the roadmap.
 

@@ -27,6 +27,22 @@ type WorkspaceDesktopMenuCommand =
 
 type WorkspaceDesktopMenuId = "file" | "edit" | "view" | "help";
 type WorkspaceDesktopPathAction = "open" | "open-native" | "reveal";
+type WorkspaceDesktopFileMenuCommand = "open" | "reveal" | "copy-path" | "attach-chat" | "version-history" | "upload-here" | "rename" | "delete";
+
+interface WorkspaceDesktopFileMenuRequest {
+  workspaceId: string;
+  path: string;
+  kind: "file" | "folder";
+  capabilities: {
+    open: boolean;
+    attach: boolean;
+    history: boolean;
+    upload: boolean;
+    rename: boolean;
+    delete: boolean;
+  };
+  point: { x: number; y: number };
+}
 
 interface WorkspaceRestrictedAppViewRequest {
   workspaceId: string;
@@ -94,6 +110,10 @@ declare global {
         revealFolder: (workspaceId: string) => Promise<void>;
         openPath: (workspaceId: string, path: string, action?: WorkspaceDesktopPathAction) => Promise<void>;
         startDrag: (workspaceId: string, path: string) => Promise<void>;
+        previewFile: (workspaceId: string, path: string) => Promise<boolean>;
+        popupFileMenu?: (request: WorkspaceDesktopFileMenuRequest) => Promise<WorkspaceDesktopFileMenuCommand | null>;
+        setActiveSpace: (workspaceId: string | null) => Promise<void>;
+        onOpenSpace: (listener: (workspaceId: string) => void) => () => void;
         onOpenFolder: (listener: () => void) => () => void;
       };
       agent: {
@@ -108,7 +128,7 @@ declare global {
         onOpenRequest: (listener: (owner: WorkspaceRestrictedAppOwner) => void) => () => void;
       };
       window: {
-        material: "mica" | "none";
+        material: "mica" | "vibrancy" | "none";
         setTheme: (theme: "light" | "dark", source?: "light" | "dark" | "system") => void;
         getAccentColor: () => Promise<string | null>;
         onAccentColorChanged: (listener: (accent: string | null) => void) => () => void;

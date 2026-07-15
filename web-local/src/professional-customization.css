@@ -846,3 +846,47 @@
   border-bottom-color: transparent;
   box-shadow: none;
 }
+
+/* macOS vibrancy is limited to the navigation side of the shell. The work
+   surface remains opaque, and `material: none` deliberately matches none of
+   these selectors when Reduce transparency is enabled. */
+:root[data-window-material="vibrancy"],
+:root[data-window-material="vibrancy"] body,
+:root[data-window-material="vibrancy"] #root,
+:root[data-window-material="vibrancy"] .app-shell,
+:root[data-window-material="vibrancy"] .app-shell .workspace-layout,
+:root[data-window-material="vibrancy"] .app-shell .professional-workspace-rail {
+  background: transparent;
+}
+
+:root[data-platform="darwin"] .app-shell::before {
+  content: "";
+  position: fixed;
+  z-index: 40;
+  inset: 0 0 auto;
+  height: 38px;
+  -webkit-app-region: drag;
+  pointer-events: auto;
+}
+
+:root[data-platform="darwin"] .app-shell .workspace-layout {
+  padding-top: 38px;
+}
+
+:root[data-window-material="vibrancy"] .app-shell .workspace-layout .workspace-mode-pane {
+  background: color-mix(in srgb, var(--ui-surface) 72%, transparent);
+  border-color: color-mix(in srgb, var(--ui-border) 72%, transparent);
+}
+
+:root[data-window-material="vibrancy"] .app-shell .right-rail {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+}
+
+/* Leave overlay-scrollbar sizing, visibility, and gutter policy to macOS. */
+:root[data-platform="darwin"] * {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  scrollbar-gutter: auto;
+}

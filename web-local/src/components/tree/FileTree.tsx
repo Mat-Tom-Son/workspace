@@ -2,6 +2,7 @@ import type React from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { fileTreeFileIcon, fileTreeFolderIcon, fileTreeIconClassName, type FileTreeIconSpec } from "../../file-tree-icons";
 import { hasNativeFiles, hasWorkspacePathDrag } from "../../lib/file-actions";
+import { desktopFileDragHint } from "../../lib/platform";
 import { isInsideFolder, parentFolderPath, treeEntryNeedsLazyChildren } from "../../lib/tree";
 import type { TreeEntry } from "../../types";
 import { EmptyInline } from "../chrome/common";
@@ -19,6 +20,7 @@ export function FileTree({
   level = 1,
   onToggleFolder,
   onSelectFile,
+  onPreviewFile,
   onOpenFile,
   onOpenContextMenu,
   onUpdateDropTarget,
@@ -39,6 +41,7 @@ export function FileTree({
   level?: number;
   onToggleFolder: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onPreviewFile?: (path: string) => void;
   onOpenFile: (path: string) => void;
   onOpenContextMenu: (entry: TreeEntry, event: React.MouseEvent<HTMLElement>) => void;
   onUpdateDropTarget: (event: React.DragEvent<HTMLElement>, targetFolderPath: string) => void;
@@ -85,7 +88,8 @@ export function FileTree({
       onOpenFile(entry.path);
     } else if (event.key === " ") {
       event.preventDefault();
-      onSelectFile(entry.path);
+      if (onPreviewFile && selectedPath === entry.path) onPreviewFile(entry.path);
+      else onSelectFile(entry.path);
     }
   }
 
@@ -111,7 +115,7 @@ export function FileTree({
               aria-level={level}
               aria-expanded={entry.kind === "folder" ? !folderCollapsed : undefined}
               aria-selected={entry.kind === "file" ? selectedPath === entry.path : undefined}
-              title={entry.kind === "file" ? `${entry.path} — drag to move, Alt+drag to File Explorer` : entry.path}
+              title={entry.kind === "file" ? desktopFileDragHint(entry.path) : entry.path}
               data-tree-row="true"
               data-tree-path={entry.path}
               draggable

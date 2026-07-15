@@ -12,7 +12,7 @@ The core idea is simple: the folder stays ordinary; Workspace makes it feel like
 
 ## Get Workspace
 
-[Download the latest Windows release](https://github.com/Mat-Tom-Son/workspace/releases/latest). Workspace currently ships as a Windows x64 installer with GitHub-hosted updates. Releases may be signed with the project's stable personal certificate, but that self-signed identity is not publicly trusted, so Windows or SmartScreen may still show a warning. Current releases attach checksums and updater metadata for independent verification.
+[Download Workspace for Windows](https://github.com/Mat-Tom-Son/workspace/releases/latest) or [download Workspace for Apple silicon Macs](https://github.com/Mat-Tom-Son/workspace-mac-releases/releases/latest). Both installed apps use GitHub-hosted updates. The Mac app and DMG are Developer ID-signed, notarized, and accepted by Gatekeeper. Windows releases may use the project's stable personal certificate, but that self-signed identity is not publicly trusted, so Windows or SmartScreen may still show a warning.
 
 ## Product model
 
@@ -50,9 +50,9 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - Global and registered-Space Pi Extensions. Native Pi Extensions run with the current user's permissions.
 - Validated declarative Extension surfaces that can contribute an app rail destination, navigator pane, and Space-bound data views without injecting Extension code into the renderer.
 - A [full-trust Connected inbox Pi Extension example](examples/packages/connected-inbox/README.md) and a separate, runnable [restricted Connected inbox Space app](examples/packages/restricted-connected-inbox/README.md).
-- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant-action and automation workers, a shared machine-wide scheduler for named jobs, durable run receipts, bounded local app storage with active-view invalidation hints, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, standards-only OAuth PKCE, and static reviewed Windows notifications from enabled automations.
+- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant-action and automation workers, a shared machine-wide scheduler for named jobs, durable run receipts, bounded local app storage with active-view invalidation hints, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, standards-only OAuth PKCE, and static reviewed system notifications from enabled automations.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
-- Assisted Windows installation and GitHub-hosted application updates.
+- Assisted Windows installation and a signed/notarized Apple silicon DMG, with GitHub-hosted application updates on both platforms.
 - A versioned, read-only management layer and installed `workspace` command for inspecting Space context, running work, and Pi capabilities without scraping the UI.
 
 Workspace does not bundle organization-specific tools, instructions, document libraries, or cloud accounts.
@@ -86,24 +86,25 @@ This is the first management primitive for a future cross-Space Assistant and co
 
 Use Node 22.19.0 or newer.
 
-```powershell
+```bash
 npm install
 npm run local:dev
 ```
 
 Useful checks:
 
-```powershell
+```bash
 npm run check
 npm test
 npm run desktop:prepare
 npm run desktop:package:smoke
 npm run desktop:make
+npm run desktop:make:mac
 ```
 
-`desktop:package:smoke` creates and verifies the canonical Electron Builder unpacked app while skipping NSIS installer and updater-artifact creation. The slower `desktop:package` command retains a Forge package lane for targeted diagnostics. `desktop:make` builds and verifies the release-ready NSIS installer, blockmap, embedded GitHub feed configuration, and `latest.yml` under `out/builder`.
+`desktop:package:smoke` creates and verifies the canonical Windows Electron Builder unpacked app while skipping NSIS installer and updater-artifact creation. The slower `desktop:package` command retains a Forge package lane for targeted diagnostics. `desktop:make` builds the Windows NSIS candidate; `desktop:make:mac` builds the non-interactive, separately identified `Workspace Local Smoke` artifacts; `desktop:release:mac` signs, notarizes, verifies, and publishes the production Mac artifacts.
 
-Use `npm run local:dev` for the fast UI loop, `check` and `test` for normal implementation feedback, `desktop:prepare` for desktop integration, `desktop:package:smoke` for release-layout QA, and `desktop:make` only for a versioned release candidate. See [Windows builds](docs/windows-build.md) for the complete verification ladder.
+Use `npm run local:dev` for the fast UI loop, `check` and `test` for normal implementation feedback, and `desktop:prepare` for desktop integration. See [Windows builds](docs/windows-build.md) and [macOS builds](docs/macos-build.md) for platform packaging and release gates.
 
 CI runs `check`, `test`, and `desktop:package:smoke`, so every branch verifies the same unpacked Electron Builder layout used by the release lane without paying the NSIS cost.
 
@@ -122,9 +123,9 @@ In-process driver runs use temporary application state unless `WORKSPACE_STATE_D
 
 ## Workspace CLI
 
-The Windows installer includes a `workspace` command and adds its package-root `bin` directory to the current user's `PATH`. The installer updates the user environment registry directly, broadcasts the Windows environment-change notification, and never edits PowerShell, Command Prompt, or other shell profile files. Open a new terminal if an already-running shell does not see the command immediately. Uninstall removes only Workspace's own `bin` entry and leaves the rest of the user `PATH` unchanged.
+The Windows installer includes a `workspace` command and adds its package-root `bin` directory to the current user's `PATH`. The Mac app carries the same command under `Workspace.app/Contents/bin`; Workspace adds that directory to child processes so Pi shell tools can use it. A DMG does not silently edit shell profiles, so exposing the command to unrelated Terminal sessions remains an explicit installation action.
 
-The command uses a bounded protocol-v1 handoff under `%APPDATA%\Workspace\cli`: it writes one atomic request, starts or contacts `Workspace.exe`, returns the application's stdout, stderr, and exit code, and removes the response. Packaged shims live outside `app.asar` so Windows can execute them even though Electron's `RunAsNode` fuse remains disabled. For unpacked package tests only, `WORKSPACE_CLI_APP` can point the shim at a specific `Workspace.exe`; normal installations resolve the executable beside the packaged `bin` directory.
+The command uses a bounded protocol-v1 handoff under the platform application-data directory: `%APPDATA%\Workspace\cli` on Windows and `~/Library/Application Support/Workspace/cli` on macOS. It writes one atomic request, starts or contacts the packaged app, returns stdout, stderr, and the exit code, and removes the response. Platform helpers remain outside `app.asar`, and Electron's `RunAsNode` fuse stays disabled.
 
 ```powershell
 workspace context --json
@@ -133,7 +134,7 @@ workspace tasks list --space "Personal Space"
 workspace capabilities list --space "Personal Space" --json
 ```
 
-Protocol v1 is deliberately read-only. It gives people, scripts, and the Assistant a shared way to inspect the Space resolved from the terminal's current folder, the registered Spaces, host-managed running tasks, and capability inventory—including inactive tools or configured packages that are not currently loaded. The AppData handoff trusts the current Windows user; mutating commands will require an authenticated transport and an explicit authorization model in a later protocol version.
+Protocol v1 is deliberately read-only. It gives people, scripts, and the Assistant a shared way to inspect the Space resolved from the terminal's current folder, the registered Spaces, host-managed running tasks, and capability inventory—including inactive tools or configured packages that are not currently loaded. The handoff trusts the current operating-system user; mutating commands will require an authenticated transport and explicit authorization in a later protocol version.
 
 Human-readable output is the default. Use `--json` for automation and `--space <id-or-exact-name>` when the terminal's current folder is not enough context. See [Workspace management layer](docs/management-layer.md) for snapshot fields, resolution rules, broker limits, and the distinction between this CLI and `workspace:drive`.
 
@@ -144,6 +145,10 @@ Pushing an exact version tag such as `v<package version>` runs the Windows relea
 The release workflow supports an optional PFX certificate through GitHub secrets. The included personal certificate helper creates a self-signed identity outside the repository; this signs artifacts consistently but does not establish public Windows trust. Until a certificate-authority-backed identity is configured, users may still see Unknown Publisher or SmartScreen warnings.
 
 See [Windows builds](docs/windows-build.md) and [Windows releases and signing](docs/windows-release.md).
+
+## macOS status
+
+`npm run desktop:make:mac` builds the non-interactive, separately identified `Workspace Local Smoke` Apple silicon structural candidate. `npm run desktop:release:mac` builds, Developer ID-signs, notarizes, staples, verifies, and draft-first publishes the production artifacts to the separate public Mac feed. Packaged production Mac builds update from that feed; a signed 0.2.8 to 0.2.9 installed update has passed end to end. See [macOS build and release lane](docs/macos-build.md) and [macOS release runbook](docs/macos-release.md).
 
 ## Pi integration resources
 
@@ -162,9 +167,11 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 - [Product model and roadmap](docs/product-model.md) — durable nouns, context rules, product rails, and future direction.
 - [Architecture](docs/architecture.md) and [management layer](docs/management-layer.md) — runtime boundaries, shared kernel, CLI, and agent harness.
 - [Assistant capabilities](docs/assistant-capabilities.md), [Extension surfaces](docs/extension-surfaces.md), [restricted app authoring](docs/restricted-app-authoring.md), [restricted app runtime](docs/restricted-app-runtime.md), and [Pi compatibility](docs/pi-resources.md) — Skills, full-trust Extensions, restricted apps, packages, scopes, authoring, and authorization.
+- [Workspace 0.2.10 release notes](docs/releases/0.2.10.md) — native macOS chrome, menus, Finder and Quick Look workflows, close/reopen continuity, security boundaries, and upgrade guidance.
+- [Workspace 0.2.9 release notes](docs/releases/0.2.9.md) — named Space-app automations, per-job authority, durable cadence, run receipts, and upgrade guidance.
 - [Workspace 0.2.8 release notes](docs/releases/0.2.8.md) — the shipped Space-app foundation, security boundary, example, verification, and known limits.
 - [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
-- [Windows build](docs/windows-build.md) and [release runbook](docs/windows-release.md) — verification lanes, signing, updater, and publishing.
+- [Windows build](docs/windows-build.md), [Windows release runbook](docs/windows-release.md), [macOS build lane](docs/macos-build.md), and [macOS release runbook](docs/macos-release.md) — verification, signing, updater, and publishing boundaries.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.
 
 ## Project policies
