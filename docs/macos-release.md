@@ -56,6 +56,8 @@ The accepted proof must show:
 
 Workspace 0.2.8 to 0.2.9 and 0.2.9 to 0.2.10 passed this proof on July 15, 2026. For 0.2.10, the installed 0.2.9 app discovered the public release, cached the final updater ZIP with SHA-256 `35f359e4042a0feaccd75feaca18ab0064d1c85b2500ee99295fdab773c62234`, replaced and relaunched `/Applications/Workspace.app`, passed installed-bundle verification, preserved the empty Space registry, survived last-window close/reopen in one process, and completed a full quit/reopen without a SecurityAgent or Keychain dialog. `updateNow()` intentionally downloads and restarts from one user action.
 
+Workspace 0.2.10 to 0.2.11 passed the same proof on July 15, 2026. The installed 0.2.10 app offered 0.2.11 from **Workspace > Check for Updates...**, downloaded a ZIP whose SHA-256 matched the published GitHub digest `adeb9fac93452443d72364b85e2bc7ef07b2f0f1b09025aaa8dd302c0b3da6b7`, replaced itself, and relaunched as 0.2.11. Installed-bundle verification passed, the registered Space retained the same identity, application-menu Quit and Command-Q exited on their first request, the Dock/system termination path exited, and closing then reopening the last window reused the same process. No SecurityAgent or Keychain dialog appeared.
+
 ## Recovery rules
 
 - Never replace assets in a published release. Correct a bad release with a higher shared version.
