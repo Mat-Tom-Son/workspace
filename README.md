@@ -167,6 +167,7 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 - [Product model and roadmap](docs/product-model.md) — durable nouns, context rules, product rails, and future direction.
 - [Architecture](docs/architecture.md) and [management layer](docs/management-layer.md) — runtime boundaries, shared kernel, CLI, and agent harness.
 - [Assistant capabilities](docs/assistant-capabilities.md), [Extension surfaces](docs/extension-surfaces.md), [restricted app authoring](docs/restricted-app-authoring.md), [restricted app runtime](docs/restricted-app-runtime.md), and [Pi compatibility](docs/pi-resources.md) — Skills, full-trust Extensions, restricted apps, packages, scopes, authoring, and authorization.
+- [Workspace 0.2.11 release notes](docs/releases/0.2.11.md) — first-request native Mac Quit behavior, the deferred graceful-shutdown coordinator, updater safety, and upgrade guidance.
 - [Workspace 0.2.10 release notes](docs/releases/0.2.10.md) — native macOS chrome, menus, Finder and Quick Look workflows, close/reopen continuity, security boundaries, and upgrade guidance.
 - [Workspace 0.2.9 release notes](docs/releases/0.2.9.md) — named Space-app automations, per-job authority, durable cadence, run receipts, and upgrade guidance.
 - [Workspace 0.2.8 release notes](docs/releases/0.2.8.md) — the shipped Space-app foundation, security boundary, example, verification, and known limits.

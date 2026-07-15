@@ -36,3 +36,10 @@ test("ad hoc Mac smoke builds use a separate identity and never start the produc
   assert.match(main, /packagedBuildChannel[\s\S]*?workspaceBuildChannel[\s\S]*?Historical production packages/);
   assert.match(main, /configureUpdater[\s\S]*?workspaceUpdater \|\| localMacSmokeBuild/);
 });
+
+test("the Mac Quit item enters the deferred graceful coordinator instead of a native-role reentrant quit", () => {
+  const macMenu = main.slice(main.indexOf("function macApplicationMenu"), main.indexOf("function macWindowMenu"));
+  assert.match(main, /id: "quit-workspace"[\s\S]*?accelerator: "Command\+Q"[\s\S]*?click: requestApplicationQuit/);
+  assert.doesNotMatch(macMenu, /\{ role: "quit" \}/);
+  assert.match(main, /app\.on\("before-quit"[\s\S]*?shouldPreventNativeQuit\(\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?quitCoordinator\.requestQuit\(\)/);
+});

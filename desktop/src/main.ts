@@ -64,6 +64,7 @@ import {
   type NativeFileMenuRequest,
 } from "./file-context-menu.js";
 import { desktopWindowMaterial, shouldUseMacVibrancy, shouldUseWindowsMica } from "./window-material.js";
+import { GracefulQuitCoordinator, type QuitPreparationOutcome } from "./quit-coordinator.js";
 
 const productionProductName = "Workspace";
 const localMacSmokeProductName = "Workspace Local Smoke";
@@ -128,8 +129,6 @@ let secureSettings: SecureSettingsStore | null = null;
 let apiSessionToken = "";
 let quitting = false;
 let quittingForUpdate = false;
-let quitShutdownComplete = false;
-let quitFlowPromise: Promise<void> | null = null;
 let activeAgentTurns = 0;
 let powerBlockerId: number | null = null;
 let workspaceUpdater: WorkspaceUpdater | null = null;
@@ -155,6 +154,13 @@ let activeNativeSpaceGeneration = 0;
 let pendingOpenSpaceRequest: { token: string; workspaceId: string } | null = null;
 const pendingMacOpenPaths: string[] = [];
 let macOpenPathDrainPromise: Promise<void> | null = null;
+const quitCoordinator = new GracefulQuitCoordinator({
+  prepare: prepareForApplicationQuit,
+  quit: () => app.quit(),
+  onError: (error) => {
+    console.warn(`${productName} quit preparation failed; continuing shutdown: ${errorMessage(error)}`);
+  },
+});
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -258,28 +264,30 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", (event) => {
   quitting = true;
-  if (quitShutdownComplete) return;
+  if (!quitCoordinator.shouldPreventNativeQuit()) return;
   event.preventDefault();
-  if (quitFlowPromise) return;
-  quitFlowPromise = finishQuitFlow().finally(() => { quitFlowPromise = null; });
+  quitCoordinator.requestQuit();
 });
 
-async function finishQuitFlow(): Promise<void> {
+async function prepareForApplicationQuit(): Promise<QuitPreparationOutcome> {
   destroyTray();
   if (workspaceUpdater?.shouldInstallOnQuit()) {
     await shutdownForUpdateInstall();
     const status = await workspaceUpdater.installDownloadedUpdateOnQuit();
-    if (status.phase === "installing") return;
+    if (status.phase === "installing") return "handoff";
     workspaceUpdater.dispose();
     workspaceUpdater = null;
-    app.quit();
-    return;
+    return "quit";
   }
   await shutdown();
   workspaceUpdater?.dispose();
   workspaceUpdater = null;
-  quitShutdownComplete = true;
-  app.quit();
+  return "quit";
+}
+
+function requestApplicationQuit(): void {
+  quitting = true;
+  quitCoordinator.requestQuit();
 }
 
 interface DesktopHost {
@@ -438,7 +446,7 @@ async function quitAfterCliRequest(): Promise<void> {
   quitting = true;
   // Exit synchronously after the queue and host-backed auth storage are both
   // drained so a new process cannot hand work to a half-shutdown primary.
-  quitShutdownComplete = true;
+  quitCoordinator.allowNativeQuit();
   app.quit();
 }
 
@@ -547,7 +555,7 @@ async function createMainWindow(): Promise<void> {
   if (state?.isMaximized) mainWindow.maximize();
   mainWindow.on("ready-to-show", () => mainWindow?.show());
   mainWindow.on("close", (event) => {
-    if (quitting || quittingForUpdate || quitShutdownComplete) return;
+    if (quitting || quittingForUpdate || !quitCoordinator.shouldPreventNativeQuit()) return;
     if (!tray || !desktopPreferences.closeToTray) return;
     event.preventDefault();
     mainWindow?.hide();
@@ -911,7 +919,7 @@ function macApplicationMenu(): MenuItemConstructorOptions[] {
       { role: "hideOthers" },
       { role: "unhide" },
       { type: "separator" },
-      { role: "quit" },
+      { id: "quit-workspace", label: `Quit ${productName}`, accelerator: "Command+Q", click: requestApplicationQuit },
     ],
   }];
 }
@@ -1318,7 +1326,7 @@ async function shutdownForUpdateInstall(): Promise<void> {
   quitting = true;
   destroyTray();
   await shutdown();
-  quitShutdownComplete = true;
+  quitCoordinator.allowNativeQuit();
 }
 
 async function withShutdownTimeout<T>(promise: Promise<T>, label: string): Promise<T | void> {
@@ -1508,7 +1516,7 @@ function loadMainRenderer(window: BrowserWindow): Promise<void> {
 }
 
 function scheduleRendererRecovery(reason: string, delayMs?: number): void {
-  if (quitting || quittingForUpdate || quitShutdownComplete) return;
+  if (quitting || quittingForUpdate || !quitCoordinator.shouldPreventNativeQuit()) return;
   const window = mainWindow;
   if (!window || window.isDestroyed() || window.webContents.isDestroyed() || rendererRecoveryTimer || rendererRecoveryInFlight) return;
   if (rendererRecoveryAttempts >= rendererRecoveryMaxAttempts) {
