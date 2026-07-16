@@ -654,7 +654,8 @@ async function scanDirectory(
     const ignored = isWorkspaceIgnored(relativePath, ignorePatterns);
     if (ignored && !includeIgnored) continue;
     if (entry.isDirectory()) {
-      const children = depth < maxDepth ? await scanDirectory(root, path, depth + 1, maxDepth, ignorePatterns, includeIgnored) : [];
+      const childrenLoaded = depth < maxDepth;
+      const children = childrenLoaded ? await scanDirectory(root, path, depth + 1, maxDepth, ignorePatterns, includeIgnored) : [];
       const descendantIgnoredCount = children.reduce((total, child) => total + (child.ignored ? 1 : 0) + (child.descendantIgnoredCount ?? 0), 0);
       result.push({
         name: entry.name,
@@ -663,7 +664,9 @@ async function scanDirectory(
         updatedAt: info.mtime.toISOString(),
         ...(ignored ? { ignored: true } : {}),
         ...(descendantIgnoredCount ? { descendantIgnoredCount } : {}),
-        hasChildren: children.length > 0,
+        hasChildren: childrenLoaded
+          ? children.length > 0
+          : await directoryHasVisibleEntries(root, path, ignorePatterns, includeIgnored),
         children,
       });
     } else if (entry.isFile()) {
@@ -678,6 +681,22 @@ async function scanDirectory(
     }
   }
   return result.sort((left, right) => left.kind === right.kind ? left.name.localeCompare(right.name) : left.kind === "folder" ? -1 : 1);
+}
+
+async function directoryHasVisibleEntries(
+  root: string,
+  directory: string,
+  ignorePatterns: string[],
+  includeIgnored: boolean,
+): Promise<boolean> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || isAlwaysHiddenWorkspaceEntry(entry.name) || isOfficeLockFileName(entry.name)) continue;
+    if (!entry.isDirectory() && !entry.isFile()) continue;
+    const relativePath = normalizeRelative(relative(root, join(directory, entry.name)));
+    if (!includeIgnored && isWorkspaceIgnored(relativePath, ignorePatterns)) continue;
+    return true;
+  }
+  return false;
 }
 
 async function visitWorkspaceFiles(root: string, directory: string, visitor: (relativePath: string, name: string) => void): Promise<void> {

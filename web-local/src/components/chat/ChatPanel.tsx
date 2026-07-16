@@ -1248,16 +1248,9 @@ export function ChatPanel({
     <section
       className="panel chat-panel"
     >
-      <div className={error || hasTranscript || running ? "chat-top-chrome" : "chat-top-chrome empty"}>
+      <div className={error ? "chat-top-chrome" : "chat-top-chrome empty"}>
         <div className="chat-top-notice">
           {error ? <Banner tone="error" text={error} /> : null}
-        </div>
-        <div className="chat-floating-actions">
-          {running ? (
-            <button className="new-chat-button stop-chat-button" type="button" onClick={() => void abortTurn()} aria-label="Stop Assistant" title="Stop Assistant">
-              <Square size={15} />
-            </button>
-          ) : null}
         </div>
       </div>
       <div className="chat-scroll-shell">
@@ -1412,9 +1405,15 @@ export function ChatPanel({
             }}
             placeholder="Message Assistant"
           />
-          <button className="send-button" type="submit" disabled={!draft.trim() || running} aria-label="Send message" aria-busy={running ? "true" : undefined}>
-            <FluentGlyph icon={ArrowUp20Regular} size={18} />
-          </button>
+          {running ? (
+            <button className="send-button stop-send-button" type="button" onClick={() => void abortTurn()} aria-label="Stop Assistant" title="Stop Assistant">
+              <Square size={15} />
+            </button>
+          ) : (
+            <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="Send message">
+              <FluentGlyph icon={ArrowUp20Regular} size={18} />
+            </button>
+          )}
         </div>
       </form>
       {extensionRequest ? <ExtensionRequestDialog request={extensionRequest} onRespond={respondToExtension} /> : null}

@@ -289,6 +289,15 @@ test("Space customization is visible, compact, and separate from structural chro
   assert.match(darkRailIconRule, /box-shadow:\s*none/, "legacy dark-theme decoration must not recreate an icon tile");
   assert.match(customizationCss, /\.professional-appearance-surface/);
   assert.match(customizationCss, /\.workspace-banner-position-control/);
+  const colorPickerRule = cssRuleBody(customizationCss, ".app-shell .professional-appearance-surface .workspace-color-picker");
+  const colorWheelRule = cssRuleBody(customizationCss, ".app-shell .professional-appearance-surface .workspace-color-wheel");
+  const colorPairClearRule = cssRuleBody(legacyCss, ".workspace-color-pair-clear");
+  assert.match(colorPickerRule, /min-height:\s*38px/);
+  assert.match(colorPickerRule, /height:\s*auto/, "the custom color wheel must remain inside its control");
+  assert.match(colorWheelRule, /width:\s*28px/);
+  assert.match(colorPairClearRule, /padding:\s*0/, "the paired-color clear icon must not overflow its control group");
+  assert.match(workspaceChromeSource, /onInput=[\s\S]*?aria-label="Choose second banner color"/);
+  assert.match(customizationCss, /\.workspace-banner-surface\.banner-classic[\s\S]*?--workspace-selection-accent2-rgb/, "the second color must affect the default banner");
   const activeRailMarkerRule = cssRuleBody(customizationCss, ".app-shell .professional-workspace-rail .workspace-rail-button.active::before");
   assert.match(activeRailMarkerRule, /background:\s*var\(--workspace-custom-color\)/, "Space color must drive the compact active pill");
   assert.doesNotMatch(activeRailMarkerRule, /box-shadow/, "the active pill must not resurrect the legacy full-row shadow");

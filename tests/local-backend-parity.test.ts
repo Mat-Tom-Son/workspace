@@ -30,9 +30,14 @@ test("linked Spaces keep portable identity in .workspace while operational state
   await setWorkspaceIgnoreState(root, ["Drafts/notes.txt"], true);
   assert.deepEqual((await readWorkspaceIgnoreState(root)).patterns, ["Drafts/notes.txt"]);
   assert.equal((await scanWorkspaceTree(root))[0]?.children?.[0]?.ignored, true);
+  const lazyTree = await scanWorkspaceTree(root, 0);
+  assert.deepEqual(lazyTree[0]?.children, []);
+  assert.equal(lazyTree[0]?.hasChildren, true, "a shallow tree must advertise folders that can be expanded lazily");
+  assert.equal((await scanWorkspaceTree(root, 0, "Drafts"))[0]?.path, "Drafts/notes.txt");
   const visibleTree = await scanWorkspaceTree(root, 20, "", { includeIgnored: false });
   assert.equal(visibleTree[0]?.path, "Drafts");
   assert.deepEqual(visibleTree[0]?.children, []);
+  assert.equal((await scanWorkspaceTree(root, 0, "", { includeIgnored: false }))[0]?.hasChildren, false);
 
   const first = await createWorkspaceCheckpoint(root, { reason: "manual", label: "First" });
   await writeFile(join(root, "Drafts", "notes.txt"), "second version\n", "utf8");

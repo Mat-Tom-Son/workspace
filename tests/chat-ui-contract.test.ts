@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 const root = process.cwd();
-const [app, tabBar, chatPanel, messages, activity, panes, chrome, styles, desktopMain] = await Promise.all([
+const [app, tabBar, chatPanel, messages, activity, panes, chrome, styles, identity, desktopMain] = await Promise.all([
   read("web-local/src/App.tsx"),
   read("web-local/src/components/chat/WorkspaceSurfaceTabBar.tsx"),
   read("web-local/src/components/chat/ChatPanel.tsx"),
@@ -13,6 +13,7 @@ const [app, tabBar, chatPanel, messages, activity, panes, chrome, styles, deskto
   read("web-local/src/components/panes/workspacePanes.tsx"),
   read("web-local/src/components/panes/workspaceChrome.tsx"),
   read("web-local/src/styles.css"),
+  read("web-local/src/lib/workspace-identity.ts"),
   read("desktop/src/main.ts"),
 ]);
 
@@ -55,8 +56,16 @@ test("assistant rendering has complete Markdown chrome and Space-aware accents",
   const darkUserRule = styles.match(/\.app-shell\[data-theme="dark"\] \.message\.user\s*\{([\s\S]*?)\}/)?.[1] ?? "";
   for (const rule of [userRule, darkUserRule]) {
     assert.match(rule, /background:\s*var\(--workspace-custom-color,\s*var\(--workspace-blue-600\)\)/);
+    assert.match(rule, /color:\s*var\(--workspace-on-primary-accent/);
     assert.doesNotMatch(rule, /linear-gradient|workspace-selection-accent2/);
   }
+  const darkFencedCodeRule = styles.match(/\.app-shell\[data-theme="dark"\] \.message-body \.message-code-block pre code\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+  assert.match(darkFencedCodeRule, /background:\s*transparent/, "dark fenced code must not inherit the inline-code highlight");
+  assert.match(darkFencedCodeRule, /color:\s*inherit/);
+  assert.match(chatPanel, /running \? \(\s*<button className="send-button stop-send-button"/);
+  assert.doesNotMatch(chatPanel, /chat-floating-actions|stop-chat-button/);
+  assert.match(identity, /onPrimaryAccentColor:\s*readableTextColorOn\(colorOption\.color\)/);
+  assert.match(identity, /"--workspace-on-primary-accent":\s*identity\.onPrimaryAccentColor/);
   assert.doesNotMatch(`${messages}\n${chatPanel}\n${styles}`, /message-avatar/);
   assert.doesNotMatch(activity, /Learned From/);
 });

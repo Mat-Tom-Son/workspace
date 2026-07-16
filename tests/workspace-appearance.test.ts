@@ -9,6 +9,7 @@ import {
   workspaceBannerOptionFor,
 } from "../web-local/src/lib/workspace-customization.js";
 import { writeStoredJsonValue } from "../web-local/src/lib/storage.js";
+import { readableTextColorOn } from "../web-local/src/lib/color-contrast.js";
 import type { WorkspaceSummary } from "../web-local/src/types.js";
 
 const workspace: WorkspaceSummary = {
@@ -90,4 +91,9 @@ test("preference storage reports quota failures instead of silently claiming dur
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
     else Reflect.deleteProperty(globalThis, "window");
   }
+});
+
+test("Space identity chooses user-message text from the primary message background", () => {
+  assert.equal(readableTextColorOn("#c5c5c4"), "#182846");
+  assert.equal(readableTextColorOn("#0d74ce"), "#ffffff");
 });

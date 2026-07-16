@@ -518,7 +518,7 @@ function WorkspaceAppearancePanel({
               <input
                 type="color"
                 value={identity.color}
-                onChange={(event) => onCustomizeWorkspace(workspaceId, { color: normalizeWorkspaceColor(event.currentTarget.value) })}
+                onInput={(event) => onCustomizeWorkspace(workspaceId, { color: normalizeWorkspaceColor(event.currentTarget.value) })}
                 aria-label="Choose Space color"
               />
               <span className="workspace-color-value">{identity.color.toUpperCase()}</span>
@@ -534,7 +534,7 @@ function WorkspaceAppearancePanel({
               <input
                 type="color"
                 value={identity.secondaryColor}
-                onChange={(event) => onCustomizeWorkspace(workspaceId, { color2: normalizeWorkspaceColor(event.currentTarget.value) })}
+                onInput={(event) => onCustomizeWorkspace(workspaceId, { color2: normalizeWorkspaceColor(event.currentTarget.value) })}
                 aria-label="Choose second banner color"
               />
               <span className="workspace-color-value">{identity.hasCustomSecondary ? identity.secondaryColor.toUpperCase() : "+ Pair"}</span>

@@ -5,11 +5,13 @@
 }
 
 .workspace-banner-surface.banner-classic {
-  --workspace-banner-layers: linear-gradient(110deg, rgba(var(--workspace-selection-accent-rgb), 0.14), rgba(var(--workspace-banner-base-rgb), 0.96) 72%);
+  --workspace-banner-layers: linear-gradient(110deg, rgba(var(--workspace-selection-accent-rgb), 0.18) 0%, rgba(var(--workspace-selection-accent2-rgb), 0.14) 46%, rgba(var(--workspace-banner-base-rgb), 0.96) 78%);
 }
 
 .workspace-banner-surface.banner-mist {
-  --workspace-banner-layers: linear-gradient(150deg, rgba(var(--workspace-selection-accent-rgb), 0.08), rgba(var(--workspace-banner-base-rgb), 0.98) 62%);
+  --workspace-banner-layers:
+    radial-gradient(90% 140% at 100% 100%, rgba(var(--workspace-selection-accent2-rgb), 0.2), transparent 58%),
+    linear-gradient(150deg, rgba(var(--workspace-selection-accent-rgb), 0.1), rgba(var(--workspace-banner-base-rgb), 0.98) 66%);
 }
 
 .workspace-banner-surface.banner-horizon {
@@ -41,7 +43,7 @@
 .workspace-banner-surface.banner-pinstripe {
   --workspace-banner-layers:
     repeating-linear-gradient(115deg, rgba(var(--workspace-selection-accent-rgb), 0.11) 0 1px, transparent 1px 12px),
-    linear-gradient(135deg, rgba(var(--workspace-selection-accent2-rgb), 0.08), rgba(var(--workspace-banner-base-rgb), 0.96) 72%);
+    linear-gradient(135deg, rgba(var(--workspace-selection-accent2-rgb), 0.2), rgba(var(--workspace-banner-base-rgb), 0.96) 76%);
 }
 
 .workspace-banner-surface.banner-ribbon {
@@ -598,11 +600,37 @@
 }
 
 .app-shell .professional-appearance-surface .workspace-color-picker {
-  height: 32px;
+  min-height: 38px;
+  height: auto;
+  grid-template-columns: 28px minmax(0, auto);
+  gap: 8px;
+  padding: 4px 9px 4px 4px;
   color: var(--ui-text-muted);
   background: var(--ui-surface);
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-sm);
+  cursor: pointer;
+}
+
+.app-shell .professional-appearance-surface .workspace-color-picker input[type="color"] {
+  top: 4px;
+  left: 4px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.app-shell .professional-appearance-surface .workspace-color-wheel {
+  width: 28px;
+  height: 28px;
+  pointer-events: none;
+}
+
+.app-shell .professional-appearance-surface .workspace-color-wheel-current {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
 }
 
 .app-shell .professional-appearance-surface .workspace-color-picker:hover,

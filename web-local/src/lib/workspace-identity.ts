@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { maxWorkspaceBannerImageDataUrlLength, maxWorkspaceBannerImageFileBytes } from "../constants";
 import { workspaceIconOptionFor, type WorkspaceIconOption } from "../workspace-icons";
 import type { WorkspaceBannerImagePosition, WorkspaceColorOption, WorkspaceCustomizationMap, WorkspaceSummary } from "../types";
+import { readableTextColorOn } from "./color-contrast";
 import { normalizeWorkspaceBannerImage, normalizeWorkspaceBannerImagePosition, workspaceBannerOptionFor } from "./workspace-customization";
 
 export const workspaceColorOptions: WorkspaceColorOption[] = [
@@ -59,16 +60,6 @@ export function blendHexColors(first: string, second: string): string {
   return `#${mixed.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function readableTextColorOn(color: string): string {
-  const normalized = color.replace("#", "");
-  const channel = (offset: number) => {
-    const value = Number.parseInt(normalized.slice(offset, offset + 2), 16) / 255;
-    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-  };
-  const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
-  return luminance > 0.42 ? "#182846" : "#ffffff";
-}
-
 interface WorkspaceIdentity {
   color: string;
   softColor: string;
@@ -78,6 +69,7 @@ interface WorkspaceIdentity {
   secondaryRgb: string;
   hasCustomSecondary: boolean;
   onAccentColor: string;
+  onPrimaryAccentColor: string;
   bannerName: string;
   bannerImage: string | null;
   bannerImagePosition: WorkspaceBannerImagePosition;
@@ -103,6 +95,7 @@ function workspaceIdentityFor(workspace: WorkspaceSummary, customizations: Works
     secondaryRgb: hexColorToRgbTriple(secondaryColor),
     hasCustomSecondary,
     onAccentColor: readableTextColorOn(blendHexColors(colorOption.color, secondaryColor)),
+    onPrimaryAccentColor: readableTextColorOn(colorOption.color),
     bannerName: workspaceBannerOptionFor(custom.bannerName).name,
     bannerImage,
     bannerImagePosition: normalizeWorkspaceBannerImagePosition(custom.bannerImagePosition),
@@ -125,6 +118,7 @@ function workspaceIdentityStyle(identity: WorkspaceIdentity): CSSProperties {
     "--workspace-selection-border": identity.borderColor,
     "--workspace-selection-surface": identity.softColor,
     "--workspace-on-accent": identity.onAccentColor,
+    "--workspace-on-primary-accent": identity.onPrimaryAccentColor,
   } as CSSProperties;
 }
 
@@ -174,5 +168,6 @@ function loadImageElement(sourceUrl: string): Promise<HTMLImageElement> {
   });
 }
 
+export { readableTextColorOn } from "./color-contrast";
 export { defaultWorkspaceIconName, processWorkspaceBannerImageFile, workspaceIdentityFor, workspaceIdentityStyle };
 export type { WorkspaceIdentity };
