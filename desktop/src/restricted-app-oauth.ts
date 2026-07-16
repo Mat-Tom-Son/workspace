@@ -1,6 +1,16 @@
-import type { RestrictedAppConnectionStore } from "../../src/local/agent/restricted-app-connections.js";
+import { parseAppPlatformArtifactDigest } from "../../src/local/agent/app-platform-artifact.js";
+import type {
+  RestrictedAppConnectionStore,
+  RestrictedAppEffectAuthorizer,
+} from "../../src/local/agent/restricted-app-connections.js";
 import { RestrictedAppNetworkBroker } from "../../src/local/agent/restricted-app-connections.js";
 import type { RestrictedAppManifest } from "../../src/local/agent/restricted-app-manifest.js";
+import {
+  parseFeatureInstallationId,
+  parsePrincipalId,
+  parseRuntimeInstanceId,
+  parseTenantId,
+} from "../../src/local/agent/app-platform-contract.js";
 import {
   RestrictedAppOAuthError,
   RestrictedAppOAuthPkceClient,
@@ -10,7 +20,11 @@ import {
   type RestrictedAppOAuthPublicHttpsTransport,
 } from "../../src/local/agent/restricted-app-oauth.js";
 
-const oauthDigest = "0".repeat(64);
+const oauthTenantId = parseTenantId("tenant_oauth-host");
+const oauthRuntimeInstanceId = parseRuntimeInstanceId("runtime-instance_oauth-host");
+const oauthFeatureInstallationId = parseFeatureInstallationId("feature-installation_oauth-host");
+const oauthPrincipalId = parsePrincipalId("principal_oauth-host");
+const oauthFeatureRevisionDigest = parseAppPlatformArtifactDigest(`workspace-artifact-v1:sha256:${"0".repeat(64)}`);
 
 export function createRestrictedAppOAuthClient(
   connections: RestrictedAppConnectionStore,
@@ -22,11 +36,15 @@ export function createRestrictedAppOAuthClient(
       const credential = await connections.get(binding);
       return credential?.kind === "oauth2-pkce" ? credential : undefined;
     },
-    async set(binding: RestrictedAppOAuthBinding, connection: RestrictedAppOAuthConnection): Promise<void> {
-      await connections.set(binding, connection);
+    async set(
+      binding: RestrictedAppOAuthBinding,
+      connection: RestrictedAppOAuthConnection,
+      authorizeCommit?: RestrictedAppEffectAuthorizer,
+    ): Promise<void> {
+      await connections.set(binding, connection, authorizeCommit);
     },
-    async delete(binding: RestrictedAppOAuthBinding): Promise<boolean> {
-      return await connections.delete(binding);
+    async delete(binding: RestrictedAppOAuthBinding, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<boolean> {
+      return await connections.delete(binding, authorizeCommit);
     },
   };
   return new RestrictedAppOAuthPkceClient({
@@ -41,7 +59,8 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
     async get() { return undefined; },
     async set() { throw new Error("OAuth transport cannot save destination credentials."); },
     async delete() { return false; },
-    async deleteApp() {},
+    async deleteFeature() {},
+    async deleteRuntimeInstance() {},
   };
   const broker = new RestrictedAppNetworkBroker({
     credentials,
@@ -53,7 +72,7 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
     url: URL,
     method: "GET" | "POST",
     body: string | undefined,
-    options: { signal: AbortSignal; maxResponseBytes: number },
+    options: { signal: AbortSignal; maxResponseBytes: number; authorizeEffect?: RestrictedAppEffectAuthorizer },
   ): Promise<RestrictedAppOAuthJsonResponse> => {
     const destinationId = "oauth-provider";
     const manifest: RestrictedAppManifest = {
@@ -76,9 +95,13 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
       },
     };
     const response = await broker.request({
-      workspaceId: "oauth-host",
-      appId: manifest.id,
-      digest: oauthDigest,
+      tenantId: oauthTenantId,
+      runtimeInstanceId: oauthRuntimeInstanceId,
+      featureId: manifest.id,
+      featureInstallationId: oauthFeatureInstallationId,
+      featureRevisionDigest: oauthFeatureRevisionDigest,
+      effectivePrincipalId: oauthPrincipalId,
+      connectionOwner: { kind: "instance", runtimeInstanceId: oauthRuntimeInstanceId },
       networkGrants: [destinationId],
     }, manifest, {
       destinationId,
@@ -86,7 +109,7 @@ function createOAuthTransport(): RestrictedAppOAuthPublicHttpsTransport {
       path: `${url.pathname}${url.search}`,
       headers: method === "POST" ? { accept: "application/json", "content-type": "application/x-www-form-urlencoded" } : { accept: "application/json" },
       ...(body !== undefined ? { body } : {}),
-    }, options.signal);
+    }, options.signal, options.authorizeEffect);
     if (response.encoding !== "utf8" || Buffer.byteLength(response.body, "utf8") > options.maxResponseBytes) {
       throw new RestrictedAppOAuthError("NETWORK_FAILED", "The OAuth provider response exceeded its safe JSON limit.");
     }

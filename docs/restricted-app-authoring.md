@@ -3,6 +3,10 @@
 This is the canonical package and bridge reference for Space apps that run in
 Workspace's restricted web runtime. Read [Restricted app runtime](restricted-app-runtime.md)
 for the security architecture, lifecycle boundaries, and remaining host gaps.
+The implemented foundation behind this surface and its accepted product model
+are documented separately in
+[App platform foundation](app-platform-foundation.md); they do not change this
+version-2 package authoring contract.
 
 Restricted apps are not native Pi Extensions. They are prebuilt HTML, CSS, and
 JavaScript packages that Workspace inspects without evaluation, pins to an
@@ -455,18 +459,28 @@ public HTTPS issuer that supports public clients without a client secret, plus
 scopes that exclude `openid`. Workspace cannot verify who owns that client
 registration. Client secrets, device-code flow, and package-supplied
 authorization or token endpoints are rejected. Connections are configured per
-installed digest and destination in Capabilities. There is no connection or
-secret-reading bridge.
+exact Feature revision and reviewed destination in Capabilities. The host also
+binds each secret to its Tenant, Runtime Instance, Feature Installation,
+declaration digest, target identity, and current Runtime Instance owner. The
+portable contract reserves Principal-owned connection consent and job delegation
+for a future product path; version-2 local apps cannot request it. There is no
+connection or secret-reading bridge.
 
 ## Default-off lifecycle and denial handling
 
 Installing a reviewed digest makes its UI available but leaves network, file,
 and notification grants off, stores no connection, and leaves every automation
 disabled. Storage is available without an external-power grant. A reviewed
-update preserves app storage but resets destination grants, file grants,
-notification grants, connections, automation state, and run history. Removal deletes
-app storage and connections but never deletes Space files. Source edits do not
-change the installed bytes; propose and review a new digest.
+update preserves the Feature's Data Namespace but resets destination grants,
+file grants, notification grants, connections, and automation state. Historical
+run receipts remain predecessor audit lineage while the new revision's run view
+starts empty. New receipts bind the accepting Tenant, Runtime Instance, Feature
+Installation, canonical revision, Data Namespace, effective Principal,
+seven-domain authority, occurrence, and attempt; imported older receipts are
+explicitly `legacy-unverified`. Removal makes app storage and connections
+unreachable in the same registry transition and retries their idempotent
+physical cleanup after interruption, but never deletes Space files. Source
+edits do not change the installed bytes; propose and review a new digest.
 
 Bridge promises reject an `Error`; host failures expose a stable enumerable
 `error.code`. Handle denial as visible product state rather than retrying or

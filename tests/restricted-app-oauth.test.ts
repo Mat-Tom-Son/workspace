@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { parseAppPlatformArtifactDigest } from "../src/local/agent/app-platform-artifact.js";
+import {
+  computeDeclarationDigest,
+  parseFeatureInstallationId,
+  parseRuntimeInstanceId,
+  parseTenantId,
+} from "../src/local/agent/app-platform-contract.js";
+import type { RestrictedAppEffectAuthorizer } from "../src/local/agent/restricted-app-connections.js";
+
 import {
   RestrictedAppOAuthError,
   RestrictedAppOAuthPkceClient,
@@ -14,11 +23,15 @@ import {
 } from "../src/local/agent/restricted-app-oauth.js";
 
 const binding: RestrictedAppOAuthBinding = {
-  workspaceId: "space-one",
-  appId: "mail-app",
-  digest: "a".repeat(64),
-  destinationId: "mail-api",
-  origin: "https://api.example.com",
+  tenantId: parseTenantId("tenant_one"),
+  runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_one"),
+  featureId: "mail-app",
+  featureInstallationId: parseFeatureInstallationId("feature-installation_one"),
+  featureRevisionDigest: parseAppPlatformArtifactDigest(`workspace-artifact-v1:sha256:${"a".repeat(64)}`),
+  declarationId: "mail-api",
+  declarationDigest: computeDeclarationDigest({ id: "mail-api" }),
+  targetIdentity: "https://api.example.com",
+  owner: { kind: "instance", runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_one") },
 };
 
 const configuration: RestrictedAppOAuthPkceConfiguration = {
@@ -41,21 +54,47 @@ function metadata(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+async function completeAuthorization(value: string): Promise<void> {
+  const authorization = new URL(value);
+  const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("code", "authorization-code");
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  callback.searchParams.set("iss", configuration.issuer);
+  const response = await fetch(callback);
+  assert.equal(response.status, 200);
+}
+
 class MemoryEncryptedStore implements RestrictedAppOAuthEncryptedConnectionStore {
   readonly encrypted = true as const;
   readonly sets: RestrictedAppOAuthConnection[] = [];
   connection?: RestrictedAppOAuthConnection;
+  beforeSetCommit?: () => void | Promise<void>;
+  beforeDeleteCommit?: () => void | Promise<void>;
 
   async get(): Promise<RestrictedAppOAuthConnection | undefined> {
     return this.connection ? structuredClone(this.connection) : undefined;
   }
 
-  async set(_binding: RestrictedAppOAuthBinding, connection: RestrictedAppOAuthConnection): Promise<void> {
+  async set(
+    _binding: RestrictedAppOAuthBinding,
+    connection: RestrictedAppOAuthConnection,
+    authorizeCommit?: RestrictedAppEffectAuthorizer,
+  ): Promise<void> {
+    await this.beforeSetCommit?.();
+    await authorizeCommit?.();
     this.connection = structuredClone(connection);
     this.sets.push(structuredClone(connection));
   }
 
-  async delete(): Promise<boolean> {
+  async delete(_binding: RestrictedAppOAuthBinding, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<boolean> {
+    await this.beforeDeleteCommit?.();
+    await authorizeCommit?.();
     const removed = this.connection !== undefined;
     this.connection = undefined;
     return removed;
@@ -73,17 +112,30 @@ class ScriptedTransport implements RestrictedAppOAuthPublicHttpsTransport {
   readonly calls: TransportCall[] = [];
   getResponses: RestrictedAppOAuthJsonResponse[] = [{ status: 200, body: metadata() }];
   postResponses: RestrictedAppOAuthJsonResponse[] = [];
+  beforeGetEffect?: () => void | Promise<void>;
+  beforePostEffect?: () => void | Promise<void>;
 
-  async getJson(url: URL, options: { signal: AbortSignal; maxResponseBytes: number }): Promise<RestrictedAppOAuthJsonResponse> {
+  async getJson(
+    url: URL,
+    options: { signal: AbortSignal; maxResponseBytes: number; authorizeEffect?: RestrictedAppEffectAuthorizer },
+  ): Promise<RestrictedAppOAuthJsonResponse> {
     assert.equal(options.signal.aborted, false);
+    await this.beforeGetEffect?.();
+    await options.authorizeEffect?.();
     this.calls.push({ method: "GET", url: url.href, maxResponseBytes: options.maxResponseBytes });
     const response = this.getResponses.shift();
     if (!response) throw new Error("No scripted GET response.");
     return structuredClone(response);
   }
 
-  async postForm(url: URL, form: URLSearchParams, options: { signal: AbortSignal; maxResponseBytes: number }): Promise<RestrictedAppOAuthJsonResponse> {
+  async postForm(
+    url: URL,
+    form: URLSearchParams,
+    options: { signal: AbortSignal; maxResponseBytes: number; authorizeEffect?: RestrictedAppEffectAuthorizer },
+  ): Promise<RestrictedAppOAuthJsonResponse> {
     assert.equal(options.signal.aborted, false);
+    await this.beforePostEffect?.();
+    await options.authorizeEffect?.();
     this.calls.push({ method: "POST", url: url.href, form: new URLSearchParams(form), maxResponseBytes: options.maxResponseBytes });
     const response = this.postResponses.shift();
     if (!response) throw new Error("No scripted POST response.");
@@ -166,6 +218,99 @@ test("OAuth PKCE discovers metadata, uses a one-shot loopback callback, and stor
   assert.equal("client_secret" in Object.fromEntries(tokenForm!), false);
   assert.equal(store.connection?.accessToken, "access-secret");
   assert.equal(store.connection?.refreshToken, "refresh-secret");
+});
+
+test("OAuth discovery performs no provider effect when authority is revoked during transport preparation", async () => {
+  const store = new MemoryEncryptedStore();
+  const transport = new ScriptedTransport();
+  const paused = deferred();
+  const release = deferred();
+  let revoked = false;
+  transport.beforeGetEffect = async () => {
+    paused.resolve();
+    await release.promise;
+  };
+  const client = new RestrictedAppOAuthPkceClient({
+    store,
+    transport,
+    openExternal: async () => assert.fail("Revoked discovery must not open a browser."),
+  });
+
+  const operation = client.connect(binding, configuration, undefined, () => {
+    if (revoked) throw new Error("authority revoked");
+  });
+  await paused.promise;
+  revoked = true;
+  release.resolve();
+
+  await assert.rejects(operation, /authority revoked/);
+  assert.equal(transport.calls.length, 0);
+  assert.equal(store.sets.length, 0);
+});
+
+test("OAuth token exchange performs no provider effect when authority is revoked after callback", async () => {
+  const store = new MemoryEncryptedStore();
+  const transport = new ScriptedTransport();
+  transport.postResponses.push({
+    status: 200,
+    body: { access_token: "must-not-be-observed", token_type: "Bearer" },
+  });
+  const paused = deferred();
+  const release = deferred();
+  let revoked = false;
+  transport.beforePostEffect = async () => {
+    paused.resolve();
+    await release.promise;
+  };
+  const client = new RestrictedAppOAuthPkceClient({
+    store,
+    transport,
+    openExternal: completeAuthorization,
+  });
+
+  const operation = client.connect(binding, configuration, undefined, () => {
+    if (revoked) throw new Error("authority revoked");
+  });
+  await paused.promise;
+  revoked = true;
+  release.resolve();
+
+  await assert.rejects(operation, /authority revoked/);
+  assert.equal(transport.calls.filter((call) => call.method === "POST").length, 0);
+  assert.equal(store.sets.length, 0);
+});
+
+test("OAuth token persistence performs no encrypted-store mutation when authority is revoked at commit", async () => {
+  const store = new MemoryEncryptedStore();
+  const transport = new ScriptedTransport();
+  transport.postResponses.push({
+    status: 200,
+    body: { access_token: "must-not-persist", token_type: "Bearer" },
+  });
+  const paused = deferred();
+  const release = deferred();
+  let revoked = false;
+  store.beforeSetCommit = async () => {
+    paused.resolve();
+    await release.promise;
+  };
+  const client = new RestrictedAppOAuthPkceClient({
+    store,
+    transport,
+    openExternal: completeAuthorization,
+  });
+
+  const operation = client.connect(binding, configuration, undefined, () => {
+    if (revoked) throw new Error("authority revoked");
+  });
+  await paused.promise;
+  revoked = true;
+  release.resolve();
+
+  await assert.rejects(operation, /authority revoked/);
+  assert.equal(transport.calls.filter((call) => call.method === "POST").length, 1);
+  assert.equal(store.connection, undefined);
+  assert.equal(store.sets.length, 0);
 });
 
 test("OAuth PKCE rejects untrusted provider metadata before opening a browser", async (t) => {
@@ -335,11 +480,17 @@ test("OAuth disconnect invalidates an in-flight refresh before it can recreate t
   let releaseRefresh!: () => void;
   const started = new Promise<void>((resolve) => { refreshStarted = resolve; });
   const release = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  let providerEffects = 0;
   const transport: RestrictedAppOAuthPublicHttpsTransport = {
-    async getJson() { return { status: 200, body: metadata() }; },
-    async postForm() {
+    async getJson(_url, options) {
+      await options.authorizeEffect?.();
+      return { status: 200, body: metadata() };
+    },
+    async postForm(_url, _form, options) {
       refreshStarted();
       await release;
+      await options.authorizeEffect?.();
+      providerEffects += 1;
       return { status: 200, body: { access_token: "resurrected-access", token_type: "Bearer", expires_in: 3_600 } };
     },
   };
@@ -354,6 +505,50 @@ test("OAuth disconnect invalidates an in-flight refresh before it can recreate t
   await started;
   assert.equal(await client.disconnect(binding), true);
   releaseRefresh();
+  await assert.rejects(authorization, isOAuthError("AUTH_REQUIRED"));
+  assert.equal(store.connection, undefined);
+  assert.equal(store.sets.length, 0);
+  assert.equal(providerEffects, 0);
+});
+
+test("OAuth generation is rechecked at the encrypted-store commit after disconnect", async () => {
+  const store = new MemoryEncryptedStore();
+  store.connection = {
+    kind: "oauth2-pkce",
+    issuer: configuration.issuer,
+    clientId: configuration.clientId,
+    requestedScopes: configuration.scopes,
+    grantedScopes: configuration.scopes,
+    tokenType: "Bearer",
+    accessToken: "expiring-access",
+    refreshToken: "old-refresh",
+    expiresAt: "2026-07-13T12:00:30.000Z",
+    connectedAt: "2026-07-12T12:00:00.000Z",
+  };
+  const transport = new ScriptedTransport();
+  transport.getResponses.push({ status: 200, body: metadata() });
+  transport.postResponses.push({
+    status: 200,
+    body: { access_token: "must-not-persist", token_type: "Bearer", expires_in: 3_600 },
+  });
+  const commitReached = deferred();
+  const releaseCommit = deferred();
+  store.beforeSetCommit = async () => {
+    commitReached.resolve();
+    await releaseCommit.promise;
+  };
+  const client = new RestrictedAppOAuthPkceClient({
+    store,
+    transport,
+    now: () => new Date("2026-07-13T12:00:00.000Z"),
+    openExternal: async () => assert.fail("Refresh must not open a browser."),
+  });
+
+  const authorization = client.authorize(binding, configuration, new Headers());
+  await commitReached.promise;
+  assert.equal(await client.disconnect(binding), true);
+  releaseCommit.resolve();
+
   await assert.rejects(authorization, isOAuthError("AUTH_REQUIRED"));
   assert.equal(store.connection, undefined);
   assert.equal(store.sets.length, 0);

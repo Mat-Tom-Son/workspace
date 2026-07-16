@@ -15,6 +15,7 @@ function context(workspaceRoot: string, options: {
   grantAccess?: "read" | "read-write";
   root?: string;
   target?: "file" | "directory";
+  authorizeCommit?: () => void;
 } = {}): RestrictedAppFileContext {
   return {
     workspaceRoot,
@@ -29,6 +30,7 @@ function context(workspaceRoot: string, options: {
       root: options.root ?? ".",
       access: options.grantAccess ?? "read-write",
     }],
+    ...(options.authorizeCommit ? { authorizeCommit: options.authorizeCommit } : {}),
   };
 }
 
@@ -186,6 +188,40 @@ test("Space file broker creates and replaces bounded files without leaving parti
     fileError("FILE_CONFLICT"),
   );
   assert.deepEqual((await readdir(join(root, "docs"))).filter((name) => name.startsWith(".workspace-app-write-")), []);
+});
+
+test("Space file broker reauthorizes immediately before an atomic write commit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workspace-app-files-"));
+  await writeFile(join(root, "notes.txt"), "before", "utf8");
+  const broker = new RestrictedAppFileBroker();
+  let checks = 0;
+  let revoked = false;
+  let reachedCommit!: () => void;
+  let releaseCommit!: () => void;
+  const commitReached = new Promise<void>((resolve) => { reachedCommit = resolve; });
+  const release = new Promise<void>((resolve) => { releaseCommit = resolve; });
+
+  const mutation = broker.write(context(root, {
+    authorizeCommit: async () => {
+      checks += 1;
+      reachedCommit();
+      await release;
+      if (revoked) throw new Error("authority changed");
+    },
+  }), {
+    grantId: "selected-project-files",
+    path: "notes.txt",
+    data: "after",
+    mode: "replace",
+  });
+  await commitReached;
+  revoked = true;
+  releaseCommit();
+
+  await assert.rejects(mutation, /authority changed/);
+  assert.equal(checks, 1);
+  assert.equal(await readFile(join(root, "notes.txt"), "utf8"), "before");
+  assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".workspace-app-write-")), []);
 });
 
 test("Space file broker enforces read, write, and list output limits", async () => {

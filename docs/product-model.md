@@ -63,7 +63,7 @@ Registering a folder is also the host authorization for its existing local Pi co
 | Ask the Assistant to build a Space app | The Assistant may write an ordinary restricted-app package and ask Workspace to inspect it for review. | A proposal does not execute or install code, grant network access, or store a credential. |
 | Install a reviewed Space app | The exact reviewed digest becomes available in that Space. | Network destinations, Space files, notification categories, saved connections, and every named automation remain off. |
 | Allow one app destination, file root, or notification category | That exact reviewed declaration becomes usable by the installed digest. | Other declarations, saved connections, automations, and other Spaces receive no authority. |
-| Save or remove an app connection | Workspace adds or deletes one operating-system-encrypted credential binding for that Space, app digest, destination, and origin. | Destination access is not implicitly granted, and deleting the local record does not revoke the credential at its provider. |
+| Save or remove an app connection | Workspace adds or deletes one operating-system-encrypted binding for the host-derived Tenant, Runtime Instance, Feature Installation, canonical Feature Revision, declaration, target, and current Runtime Instance owner. | Destination access is not implicitly granted, and deleting the local record does not revoke the credential at its provider. Principal-owned connections remain a future portable-runtime journey, not a current local UI. |
 | Enable one app automation | Workspace may run that reviewed named job on its bounded schedule while Workspace is running. | Other jobs stay off, and this run receives only the intersection of current grants and its reviewed permission subset. |
 | Run an app automation now | Workspace runs that named job once and records a durable receipt, even if its schedule is off. | It does not enable or shift the schedule; a disabled job has no notification authority. |
 
@@ -90,6 +90,37 @@ Workspace has two deliberately different executable lanes inside the broader Ext
 | Restricted Space app | A complete, Space-local reviewed-web package proposed by the Assistant or selected through advanced local install. It never enters Pi's package manager or loaded catalog. | Runs reviewed UI and worker code in separate sandboxed Electron hosts. Tabs, network, storage, files, connections, notifications, and named automations exist only through narrow host contracts. |
 
 The model experiences either lane as a package-shaped capability, but the product must not flatten their execution boundaries. Native Pi compatibility remains the full-trust ecosystem lane; restricted apps are the flexible app canvas for generated inboxes, dashboards, extractors, project-service panels, and other Space-specific tools. See [Restricted app authoring](restricted-app-authoring.md) and [Restricted app runtime](restricted-app-runtime.md).
+
+## Apps without turning every Space into an App
+
+Workspace is growing from a local Space tool into a local-first App studio and
+runtime, but **Space** and **App** are not synonyms. A Space remains the ordinary
+folder-backed context for general work and may never produce an App. A Space may
+instead declare one optional **App Project**: a source-and-publication role that
+defines reviewed **Features** such as the current restricted sidebar app.
+
+Publishing selected reviewed material creates an immutable **App Release**.
+Installing or hosting a Release creates a release-backed **App Instance** with
+its own mutable data, grants, connections, jobs, users, and receipts. Local
+builder preview runs in a separate, release-less **Development Instance** so
+editable source never becomes running bytes implicitly. Internally both runtime
+forms share a tightly scoped broker contract, but Development and App Instances
+never convert into one another.
+
+Project ownership and runtime tenancy are separate. `projectId` is the local App
+lineage; an optional registry `cloudProjectId` is only an authenticated binding.
+A Principal or Organization owns project roles, while a Tenant owns Runtime
+Instance policy and data. Every effect is attributed to one human, agent,
+service, or system Principal and the exact Feature Installation executing for
+it.
+
+Review, publication, installation, every live grant, connection, named
+automation, role, migration, and data-retention decision remain separate acts.
+Publication is not folder sync, an App Release contains no ambient Space or Pi
+authority, and hosted web must implement the same semantic broker restrictions
+as the desktop runtime. The accepted identities, authority rules, implementation
+order, and private hosted milestone are defined in
+[App platform foundation](app-platform-foundation.md).
 
 ## Management layer
 
@@ -132,11 +163,28 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Let the Assistant submit a completed, Space-relative restricted-app package through a host-owned proposal tool. Workspace persists a Space-and-Chat-bound, digest-pinned review without evaluating JavaScript; only a later human approval installs it, with network, Space-file, and notification access off, no saved connection, and every automation disabled.
 - Give each installed Space app arbitrary reviewed web UI in a sandboxed rail navigator and host-derived persistent Space-owned right tabs, plus optional bounded Assistant actions and named automations in a separate worker sandbox. A machine-wide scheduler shared across Spaces provides two execution slots, FIFO admission, same-job non-overlap, durable cadence, bounded catch-up, and run receipts. Capabilities manages each job independently alongside exact network/file/notification grants, host-owned encrypted connections, local data, reviewed updates, removal, and the secondary advanced local-package path.
 - Provide bounded host-owned JSON storage with active-visible-view invalidation hints, History-covered Space-file grants, exact public-HTTPS or numeric-loopback requests, API-key/bearer/basic/OAuth PKCE connection adapters, and static reviewed system notifications from enabled automation runs.
+- Carry host-owned local App Project, Development Instance, Feature Installation,
+  Data Namespace, canonical Feature Revision, and seven-domain authority identity
+  behind the current restricted-app UI. The first approved Space-app install
+  establishes the Space's local App Project/Development Instance scaffold;
+  removing the Space revokes it even after the last Feature was uninstalled.
+- Produce portable, authority-captured receipts for new local automation runs;
+  schema-2 receipts survive migration only as explicitly legacy-unverified
+  lineage. Post-update and uninstall cleanup is a durable, restart-retried
+  outbox, so stale secret/data bytes never regain live authority after partial
+  cleanup failure.
+- Provide canonical declaration/artifact conformance, an offline immutable App
+  Release assembler/verifier, and a side-effect-free local App Instance update
+  planner with exact project/runtime/schema binding. These are implementation
+  foundations, not yet a desktop publishing or release-install UI.
 - Build a Windows installer and deliver updates through GitHub Releases.
 - Build, Developer ID-sign, notarize, and publish macOS arm64 app, DMG, ZIP, blockmap, and update metadata from the same source version as Windows, with a verified installed two-version updater lane.
 
 ### Next product layer
 
+- Wire the offline App Release and update contracts into a reviewed desktop
+  publishing/install surface with persisted prepare/activation transactions;
+  keep the current compatibility install lane visibly a Development Instance.
 - Make Space location, storage ownership, History coverage, and executable capability class easier to inspect at a glance.
 - Add Library organization controls such as rename, move, delete, reveal, and bulk operations.
 - Add per-resource enable/disable and package filtering controls without confusing availability with activation.
@@ -150,12 +198,20 @@ When a design is ambiguous, prefer the option that best preserves these properti
 
 ### Later adapters and distribution maturity
 
+- Prove one private hosted-web App Instance end to end—publish, deploy, explicit
+  destination and connection grant, named automation and receipt, update, and
+  revocation—before public discovery, an App Store, or generalized sync.
 - Add native provider OAuth only with a complete desktop callback/device-code experience and verified credential handling.
 - Add direct cloud-storage integrations behind a provider-neutral model with stable remote IDs, offline behavior, explicit conflicts, and no surprise deletion.
 - Move from personal or unsigned Windows artifacts to a publicly trusted code-signing identity.
 - Consider additional Windows architectures after the x64 release lane is stable.
 
 Roadmap wording must distinguish shipped behavior from direction. Update this section when a capability moves between layers.
+
+The completed [App platform exploration](app-platform-exploration.md) and its
+Gate 1–4 memos preserve the rationale and rejected ambiguities behind the
+accepted [App platform foundation](app-platform-foundation.md). Roadmap wording
+must continue to distinguish accepted direction from shipped behavior.
 
 ## Decision test
 

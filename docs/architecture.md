@@ -90,7 +90,43 @@ flowchart LR
 
 The trusted renderer supplies app identity, placement rectangles, review and permission UI, and shell tab state. It does not execute package JavaScript. Electron main owns installed-revision verification, sandbox creation, sender-to-owner binding, generation-aware lifecycle, brokers, credential injection, and teardown. Package JavaScript sees only the frozen `workspaceRestrictedApp` bridge appropriate to its visible or worker lifecycle.
 
-Agent-created restricted apps use a separate package contract. Workspace parses version-2 `agent-app.json`, validates a reviewed HTML entry, an optional worker, bounded tool schemas, exact public-HTTPS or numeric-loopback targets, reviewed Space-file needs, static notification categories, and named interval automations with exact permission subsets; it rejects native-Pi execution fields and linked or oversized files and installs a reviewed content digest without importing JavaScript. A host-owned Pi tool can turn a completed Space-relative package into a persisted, owning-Chat-bound review receipt; the tool cannot install, grant access, enable jobs, or collect credentials. Visible UI runs in an ephemeral sandboxed `WebContentsView` with sender-bound context, tab, network, bounded storage, storage-invalidation, and file bridges, while Assistant actions and automations use a separate hidden sandbox. A machine-wide in-process scheduler outside management protocol v1 coordinates all Space-app jobs with two active slots, FIFO admission, same-job non-overlap, durable cadence/catch-up state, and run receipts. System notifications are host-owned, separately granted, static-copy, enabled-automation-only, and rate-limited. File writes are grant-relative, atomic, and History-covered. Public OAuth PKCE is host-owned and encrypted. Apps own a Space rail navigator and may request normal persistent, Space-owned right tabs; the host derives identity and shell tab ids. Proposal, installation, destination/file/notification grants, connections, and every automation enablement remain separate. These packages never enter Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md).
+Agent-created restricted apps use a separate package contract. Workspace parses version-2 `agent-app.json`, validates a reviewed HTML entry, an optional worker, bounded tool schemas, exact public-HTTPS or numeric-loopback targets, reviewed Space-file needs, static notification categories, and named interval automations with exact permission subsets; it rejects native-Pi execution fields and linked or oversized files and installs a reviewed content digest without importing JavaScript. A host-owned Pi tool can turn a completed Space-relative package into a persisted, owning-Chat-bound review receipt; the tool cannot install, grant access, enable jobs, or collect credentials. Visible UI runs in an ephemeral sandboxed `WebContentsView` with sender-bound context, tab, network, bounded storage, storage-invalidation, and file bridges, while Assistant actions and automations use a separate hidden sandbox. A machine-wide in-process scheduler outside management protocol v1 coordinates all Space-app jobs with two active slots, FIFO admission, same-job non-overlap, durable cadence/catch-up state, and run receipts. System notifications are host-owned, separately granted, static-copy, enabled-automation-only, and rate-limited. File writes are grant-relative, atomic, and History-covered. Public OAuth PKCE is host-owned and encrypted. Apps own a Space rail navigator and may request normal persistent, Space-owned right tabs; the host derives identity and shell tab ids. Proposal, installation, destination/file/notification grants, connections, and every automation enablement remain separate. These packages never enter Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md) for shipped behavior and [App platform foundation](app-platform-foundation.md) for the accepted Project/Release/Instance evolution.
+
+The local App-platform foundation resolves that compatibility surface into
+explicit Project, Development Instance, Feature Installation, Data Namespace,
+Tenant, Principal, artifact-digest, and seven-domain authority records. Storage
+uses Tenant + Data Namespace ownership. Connections bind Tenant, Runtime
+Instance, Feature Installation and revision, exact declaration and target, and
+the current Runtime Instance owner; the portable contract models future
+Principal-owned consent separately. Authority is fenced again immediately before
+external fetches and atomic storage or Space-file effects.
+
+The platform also has a strict offline multi-Feature Release
+assembler/verifier and a side-effect-free atomic local App Instance update
+planner. A Release digest closes canonical records plus every referenced
+artifact byte; review, signature, and registry-policy sidecars bind to that
+digest without entering it. The planner verifies the target closure offline,
+computes per-Feature continuity and data migration decisions, names every
+authority fence, and permits exposure only through one release-pointer commit.
+Registry commits also persist idempotent cleanup obligations before old
+credentials, data, or package bytes become unreachable, and startup retries
+unfinished cleanup. New automation receipts capture the accepting local
+Tenant, Runtime Instance, Feature Installation, canonical Feature Revision,
+Data Namespace, effective Principal, seven-domain authority, occurrence, and
+attempt. Acceptance is persisted before worker execution in an
+installation-independent ledger and terminalized by run id after update or
+removal. Startup reconciles an accepted run whose worker result was lost to an
+explicit `interrupted`/`expired` receipt that says its external-effect outcome
+is unknown; migrated receipts stay explicitly legacy-unverified.
+
+A separate private-hosted semantic core exercises the same object and authority
+model through injected durable CAS-state, job/lease, vault, and effect-broker
+interfaces. It proves authenticated Project/cloud-Project and Tenant separation,
+closed Release review/publication/deployment, role-aware data, connection and job
+revocation, compatible update, receipts, export, deletion, and cleanup recovery.
+It is executable contract evidence, not a shipped cloud service: production
+persistence, scheduling workers, vault, egress, transport, deployment,
+operations, and UI adapters are intentionally absent.
 
 ## Packaging
 

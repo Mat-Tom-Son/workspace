@@ -24,3 +24,29 @@ test("public and contributor docs route management behavior to one guide", async
     assert.match(content, /management-layer\.md/, "Each canonical doc must link the management guide.");
   }
 });
+
+test("App-platform docs route future behavior to one accepted foundation", async () => {
+  const routedFiles = [
+    "AGENTS.md",
+    "docs/product-model.md",
+    "docs/architecture.md",
+    "docs/restricted-app-runtime.md",
+    "docs/restricted-app-authoring.md",
+  ];
+  const contents = await Promise.all(routedFiles.map((file) => readFile(join(root, file), "utf8")));
+  for (const content of contents) {
+    assert.match(content, /app-platform-foundation\.md/, "Each canonical App document must link the accepted foundation.");
+  }
+
+  const foundation = await readFile(join(root, "docs/app-platform-foundation.md"), "utf8");
+  assert.match(foundation, /Space.*may never become an App/s);
+  assert.match(foundation, /kind: development/);
+  assert.match(foundation, /kind: app/);
+  assert.match(foundation, /host: local \| hosted/);
+  assert.match(foundation, /projectId.*cloudProjectId/s);
+  assert.match(foundation, /featureInstallationId.*dataNamespaceId/s);
+  assert.match(foundation, /runtime-instance, feature-installation, grant,\s+connection, job, principal, and data generations/);
+  assert.match(foundation, /Publish is not sync/);
+  assert.match(foundation, /Every accepted effect has one effective Principal/);
+  assert.doesNotMatch(foundation, /releaseLineageId|kind: app-local|kind: app-hosted/);
+});

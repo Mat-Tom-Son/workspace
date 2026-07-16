@@ -698,5 +698,6 @@ function normalizedIsoTime(value: unknown, label: string): string {
 
 function boundedError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "Automation run failed.");
-  return message.slice(0, workspaceAutomationMaxErrorLength);
+  const bounded = message.slice(0, workspaceAutomationMaxErrorLength);
+  return bounded.trim() ? bounded : "Automation run failed.";
 }

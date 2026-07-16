@@ -6,16 +6,19 @@ import test from "node:test";
 
 import type {
   RestrictedAppConnectionBinding,
-  RestrictedAppConnectionOwner,
+  RestrictedAppConnectionFeatureScope,
+  RestrictedAppConnectionInstanceScope,
   RestrictedAppConnectionStore,
   RestrictedAppCredential,
 } from "../src/local/agent/restricted-app-connections.js";
 import {
   RestrictedAppService,
+  type RestrictedAppInstalled,
   type RestrictedAppRuntimeDescriptor,
   type RestrictedAppRuntimeHost,
 } from "../src/local/agent/restricted-app-service.js";
 import { RoutedRestrictedAppProposalHost } from "../src/local/agent/restricted-app-proposals.js";
+import type { EffectivePrincipal } from "../src/local/agent/app-platform-contract.js";
 import type { RestrictedAppOAuthPkceClient } from "../src/local/agent/restricted-app-oauth.js";
 import { FileRestrictedAppStorage } from "../src/local/agent/restricted-app-storage.js";
 import { startLocalApi } from "../src/local/server.js";
@@ -64,13 +67,7 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.equal(inspected.review.manifest.id, "mail-app");
 
-    const installed = await request<{ app: {
-      digest: string;
-      networkGrants: string[];
-      fileGrants: unknown[];
-      notificationGrants: string[];
-      automations: Array<{ id: string; enabled: boolean }>;
-    } }>(
+    const installed = await request<{ app: RestrictedAppInstalled }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps`,
       { method: "POST", body: { sourcePath, expectedDigest: inspected.review.digest } },
@@ -176,7 +173,13 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.deepEqual(automationRuns.runs, [automationRun.run]);
 
-    await storage.set({ workspaceId: workspace.id, appId: "mail-app" }, "view", { folder: "inbox" });
+    await storage.set({
+      ownerClass: "instance",
+      tenantId: installed.app.tenantId,
+      runtimeInstanceId: installed.app.runtimeInstanceId,
+      featureInstallationId: installed.app.featureInstallationId,
+      dataNamespaceId: installed.app.dataNamespaceId,
+    }, "view", { folder: "inbox" });
     const usage = await request<{ usage: { keyCount: number } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage?expectedDigest=${inspected.review.digest}`,
@@ -189,12 +192,12 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.equal(cleared.usage.keyCount, 0);
 
-    const oauthStatus = await request<{ connection: { destinationId: string; kind: string; configured: boolean } }>(
+    const oauthStatus = await request<{ connection: { destinationId: string; owner: string; kind: string; configured: boolean } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/connections/mail-api/oauth`,
       { method: "POST", body: { expectedDigest: inspected.review.digest } },
     );
-    assert.deepEqual(oauthStatus.connection, { destinationId: "mail-api", kind: "oauth2-pkce", configured: true });
+    assert.deepEqual(oauthStatus.connection, { destinationId: "mail-api", owner: "instance", kind: "oauth2-pkce", configured: true });
     assert.equal(oauth.connectCount, 1);
     assert.equal(oauth.configuration?.issuer, "https://identity.example.com");
 
@@ -209,11 +212,11 @@ test("restricted app API keeps review, install, grants, connections, invocation,
         },
       },
     );
-    const statuses = await request<{ connections: Array<{ destinationId: string; kind: string; configured: boolean }> }>(
+    const statuses = await request<{ connections: Array<{ destinationId: string; owner: string; kind: string; configured: boolean }> }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/connections?expectedDigest=${inspected.review.digest}`,
     );
-    assert.deepEqual(statuses.connections, [{ destinationId: "mail-api", kind: "api-key", configured: true }]);
+    assert.deepEqual(statuses.connections, [{ destinationId: "mail-api", owner: "instance", kind: "api-key", configured: true }]);
 
     const invoked = await request<{ result: unknown }>(
       api.origin,
@@ -405,6 +408,7 @@ class RuntimeHost implements RestrictedAppRuntimeHost {
       handler: string;
       reason: "scheduled" | "manual" | "resume";
       scheduledAt: string;
+      effectivePrincipal: EffectivePrincipal;
     };
   }> = [];
   #automationBlock?: { started: () => void; release: Promise<void> };
@@ -418,6 +422,7 @@ class RuntimeHost implements RestrictedAppRuntimeHost {
     handler: string;
     reason: "scheduled" | "manual" | "resume";
     scheduledAt: string;
+    effectivePrincipal: EffectivePrincipal;
   }): Promise<void> {
     this.automationRuns.push({ app: structuredClone(app), event: structuredClone(event) });
     const block = this.#automationBlock;
@@ -464,11 +469,33 @@ class Connections implements RestrictedAppConnectionStore {
   async delete(binding: RestrictedAppConnectionBinding): Promise<boolean> {
     return this.records.delete(key(binding));
   }
-  async deleteApp(owner: RestrictedAppConnectionOwner): Promise<void> {
-    for (const item of [...this.records.keys()]) if (item.startsWith(JSON.stringify([owner.workspaceId, owner.appId, owner.digest]).slice(0, -1))) this.records.delete(item);
+  async deleteFeature(scope: RestrictedAppConnectionFeatureScope): Promise<void> {
+    for (const item of [...this.records.keys()]) {
+      const record = JSON.parse(item) as string[];
+      if (record[0] === scope.tenantId && record[1] === scope.runtimeInstanceId
+        && record[2] === scope.featureId && record[3] === scope.featureInstallationId
+        && record[4] === scope.featureRevisionDigest) this.records.delete(item);
+    }
+  }
+  async deleteRuntimeInstance(scope: RestrictedAppConnectionInstanceScope): Promise<void> {
+    for (const item of [...this.records.keys()]) {
+      const record = JSON.parse(item) as string[];
+      if (record[0] === scope.tenantId && record[1] === scope.runtimeInstanceId) this.records.delete(item);
+    }
   }
 }
 
 function key(binding: RestrictedAppConnectionBinding): string {
-  return JSON.stringify([binding.workspaceId, binding.appId, binding.digest, binding.destinationId, binding.origin]);
+  return JSON.stringify([
+    binding.tenantId,
+    binding.runtimeInstanceId,
+    binding.featureId,
+    binding.featureInstallationId,
+    binding.featureRevisionDigest,
+    binding.declarationId,
+    binding.declarationDigest,
+    binding.targetIdentity,
+    binding.owner.kind,
+    binding.owner.kind === "instance" ? binding.owner.runtimeInstanceId : binding.owner.principalId,
+  ]);
 }

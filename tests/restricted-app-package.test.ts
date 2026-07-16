@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   inspectRestrictedAppPackage,
+  restrictedAppPackageLimits,
   stageRestrictedAppPackage,
 } from "../src/local/agent/restricted-app-package.js";
 
@@ -159,6 +160,24 @@ test("restricted app package preflight rejects missing entries and linked files"
       throw error;
     }
     await assert.rejects(inspectRestrictedAppPackage(linked), /cannot contain links/);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("restricted app package inspection rejects a file that grows after bounded enumeration", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-package-race-"));
+  const root = join(sandbox, "source");
+  try {
+    await writePackage(root, "export {};\n");
+    await assert.rejects(
+      inspectRestrictedAppPackage(root, {
+        afterCollection: async () => {
+          await writeFile(join(root, "worker.js"), Buffer.alloc(restrictedAppPackageLimits.fileBytes + 1, 0x61));
+        },
+      }),
+      /file changed after enumeration/i,
+    );
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }

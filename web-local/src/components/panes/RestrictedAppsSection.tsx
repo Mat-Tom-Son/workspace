@@ -14,6 +14,10 @@ import {
 import { useModalDialog } from "../../hooks/useModalDialog";
 import { errorText } from "../../lib/api";
 import {
+  restrictedAppAutomationOutcomeLabel,
+  restrictedAppAutomationVerificationLabel,
+} from "../../lib/restricted-app-automation";
+import {
   deleteRestrictedAppConnection,
   clearRestrictedAppStorage,
   connectRestrictedAppOAuth,
@@ -261,7 +265,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     setConnections([]);
     setConnectionLoading(true);
     const load = fixtureMode
-      ? Promise.resolve(app.manifest.permissions.network.map((destination) => ({ destinationId: destination.id, kind: destination.auth.some((auth) => auth.kind === "none") ? "none" as const : null, configured: destination.auth.some((auth) => auth.kind === "none") })))
+      ? Promise.resolve(app.manifest.permissions.network.map((destination) => ({ destinationId: destination.id, owner: "instance" as const, kind: destination.auth.some((auth) => auth.kind === "none") ? "none" as const : null, configured: destination.auth.some((auth) => auth.kind === "none") })))
       : listRestrictedAppConnections(app.workspaceId, app.manifest.id, app.digest);
     void load.then((value) => { if (!cancelled) setConnections(value); }).catch((caught) => { if (!cancelled) onError(errorText(caught)); }).finally(() => { if (!cancelled) setConnectionLoading(false); });
     const storage = fixtureMode
@@ -303,7 +307,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     const key = `credential:${destination.id}`;
     setActionBusy(key);
     try {
-      const status = fixtureMode ? { destinationId: destination.id, kind: credential.kind, configured: true } as RestrictedAppConnectionStatus : await setRestrictedAppConnection(app.workspaceId, app.manifest.id, destination.id, app.digest, credential);
+      const status = fixtureMode ? { destinationId: destination.id, owner: "instance", kind: credential.kind, configured: true } as RestrictedAppConnectionStatus : await setRestrictedAppConnection(app.workspaceId, app.manifest.id, destination.id, app.digest, credential);
       setConnections((current) => upsertConnectionStatus(current, status));
       showToast({ text: `Connection saved for ${destinationLabel(destination)}. Access is ${app.networkGrants.includes(destination.id) ? "allowed" : "still off"}.`, tone: "success" });
     } catch (caught) { onError(errorText(caught)); throw caught; }
@@ -318,7 +322,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     try {
       if (!fixtureMode) await deleteRestrictedAppConnection(app.workspaceId, app.manifest.id, destination.id, app.digest);
       const anonymous = destination.auth.some((auth) => auth.kind === "none");
-      setConnections((current) => upsertConnectionStatus(current, { destinationId: destination.id, kind: anonymous ? "none" : null, configured: anonymous }));
+      setConnections((current) => upsertConnectionStatus(current, { destinationId: destination.id, owner: "instance", kind: anonymous ? "none" : null, configured: anonymous }));
       showToast({ text: `Disconnected ${destinationLabel(destination)}. Access is ${app.networkGrants.includes(destination.id) ? "still allowed" : "off"}.`, tone: "success" });
     } catch (caught) { onError(errorText(caught)); }
     finally { setActionBusy(null); }
@@ -328,7 +332,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
     setActionBusy(`oauth:${destination.id}`);
     try {
       const status = fixtureMode
-        ? { destinationId: destination.id, kind: "oauth2-pkce" as const, configured: true }
+        ? { destinationId: destination.id, owner: "instance" as const, kind: "oauth2-pkce" as const, configured: true }
         : await connectRestrictedAppOAuth(app.workspaceId, app.manifest.id, destination.id, app.digest);
       setConnections((current) => upsertConnectionStatus(current, status));
       showToast({ text: `Browser sign-in connected for ${destinationLabel(destination)}.`, tone: "success" });
@@ -554,7 +558,10 @@ function AutomationCard({ app, automation, state, runs, runsLoading, runsError, 
       <summary>Recent runs</summary>
       {runsLoading ? <p><ArrowSync16Regular className="spin" /> Loading run history…</p> : null}
       {runsError ? <p role="alert">Run history could not be loaded: {runsError}</p> : null}
-      {!runsLoading && !runsError && runs ? runs.length ? <dl className="capability-review-facts">{runs.slice(0, 10).map((run) => <div key={run.runId}><dt>{formatAutomationOutcome(run.outcome)}</dt><dd>{formatAutomationReason(run.reason)} · Scheduled {formatTimestamp(run.scheduledAt)} · Started {formatTimestamp(run.startedAt)} · Finished {formatTimestamp(run.finishedAt)}{run.error ? ` · ${run.error}` : ""}</dd></div>)}</dl> : <p>No recorded runs.</p> : null}
+      {!runsLoading && !runsError && runs ? runs.length ? <dl className="capability-review-facts">{runs.slice(0, 10).map((run) => {
+        const verification = restrictedAppAutomationVerificationLabel(run.verification);
+        return <div key={run.receiptId}><dt>{restrictedAppAutomationOutcomeLabel(run)}</dt><dd>{formatAutomationReason(run.reason)} · Scheduled {formatTimestamp(run.scheduledAt)} · Started {formatTimestamp(run.startedAt)} · Finished {formatTimestamp(run.finishedAt)}{verification ? ` · ${verification}` : ""}{run.error ? ` · ${run.error}` : ""}</dd></div>;
+      })}</dl> : <p>No recorded runs.</p> : null}
     </details>
   </article>;
 }
@@ -708,10 +715,6 @@ function nextAutomationRunAt(automation: RestrictedAppAutomation): string {
   return new Date(Date.now() + automation.trigger.intervalMinutes * 60_000).toISOString();
 }
 
-function formatAutomationOutcome(outcome: RestrictedAppAutomationRunReceipt["outcome"]): string {
-  return outcome === "success" ? "Succeeded" : outcome === "failure" ? "Failed" : outcome === "skipped" ? "Skipped" : "Cancelled";
-}
-
 function formatAutomationReason(reason: RestrictedAppAutomationRunReceipt["reason"]): string {
   return reason === "manual" ? "Manual run" : reason === "resume" ? "Resume catch-up" : "Scheduled run";
 }
@@ -719,6 +722,7 @@ function formatAutomationReason(reason: RestrictedAppAutomationRunReceipt["reaso
 function automationRunToast(automation: RestrictedAppAutomation, run: RestrictedAppAutomationRunReceipt): string {
   if (run.outcome === "success") return `${automation.title} completed.`;
   if (run.outcome === "failure") return `${automation.title} finished with an error.`;
+  if (run.outcome === "interrupted") return `${automation.title} was interrupted; completion is unknown.`;
   return `${automation.title} was ${run.outcome}.`;
 }
 
@@ -729,6 +733,8 @@ function formatTimestamp(value: string): string { const date = new Date(value); 
 function fixtureAutomationRun(app: RestrictedAppInstalled, automation: RestrictedAppAutomation): { app: RestrictedAppInstalled; run: RestrictedAppAutomationRunReceipt } {
   const now = new Date().toISOString();
   const run: RestrictedAppAutomationRunReceipt = {
+    receiptId: `receipt-fixture-${automation.id}-${Date.now()}`,
+    verification: "captured",
     runId: `fixture-${automation.id}-${Date.now()}`,
     automationId: automation.id,
     reason: "manual",
@@ -736,6 +742,7 @@ function fixtureAutomationRun(app: RestrictedAppInstalled, automation: Restricte
     startedAt: now,
     finishedAt: now,
     outcome: "success",
+    state: "succeeded",
   };
   const previous = app.automations.find((state) => state.id === automation.id);
   const state = {
@@ -753,6 +760,8 @@ function fixtureAutomationRun(app: RestrictedAppInstalled, automation: Restricte
 function fixtureAutomationRuns(automation: RestrictedAppAutomation): RestrictedAppAutomationRunReceipt[] {
   const finishedAt = new Date(Date.now() - 10 * 60_000).toISOString();
   return [{
+    receiptId: `receipt-fixture-scheduled-${automation.id}`,
+    verification: "captured",
     runId: `fixture-scheduled-${automation.id}`,
     automationId: automation.id,
     reason: "scheduled",
@@ -760,6 +769,7 @@ function fixtureAutomationRuns(automation: RestrictedAppAutomation): RestrictedA
     startedAt: new Date(Date.now() - 10 * 60_000 - 1_000).toISOString(),
     finishedAt,
     outcome: "success",
+    state: "succeeded",
   }];
 }
 
@@ -768,6 +778,7 @@ function fixtureReview(): RestrictedAppReview {
     packageName: "connected-inbox",
     version: "0.1.0",
     digest: "a".repeat(64),
+    artifactDigest: `workspace-artifact-v1:sha256:${"b".repeat(64)}`,
     fileCount: 4,
     totalBytes: 4096,
     manifest: {
@@ -799,5 +810,35 @@ function fixtureReview(): RestrictedAppReview {
 
 function fixtureInstalled(workspaceId: string, review: RestrictedAppReview): RestrictedAppInstalled {
   const now = new Date().toISOString();
-  return { ...review, workspaceId, networkGrants: [], fileGrants: [], notificationGrants: [], automations: review.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })), installedAt: now, updatedAt: now };
+  const suffix = workspaceId.toLowerCase().replace(/[^a-z0-9-]/g, "-") || "fixture";
+  return {
+    ...review,
+    workspaceId,
+    projectId: `project_${suffix}`,
+    tenantId: "tenant_fixture",
+    principalId: "principal_fixture-human",
+    runtimeInstanceId: `runtime-instance_${suffix}`,
+    runtimeInstanceKind: "development",
+    featureInstallationId: `feature-installation_${suffix}`,
+    dataNamespaceId: `data-namespace_${suffix}`,
+    authority: fixtureAuthorityStamp(),
+    networkGrants: [],
+    fileGrants: [],
+    notificationGrants: [],
+    automations: review.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })),
+    installedAt: now,
+    updatedAt: now,
+  };
+}
+
+function fixtureAuthorityStamp() {
+  return {
+    runtimeInstanceGeneration: "fixture-runtime",
+    featureInstallationGeneration: "fixture-installation",
+    grantGeneration: "fixture-grant",
+    connectionGeneration: "fixture-connection",
+    jobGeneration: "fixture-job",
+    principalGeneration: "fixture-principal",
+    dataGeneration: "fixture-data",
+  };
 }

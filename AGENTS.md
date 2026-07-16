@@ -1,6 +1,6 @@
 # Workspace contributor guide
 
-Workspace is a local-first Electron shell around ordinary folders and the native Pi agent runtime. Read [the product model](docs/product-model.md) before changing navigation, terminology, storage, trust, or Assistant behavior, and read [the management layer](docs/management-layer.md) before changing the kernel, CLI, task registry, or an agent-facing adapter. These documents record the shared product and control-plane direction; update them when those decisions change.
+Workspace is a local-first Electron shell around ordinary folders and the native Pi agent runtime. Read [the product model](docs/product-model.md) before changing navigation, terminology, storage, trust, or Assistant behavior, read [the App platform foundation](docs/app-platform-foundation.md) before changing App Project, release, instance, Feature, publication, hosted-runtime, data, connection, automation, or broker semantics, and read [the management layer](docs/management-layer.md) before changing the kernel, CLI, task registry, or an agent-facing adapter. These documents record the shared product and control-plane direction; update them when those decisions change.
 
 ## Harness parity
 

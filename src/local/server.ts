@@ -1785,6 +1785,7 @@ function restrictedAppErrorStatus(error: unknown): number | null {
     case "NETWORK_DENIED":
     case "FILE_DENIED": return 403;
     case "AUTH_REQUIRED":
+    case "AUTHORITY_STALE":
     case "REVISION_CHANGED": return 409;
     case "APP_TIMEOUT": return 504;
     case "APP_CRASHED":

@@ -5,6 +5,11 @@ These apps can render arbitrary reviewed web UI in the left navigator and open
 normal persistent tabs in the work area. They are intentionally separate from
 native Pi Extensions.
 
+For the accepted evolution from current Space apps to App Projects, Features,
+Releases, and Runtime Instances, see [App platform foundation](app-platform-foundation.md).
+The new local identity and authority foundation does not change the version-2
+package and bridge contract described here.
+
 For the exact package format, manifest template, bridge methods, worker
 exports, denial handling, and hands-on workflow, use the canonical
 [Restricted app authoring guide](restricted-app-authoring.md).
@@ -59,11 +64,19 @@ declarations, unsafe paths, links, missing entries, unknown powers, and
 oversized content. Dependency metadata is permitted because an agent may use a
 normal frontend toolchain, but Workspace never resolves or installs it: all
 runtime assets must already be present in the reviewed package.
+Enumeration captures each regular file's identity, size, and change metadata;
+later reads use bounded file handles, require the same identity before and
+after the exact read, and derive the manifest, byte totals, and both digests
+from that one captured snapshot. A package that changes during inspection
+fails closed instead of allocating or reviewing the replacement bytes.
 
 Files are copied into application storage under a SHA-256 content digest and
-verified again. Installation requires the exact digest returned by inspection.
-Machine-local receipts are keyed by Space and app id. Source edits after
-installation do not change the installed revision.
+verified again. Inspection also computes the portable `workspace-artifact-v1`
+digest used by the App-platform release contract. Installation requires the
+exact reviewed bytes. The local registry owns one App Project and Development
+Instance per participating Space, with a distinct Feature Installation and Data
+Namespace per app. Source edits after installation do not change the installed
+revision.
 
 ```text
 connected-inbox/
@@ -82,9 +95,10 @@ service. Workspace does not launch or trust that developer process.
 ## Visible app host
 
 The trusted Workspace renderer owns only a placeholder rectangle and app
-identity. Electron main verifies the installed Space/app/digest tuple, snapshots
-the staged package, and mounts a `WebContentsView` in the main window. Every
-mount gets a separate ephemeral session and origin.
+identity. Electron main verifies the installed Runtime Instance, Feature
+Installation, exact revision, and seven-domain Authority Stamp, snapshots the
+staged package, and mounts a `WebContentsView` in the main window. Every mount
+gets a separate ephemeral session and origin.
 
 The view has Chromium sandboxing and context isolation enabled, with Node,
 webviews, popups, downloads, dialogs, permissions, direct network access,
@@ -102,8 +116,8 @@ The preload exposes only `workspaceRestrictedApp`:
 - `tabs.open(...)` asks Workspace to create or activate a Space-owned work tab;
 - a tab may update or close itself;
 - `request(...)` sends a declared request through the network broker;
-- `storage` provides Space-and-app-owned JSON data and active-UI invalidation
-  hints;
+- `storage` provides Tenant-and-Data-Namespace-owned JSON data and active-UI
+  invalidation hints;
 - `files` lists, reads, or writes only through current reviewed grants; and
 - `notifications.show({ permissionId })` selects reviewed static copy, only
   during an enabled automation invocation whose permission subset includes a
@@ -167,9 +181,14 @@ delivery and cleanup, and an app-requested host-owned tab.
 ## Network and credentials
 
 Connections live in a separate operating-system-encrypted store outside the
-Space and provider AuthStorage. A binding includes Space, app, digest,
-destination id, and canonical target origin. Apps receive status and errors,
-not secret values.
+Space and provider AuthStorage. A binding includes the host-derived Tenant,
+Runtime Instance, Feature Installation, canonical Feature Revision artifact
+digest, destination declaration and digest, canonical target identity, and an
+explicit owner. The current local path creates Runtime-Instance-owned bindings;
+Principal-owned consent and delegation remain future product work. Apps receive
+status and errors, not secret values. The former Space/app/package-digest store is read only as
+disconnected authority; an explicit reconnect atomically replaces it without
+transferring ambiguous credentials.
 
 OAuth PKCE uses RFC 8414 discovery, S256, a random one-shot loopback callback,
 state and verifier checks, the system browser, encrypted token storage, and
@@ -187,11 +206,13 @@ both cases.
 
 ## Storage and Space files
 
-Every installed app has bounded, machine-local JSON storage keyed by Space and
-app id. The default limits are 5 MiB, 512 keys, 128 KiB per value, and bounded
-atomic transactions with revision checks. It survives renderer replacement and
-reviewed digest updates, is never placed in the Space, and is deleted when the
-app or Space is removed.
+Every installed app has bounded, machine-local JSON storage physically keyed by
+Tenant and Data Namespace and self-describing its Runtime Instance and Feature
+Installation owner. The default limits are 5 MiB, 512 keys, 128 KiB per value,
+and bounded atomic transactions with revision checks. The schema-1 Space/app
+store is adopted exactly once after the host durably establishes those new
+identities. Data survives renderer replacement and reviewed updates, is never
+placed in the Space, and is deleted when the Feature or Space is removed.
 
 Active visible UI may subscribe to bounded `storage.onChanged` invalidation
 hints. The host coalesces keys, caps the list (falling back to `reset: true`),
@@ -203,8 +224,9 @@ is not a second state channel.
 
 A file declaration grants nothing by itself. In Capabilities, the person maps
 it to a relative file or folder inside that app's Space. The sandbox sends only
-the grant id and a grant-relative path; the host derives Space/app/digest and
-the selected root. The broker rejects absolute paths, traversal, links and
+the grant id and a grant-relative path; the host derives Runtime Instance,
+Feature Installation, exact revision, current authority, and the selected root.
+The broker rejects absolute paths, traversal, links and
 junction escapes, alternate data streams, `.workspace`, `.pi`, oversized
 operations, and authority beyond the declaration. Writes are atomic and create
 a targeted History checkpoint. Revocation or a digest update stops current app
@@ -228,10 +250,46 @@ a new review.
 and notification grants, connections, each automation's schedule and run
 history, local data, and removal; advanced
 local install remains a recovery/developer path. A reviewed update preserves
-app storage but resets network grants, file grants, notification grants,
-connections, every automation, and prior run receipts. Removing or updating an
-app stops its UI views and worker before
-changing staged bytes.
+the Feature Installation and Data Namespace but advances the Feature, grant,
+connection, and job authority domains; network, file, and notification grants,
+connections, and every automation reset. Prior receipts remain immutable
+predecessor lineage and are not presented as current-revision runs. Removing or
+updating an app stops its UI views and worker before changing staged bytes.
+
+Authority is rechecked at effect time, including immediately before an external
+fetch and before atomic storage or Space-file commits. Persistent connections
+are bound to Tenant, Runtime Instance, Feature Installation, exact Feature
+revision, declaration digest, target identity, and the current Runtime Instance
+owner. The portable contract also defines future Principal-owned connection
+consent and unattended delegation, but the version-2 local product does not
+offer that path. The old Space/app connection schema fails closed and requires
+reconnection because it cannot prove the stronger identities. All legacy
+bindings remain disconnected; the first explicit reconnect replaces the legacy
+store and discards its ambiguous bindings.
+
+New automation receipts capture the accepting Tenant, Runtime Instance,
+Feature Installation, canonical Feature Revision, Data Namespace, effective
+Principal, seven-domain authority, occurrence, attempt, state, and acceptance
+time without storing worker inputs, outputs, file contents, request bodies, or
+credentials. Receipts imported from the older registry remain explicitly
+`legacy-unverified`; Workspace does not invent authority facts that were never
+recorded. The host persists an installation-independent `accepted` receipt
+before starting worker execution and later terminalizes that run by its durable
+run id, even if update or removal has already detached the installation.
+On startup, any receipt left only in `accepted` state is reconciled to an
+`interrupted` outcome and `expired` state with an explicit warning that the
+completion of external effects is unknown; Workspace never reports a guessed
+success, failure, or cancellation.
+The registry has the same 5 MiB bound on write and read. Each automation
+acceptance preflights enough space for every currently accepted run to become a
+worst-case terminal receipt, so a successful admission cannot create a result
+that the persistence format has no room to record.
+
+Update, removal, and Space-removal registry transitions durably record every
+required credential, storage, and staged-package cleanup before making the old
+authority unreachable. Cleanup is idempotent and retried at startup and before
+later mutations. A cleanup failure therefore cannot reactivate an installation
+or make an already-committed authority change appear to have failed.
 
 The restricted app itself appears directly in the contributed rail. Selecting
 it mounts its navigator; the app decides which persistent work tabs to open.

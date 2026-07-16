@@ -72,9 +72,23 @@ The normal creation path begins in a Space Chat:
 3. The person chooses whether to install that exact revision. Installation grants only bounded app storage; network destinations, files, notification categories, saved connections, and every automation remain off.
 4. **Capabilities → Apps in this Space** manages each authority separately. The app itself opens from the contributed rail and may create normal Space-owned tabs in the work area.
 
-Revoking a destination stops brokered requests but does not silently delete a saved credential; **Disconnect** removes the machine-local encrypted record. Provider-side token or API-key revocation remains the provider's responsibility. Updating an app preserves its local JSON storage but resets grants, connections, notification access, automation settings, and run receipts so a new digest cannot inherit old powers.
+Revoking a destination stops brokered requests but does not silently delete a saved credential; **Disconnect** removes the machine-local encrypted record. Provider-side token or API-key revocation remains the provider's responsibility. Updating an app preserves its explicit data lineage but resets grants, connections, notification access, and automation settings so a new revision cannot inherit old powers. Predecessor run receipts remain durable audit lineage even though the current-revision run view starts empty.
 
 Start with [Restricted app authoring](docs/restricted-app-authoring.md) to build a package, [Restricted app runtime](docs/restricted-app-runtime.md) for the security and lifecycle contract, and the [Connected inbox example](examples/packages/restricted-connected-inbox/README.md) for a runnable rail, tab, loopback service, storage, automation, and notification walkthrough.
+
+The next App-platform foundation is now implemented behind that surface: a Space
+may carry an optional App Project and Development Instance; installations have
+explicit Feature, data, Tenant, Principal, and seven-domain authority identity;
+new receipts capture that identity; cleanup survives interruption; and strict
+offline Release assembly and update planning are available as platform code.
+The checked-in private-hosted semantic core proves a narrow matching slice—role
+separation, immutable publication/deployment, instance-owned connection and
+leased job authority, compatible update, role-aware data, export, deletion, and
+restart recovery—with durable adapter interfaces and a non-coding
+community-garden fixture. It does not yet cover the full portable runtime and is
+not a deployed cloud service or App Store. See the
+[App platform foundation](docs/app-platform-foundation.md) for the exact shipped,
+implemented-but-unexposed, and future boundaries.
 
 ## Management layer
 
@@ -171,6 +185,7 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 - [Workspace 0.2.10 release notes](docs/releases/0.2.10.md) — native macOS chrome, menus, Finder and Quick Look workflows, close/reopen continuity, security boundaries, and upgrade guidance.
 - [Workspace 0.2.9 release notes](docs/releases/0.2.9.md) — named Space-app automations, per-job authority, durable cadence, run receipts, and upgrade guidance.
 - [Workspace 0.2.8 release notes](docs/releases/0.2.8.md) — the shipped Space-app foundation, security boundary, example, verification, and known limits.
+- [Workspace 0.3.0 release notes](docs/releases/0.3.0.md) — the local App-platform foundation, authority hardening, upgrade behavior, and hosted semantic-core boundary.
 - [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
 - [Windows build](docs/windows-build.md), [Windows release runbook](docs/windows-release.md), [macOS build lane](docs/macos-build.md), and [macOS release runbook](docs/macos-release.md) — verification, signing, updater, and publishing boundaries.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.

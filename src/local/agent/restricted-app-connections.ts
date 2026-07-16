@@ -4,6 +4,15 @@ import { request as httpsRequest } from "node:https";
 import { BlockList } from "node:net";
 import { Readable } from "node:stream";
 
+import type { AppPlatformArtifactDigest } from "./app-platform-artifact.js";
+import {
+  computeDeclarationDigest,
+  type DeclarationDigest,
+  type FeatureInstallationId,
+  type PrincipalId,
+  type RuntimeInstanceId,
+  type TenantId,
+} from "./app-platform-contract.js";
 import type {
   RestrictedAppAuthDeclaration,
   RestrictedAppManifest,
@@ -13,7 +22,7 @@ import {
   normalizeRestrictedAppOAuthConnection,
   RestrictedAppOAuthError,
   type RestrictedAppOAuthConnection,
-  type RestrictedAppOAuthPkceClient,
+  type RestrictedAppOAuthPkceConfiguration,
 } from "./restricted-app-oauth.js";
 
 export type RestrictedAppCredential =
@@ -22,32 +31,78 @@ export type RestrictedAppCredential =
   | { kind: "basic"; username: string; password: string }
   | RestrictedAppOAuthConnection;
 
-export interface RestrictedAppConnectionOwner {
-  workspaceId: string;
-  appId: string;
-  digest: string;
+export type RestrictedAppConnectionOwner =
+  | Readonly<{
+      kind: "instance";
+      runtimeInstanceId: RuntimeInstanceId;
+    }>
+  | Readonly<{
+      kind: "principal";
+      principalId: PrincipalId;
+    }>;
+
+export interface RestrictedAppConnectionFeatureScope {
+  tenantId: TenantId;
+  runtimeInstanceId: RuntimeInstanceId;
+  featureId: string;
+  featureInstallationId: FeatureInstallationId;
+  featureRevisionDigest: AppPlatformArtifactDigest;
 }
 
-export interface RestrictedAppConnectionBinding extends RestrictedAppConnectionOwner {
-  destinationId: string;
-  origin: string;
+export interface RestrictedAppConnectionBinding extends RestrictedAppConnectionFeatureScope {
+  declarationId: string;
+  declarationDigest: DeclarationDigest;
+  targetIdentity: string;
+  owner: RestrictedAppConnectionOwner;
 }
 
-export interface RestrictedAppRuntimeOwner extends RestrictedAppConnectionOwner {
+export interface RestrictedAppConnectionInstanceScope {
+  tenantId: TenantId;
+  runtimeInstanceId: RuntimeInstanceId;
+}
+
+export interface RestrictedAppRuntimeOwner extends RestrictedAppConnectionFeatureScope {
+  effectivePrincipalId: PrincipalId;
+  connectionOwner: RestrictedAppConnectionOwner;
   networkGrants: string[];
 }
 
 export interface RestrictedAppConnectionStatus {
   destinationId: string;
+  owner: RestrictedAppConnectionOwner["kind"];
   kind: RestrictedAppCredential["kind"] | "none" | null;
   configured: boolean;
 }
 
 export interface RestrictedAppConnectionStore {
   get(binding: RestrictedAppConnectionBinding): Promise<RestrictedAppCredential | undefined>;
-  set(binding: RestrictedAppConnectionBinding, credential: RestrictedAppCredential): Promise<void>;
-  delete(binding: RestrictedAppConnectionBinding): Promise<boolean>;
-  deleteApp(owner: RestrictedAppConnectionOwner): Promise<void>;
+  set(binding: RestrictedAppConnectionBinding, credential: RestrictedAppCredential, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<void>;
+  delete(binding: RestrictedAppConnectionBinding, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<boolean>;
+  deleteFeature(scope: RestrictedAppConnectionFeatureScope): Promise<void>;
+  deleteRuntimeInstance(scope: RestrictedAppConnectionInstanceScope): Promise<void>;
+}
+
+export type RestrictedAppEffectAuthorizer = () => void | Promise<void>;
+
+export interface RestrictedAppEffectAuthorityState {
+  hostOpen: boolean;
+  launchGeneration: number;
+  currentGeneration: number;
+  live: boolean;
+  persistentAuthorityCurrent: boolean;
+}
+
+export function assertRestrictedAppEffectAuthority(state: RestrictedAppEffectAuthorityState): void {
+  if (!state.hostOpen
+    || !state.live
+    || !state.persistentAuthorityCurrent
+    || !Number.isSafeInteger(state.launchGeneration)
+    || !Number.isSafeInteger(state.currentGeneration)
+    || state.launchGeneration < 0
+    || state.currentGeneration < 0
+    || state.launchGeneration !== state.currentGeneration) {
+    throw new RestrictedAppError("AUTHORITY_STALE", "The restricted app was stopped before the effect could commit.");
+  }
 }
 
 export interface RestrictedAppNetworkRequest {
@@ -71,6 +126,7 @@ export type RestrictedAppErrorCode =
   | "APP_ERROR"
   | "APP_TIMEOUT"
   | "APP_UNAVAILABLE"
+  | "AUTHORITY_STALE"
   | "AUTH_REQUIRED"
   | "FILE_DENIED"
   | "FILE_FAILED"
@@ -96,7 +152,17 @@ export interface RestrictedAppNetworkBrokerOptions {
   maxResponseBytes?: number;
   maxRedirects?: number;
   resolveHost?: (hostname: string) => Promise<Array<{ address: string; family: 4 | 6 }>>;
-  oauth?: RestrictedAppOAuthPkceClient;
+  oauth?: RestrictedAppOAuthAuthorizer;
+}
+
+export interface RestrictedAppOAuthAuthorizer {
+  authorize(
+    binding: RestrictedAppConnectionBinding,
+    configuration: RestrictedAppOAuthPkceConfiguration,
+    headers: Headers,
+    cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
+  ): Promise<void>;
 }
 
 const allowedRequestHeaders = new Set(["accept", "content-type", "if-modified-since", "if-none-match"]);
@@ -111,7 +177,7 @@ export class RestrictedAppNetworkBroker {
   readonly #maxResponseBytes: number;
   readonly #maxRedirects: number;
   readonly #resolveHost?: RestrictedAppNetworkBrokerOptions["resolveHost"];
-  readonly #oauth?: RestrictedAppOAuthPkceClient;
+  readonly #oauth?: RestrictedAppOAuthAuthorizer;
 
   constructor(options: RestrictedAppNetworkBrokerOptions) {
     this.#credentials = options.credentials;
@@ -131,6 +197,7 @@ export class RestrictedAppNetworkBroker {
     manifest: RestrictedAppManifest,
     value: unknown,
     cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<RestrictedAppNetworkResponse> {
     let request: RestrictedAppNetworkRequest;
     try {
@@ -139,7 +206,8 @@ export class RestrictedAppNetworkBroker {
       if (error instanceof RestrictedAppError) throw error;
       throw new RestrictedAppError("NETWORK_DENIED", safeErrorMessage(error));
     }
-    if (manifest.id !== owner.appId) throw new RestrictedAppError("NETWORK_DENIED", "The app identity does not match its runtime owner.");
+    if (manifest.id !== owner.featureId) throw new RestrictedAppError("NETWORK_DENIED", "The feature identity does not match its runtime owner.");
+    assertConnectionOwnerMatchesRuntime(owner);
     const destination = manifest.permissions.network.find((item) => item.id === request.destinationId);
     if (!destination || !owner.networkGrants.includes(destination.id)) {
       throw new RestrictedAppError("NETWORK_DENIED", "This network destination is not granted to the app.");
@@ -151,11 +219,15 @@ export class RestrictedAppNetworkBroker {
     const url = destinationUrl(origin, request.path);
     const headers = new Headers(request.headers);
     const binding = {
-      workspaceId: owner.workspaceId,
-      appId: owner.appId,
-      digest: owner.digest,
-      destinationId: destination.id,
-      origin,
+      tenantId: owner.tenantId,
+      runtimeInstanceId: owner.runtimeInstanceId,
+      featureId: owner.featureId,
+      featureInstallationId: owner.featureInstallationId,
+      featureRevisionDigest: owner.featureRevisionDigest,
+      declarationId: destination.id,
+      declarationDigest: computeDeclarationDigest(destination),
+      targetIdentity: origin,
+      owner: owner.connectionOwner,
     };
     // Anonymous destinations never need the encrypted credential namespace.
     // This is also required for loopback destinations: their reviewed binding
@@ -167,7 +239,10 @@ export class RestrictedAppNetworkBroker {
       const declaration = destination.auth.find((item) => item.kind === "oauth2-pkce");
       if (!declaration || !this.#oauth) throw new RestrictedAppError("AUTH_REQUIRED", "Renew this app's browser connection before using it.");
       try {
-        await this.#oauth.authorize(binding, declaration, headers, cancellation);
+        // OAuth authorization may refresh a provider token, which is itself an
+        // external effect. Fence it independently from the destination fetch.
+        await authorizeEffect?.();
+        await this.#oauth.authorize(binding, declaration, headers, cancellation, authorizeEffect);
       } catch (error) {
         if (error instanceof RestrictedAppOAuthError) {
           throw new RestrictedAppError(
@@ -190,6 +265,9 @@ export class RestrictedAppNetworkBroker {
     let body = request.body;
     try {
       for (let redirects = 0; ; redirects += 1) {
+        // DNS lookup is observable network activity too. Reauthorize before
+        // resolution and again immediately before the HTTP request.
+        await authorizeEffect?.();
         const addresses = this.#resolveHost
           ? destination.target.kind === "loopback-http"
             ? [{ address: destination.target.host, family: destination.target.host === "::1" ? 6 as const : 4 as const }]
@@ -197,6 +275,7 @@ export class RestrictedAppNetworkBroker {
           : undefined;
         let response: Response;
         try {
+          await authorizeEffect?.();
           const requestInit: RequestInit = {
             method,
             headers,
@@ -213,6 +292,7 @@ export class RestrictedAppNetworkBroker {
               ? await pinnedLoopbackFetch(currentUrl, requestInit, addresses ?? [])
               : await pinnedHttpsFetch(currentUrl, requestInit, addresses ?? []);
         } catch (error) {
+          if (error instanceof RestrictedAppError) throw error;
           if (controller.signal.aborted) throw new RestrictedAppError("NETWORK_FAILED", "The network request timed out.");
           throw new RestrictedAppError("NETWORK_FAILED", `The network request failed: ${safeErrorMessage(error)}`);
         }
@@ -303,6 +383,18 @@ function destinationUrl(origin: string, path: string): URL {
     throw new RestrictedAppError("NETWORK_DENIED", "Network path escapes the granted origin.");
   }
   return url;
+}
+
+function assertConnectionOwnerMatchesRuntime(owner: RestrictedAppRuntimeOwner): void {
+  if (owner.connectionOwner.kind === "instance") {
+    if (owner.connectionOwner.runtimeInstanceId !== owner.runtimeInstanceId) {
+      throw new RestrictedAppError("NETWORK_DENIED", "An instance-owned connection must belong to the active Runtime Instance.");
+    }
+    return;
+  }
+  if (owner.connectionOwner.principalId !== owner.effectivePrincipalId) {
+    throw new RestrictedAppError("NETWORK_DENIED", "A principal-owned connection must belong to the effective Principal.");
+  }
 }
 
 function applyCredential(headers: Headers, allowed: RestrictedAppAuthDeclaration[], credential: RestrictedAppCredential | undefined): void {

@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { parseAppPlatformArtifactDigest } from "../src/local/agent/app-platform-artifact.js";
 import {
+  computeDeclarationDigest,
+  parseFeatureInstallationId,
+  parsePrincipalId,
+  parseRuntimeInstanceId,
+  parseTenantId,
+} from "../src/local/agent/app-platform-contract.js";
+import {
+  assertRestrictedAppEffectAuthority,
   normalizeRestrictedAppCredential,
   RestrictedAppError,
   RestrictedAppNetworkBroker,
@@ -21,11 +30,19 @@ import {
   type RestrictedAppManifest,
 } from "../src/local/agent/restricted-app-manifest.js";
 
-const digest = "a".repeat(64);
+const tenantId = parseTenantId("tenant_local-test");
+const runtimeInstanceId = parseRuntimeInstanceId("runtime-instance_mail-test");
+const featureInstallationId = parseFeatureInstallationId("feature-installation_mail-test");
+const effectivePrincipalId = parsePrincipalId("principal_local-test");
+const featureRevisionDigest = parseAppPlatformArtifactDigest(`workspace-artifact-v1:sha256:${"a".repeat(64)}`);
 const owner: RestrictedAppRuntimeOwner = {
-  workspaceId: "space-one",
-  appId: "mail-app",
-  digest,
+  tenantId,
+  runtimeInstanceId,
+  featureId: "mail-app",
+  featureInstallationId,
+  featureRevisionDigest,
+  effectivePrincipalId,
+  connectionOwner: { kind: "instance", runtimeInstanceId },
   networkGrants: ["mail-api"],
 };
 
@@ -60,7 +77,11 @@ class MemoryConnections implements RestrictedAppConnectionStore {
     return existed;
   }
 
-  async deleteApp(): Promise<void> {
+  async deleteFeature(): Promise<void> {
+    this.credential = undefined;
+  }
+
+  async deleteRuntimeInstance(): Promise<void> {
     this.credential = undefined;
   }
 }
@@ -123,23 +144,84 @@ function isRestrictedError(code: RestrictedAppError["code"]): (error: unknown) =
   return (error) => error instanceof RestrictedAppError && error.code === code;
 }
 
-test("network broker derives the exact digest and origin credential binding", async () => {
+test("network broker derives an exact App-platform credential binding", async () => {
   const connections = new MemoryConnections({ kind: "bearer", token: "binding-token" });
   const broker = new RestrictedAppNetworkBroker({ credentials: connections, fetch: successfulFetch() });
+  const app = manifest({ auth: [{ kind: "bearer" }] });
 
-  await broker.request(owner, manifest({ auth: [{ kind: "bearer" }] }), {
+  await broker.request(owner, app, {
     destinationId: "mail-api",
     method: "GET",
     path: "/messages?unread=true",
   });
 
   assert.deepEqual(connections.gets, [{
-    workspaceId: "space-one",
-    appId: "mail-app",
-    digest,
-    destinationId: "mail-api",
-    origin: "https://mail.example.com",
+    tenantId,
+    runtimeInstanceId,
+    featureId: "mail-app",
+    featureInstallationId,
+    featureRevisionDigest,
+    declarationId: "mail-api",
+    declarationDigest: computeDeclarationDigest(app.permissions.network[0]),
+    targetIdentity: "https://mail.example.com",
+    owner: { kind: "instance", runtimeInstanceId },
   }]);
+});
+
+test("network broker keeps Principal-owned bindings distinct and tied to the effective Principal", async () => {
+  const connections = new MemoryConnections({ kind: "bearer", token: "personal-token" });
+  const broker = new RestrictedAppNetworkBroker({ credentials: connections, fetch: successfulFetch() });
+  const app = manifest({ auth: [{ kind: "bearer" }] });
+  const principalOwner: RestrictedAppRuntimeOwner = {
+    ...owner,
+    connectionOwner: { kind: "principal", principalId: effectivePrincipalId },
+  };
+
+  await broker.request(principalOwner, app, {
+    destinationId: "mail-api",
+    method: "GET",
+    path: "/messages",
+  });
+
+  assert.deepEqual(connections.gets[0]?.owner, { kind: "principal", principalId: effectivePrincipalId });
+});
+
+test("network broker reauthorizes immediately before every external request", async () => {
+  let fetches = 0;
+  const authority = {
+    hostOpen: true,
+    launchGeneration: 4,
+    currentGeneration: 4,
+    live: true,
+    persistentAuthorityCurrent: true,
+  };
+  let reachedEffect!: () => void;
+  let releaseEffect!: () => void;
+  const effectReached = new Promise<void>((resolve) => { reachedEffect = resolve; });
+  const release = new Promise<void>((resolve) => { releaseEffect = resolve; });
+  const broker = new RestrictedAppNetworkBroker({
+    credentials: new MemoryConnections(),
+    fetch: successfulFetch(() => { fetches += 1; }),
+  });
+
+  const request = broker.request(
+    owner,
+    manifest(),
+    { destinationId: "mail-api", method: "GET", path: "/messages" },
+    undefined,
+    async () => {
+      reachedEffect();
+      await release;
+      assertRestrictedAppEffectAuthority(authority);
+    },
+  );
+  await effectReached;
+  authority.currentGeneration += 1;
+  authority.live = false;
+  releaseEffect();
+
+  await assert.rejects(request, isRestrictedError("AUTHORITY_STALE"));
+  assert.equal(fetches, 0);
 });
 
 test("network broker injects API-key, bearer, and basic credentials in the host", async () => {
@@ -209,7 +291,9 @@ test("network broker enforces owner identity, destination grants, methods, paths
   });
   const app = manifest({ methods: ["GET"] });
   const denied: Array<[RestrictedAppRuntimeOwner, unknown]> = [
-    [{ ...owner, appId: "other-app" }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
+    [{ ...owner, featureId: "other-app" }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
+    [{ ...owner, connectionOwner: { kind: "instance", runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_other-test") } }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
+    [{ ...owner, connectionOwner: { kind: "principal", principalId: parsePrincipalId("principal_other-test") } }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
     [{ ...owner, networkGrants: [] }, { destinationId: "mail-api", method: "GET", path: "/messages" }],
     [owner, { destinationId: "unknown", method: "GET", path: "/messages" }],
     [owner, { destinationId: "mail-api", method: "POST", path: "/messages" }],

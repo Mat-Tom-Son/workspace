@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { copyFile, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
   parseRestrictedAppManifest,
   type RestrictedAppManifest,
 } from "./restricted-app-manifest.js";
+import {
+  hashAppPlatformArtifact,
+  type AppPlatformArtifactDigest,
+} from "./app-platform-artifact.js";
 export const restrictedAppPackageLimits = {
   files: 2_048,
   bytes: 50 * 1024 * 1024,
@@ -32,6 +36,7 @@ export interface RestrictedAppPackageInspection {
   files: string[];
   totalBytes: number;
   digest: string;
+  artifactDigest: AppPlatformArtifactDigest;
 }
 
 export interface RestrictedAppStageReceipt {
@@ -39,6 +44,7 @@ export interface RestrictedAppStageReceipt {
   packageName: string;
   version: string;
   digest: string;
+  artifactDigest: AppPlatformArtifactDigest;
   stagedRoot: string;
   fileCount: number;
   totalBytes: number;
@@ -50,11 +56,19 @@ export interface RestrictedAppPackageSnapshot {
   files: ReadonlyMap<string, Uint8Array>;
 }
 
+export interface RestrictedAppPackageInspectionHooks {
+  /** Deterministic race injection for boundary tests; production callers omit it. */
+  afterCollection?(): void | Promise<void>;
+}
+
 /**
  * Validate a prebuilt browser app package without importing its code, invoking
  * npm, resolving dependencies, or running package lifecycle scripts.
  */
-export async function inspectRestrictedAppPackage(sourceRoot: string): Promise<RestrictedAppPackageInspection> {
+export async function inspectRestrictedAppPackage(
+  sourceRoot: string,
+  hooks: RestrictedAppPackageInspectionHooks = {},
+): Promise<RestrictedAppPackageInspection> {
   const root = resolve(sourceRoot);
   const rootStat = await lstat(root);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
@@ -62,12 +76,25 @@ export async function inspectRestrictedAppPackage(sourceRoot: string): Promise<R
   }
 
   const entries = await collectPackageFiles(root);
+  await hooks.afterCollection?.();
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
   const packageEntry = byPath.get("package.json");
   if (!packageEntry) throw new Error("Restricted app package must contain package.json.");
   if (packageEntry.size > 64 * 1024) throw new Error("Restricted app package.json exceeds the 64 KB limit.");
 
-  const packageJson = jsonObject(await readFile(packageEntry.absolutePath, "utf8"), "Restricted app package.json");
+  const initialPackageJson = jsonObject(
+    Buffer.from(await readExactPackageFile(packageEntry, "package")).toString("utf8"),
+    "Restricted app package.json",
+  );
+  const initialManifestPath = packagePathValue(initialPackageJson.agentApp, "Restricted app package agentApp");
+  const initialManifestEntry = byPath.get(initialManifestPath);
+  if (!initialManifestEntry) throw new Error(`Restricted app manifest does not exist: ${initialManifestPath}`);
+  if (initialManifestEntry.size > restrictedAppPackageLimits.manifestBytes) {
+    throw new Error(`Restricted app manifest exceeds the ${restrictedAppPackageLimits.manifestBytes / 1024} KB limit.`);
+  }
+
+  const snapshot = await readPackageEntries(entries, "package");
+  const packageJson = jsonObject(snapshotText(snapshot.files, "package.json", "Restricted app package.json"), "Restricted app package.json");
   for (const field of forbiddenPackageFields) {
     if (field in packageJson) throw new Error(`Restricted app package.json cannot declare ${field}.`);
   }
@@ -75,6 +102,7 @@ export async function inspectRestrictedAppPackage(sourceRoot: string): Promise<R
   const packageVersion = packageVersionValue(packageJson.version);
   if (packageJson.type !== "module") throw new Error('Restricted app package.json must set type to "module".');
   const manifestPath = packagePathValue(packageJson.agentApp, "Restricted app package agentApp");
+  if (manifestPath !== initialManifestPath) throw new Error("Restricted app package.json changed during inspection.");
   const manifestEntry = byPath.get(manifestPath);
   if (!manifestEntry) throw new Error(`Restricted app manifest does not exist: ${manifestPath}`);
   if (manifestEntry.size > restrictedAppPackageLimits.manifestBytes) {
@@ -82,18 +110,12 @@ export async function inspectRestrictedAppPackage(sourceRoot: string): Promise<R
   }
 
   const manifest = parseRestrictedAppManifest(jsonObject(
-    await readFile(manifestEntry.absolutePath, "utf8"),
+    snapshotText(snapshot.files, manifestPath, "Restricted app manifest"),
     "Restricted app manifest",
   ));
   requirePackageFile(byPath, manifest.runtime.entry, "Restricted app UI entry");
   if (manifest.runtime.worker) requirePackageFile(byPath, manifest.runtime.worker, "Restricted app worker entry");
 
-  const digest = createHash("sha256");
-  for (const entry of entries) {
-    const bytes = await readFile(entry.absolutePath);
-    digest.update(`${Buffer.byteLength(entry.path)}:${entry.path}:${bytes.length}:`);
-    digest.update(bytes);
-  }
   return {
     sourceRoot: root,
     packageName,
@@ -101,8 +123,9 @@ export async function inspectRestrictedAppPackage(sourceRoot: string): Promise<R
     manifestPath,
     manifest,
     files: entries.map((entry) => entry.path),
-    totalBytes: entries.reduce((total, entry) => total + entry.size, 0),
-    digest: digest.digest("hex"),
+    totalBytes: snapshot.totalBytes,
+    digest: snapshot.digest,
+    artifactDigest: snapshot.artifactDigest,
   };
 }
 
@@ -160,20 +183,10 @@ export async function snapshotRestrictedAppPackage(receipt: RestrictedAppStageRe
   const rootStat = await lstat(root);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Restricted app staged root is not a regular directory.");
   const entries = await collectPackageFiles(root);
-  const files = new Map<string, Uint8Array>();
-  const digest = createHash("sha256");
-  let totalBytes = 0;
-  for (const entry of entries) {
-    const bytes = await readFile(entry.absolutePath);
-    if (bytes.length > restrictedAppPackageLimits.fileBytes) throw new Error(`Restricted app staged file exceeds the per-file limit: ${entry.path}`);
-    totalBytes += bytes.length;
-    if (totalBytes > restrictedAppPackageLimits.bytes) throw new Error("Restricted app staged package exceeds the total-size limit.");
-    digest.update(`${Buffer.byteLength(entry.path)}:${entry.path}:${bytes.length}:`);
-    digest.update(bytes);
-    files.set(entry.path, new Uint8Array(bytes));
-  }
-  const snapshotDigest = digest.digest("hex");
-  if (snapshotDigest !== receipt.digest || entries.length !== receipt.fileCount || totalBytes !== receipt.totalBytes) {
+  const snapshot = await readPackageEntries(entries, "staged package");
+  const files = snapshot.files;
+  if (snapshot.digest !== receipt.digest || snapshot.artifactDigest !== receipt.artifactDigest
+    || entries.length !== receipt.fileCount || snapshot.totalBytes !== receipt.totalBytes) {
     throw new Error("Restricted app staged bytes do not match the install receipt.");
   }
   const packageJson = jsonObject(snapshotText(files, "package.json", "Restricted app staged package.json"), "Restricted app staged package.json");
@@ -196,6 +209,10 @@ interface PackageFile {
   path: string;
   absolutePath: string;
   size: number;
+  dev: bigint;
+  ino: bigint;
+  ctimeNs: bigint;
+  mtimeNs: bigint;
 }
 
 async function collectPackageFiles(root: string): Promise<PackageFile[]> {
@@ -216,17 +233,91 @@ async function collectPackageFiles(root: string): Promise<PackageFile[]> {
         continue;
       }
       if (!entry.isFile()) throw new Error(`Restricted app package can contain only regular files and directories: ${packagePath}`);
-      const fileStat = await lstat(absolutePath);
+      const fileStat = await lstat(absolutePath, { bigint: true });
       if (fileStat.isSymbolicLink() || !fileStat.isFile()) throw new Error(`Restricted app package file is not regular: ${packagePath}`);
-      if (fileStat.size > restrictedAppPackageLimits.fileBytes) throw new Error(`Restricted app package file exceeds the per-file limit: ${packagePath}`);
-      files.push({ path: packagePath, absolutePath, size: fileStat.size });
-      totalBytes += fileStat.size;
+      if (fileStat.size > BigInt(restrictedAppPackageLimits.fileBytes)) throw new Error(`Restricted app package file exceeds the per-file limit: ${packagePath}`);
+      const size = Number(fileStat.size);
+      files.push({
+        path: packagePath,
+        absolutePath,
+        size,
+        dev: fileStat.dev,
+        ino: fileStat.ino,
+        ctimeNs: fileStat.ctimeNs,
+        mtimeNs: fileStat.mtimeNs,
+      });
+      totalBytes += size;
       if (files.length > restrictedAppPackageLimits.files) throw new Error("Restricted app package exceeds the file-count limit.");
       if (totalBytes > restrictedAppPackageLimits.bytes) throw new Error("Restricted app package exceeds the total-size limit.");
     }
   }
   await visit(root, 0);
   return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function readPackageEntries(
+  entries: readonly PackageFile[],
+  label: string,
+): Promise<{
+  files: Map<string, Uint8Array>;
+  totalBytes: number;
+  digest: string;
+  artifactDigest: AppPlatformArtifactDigest;
+}> {
+  const files = new Map<string, Uint8Array>();
+  const digest = createHash("sha256");
+  const artifactEntries: Array<{ path: string; bytes: Uint8Array }> = [];
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const bytes = await readExactPackageFile(entry, label);
+    totalBytes += bytes.byteLength;
+    if (totalBytes > restrictedAppPackageLimits.bytes) {
+      throw new Error(`Restricted app ${label} exceeds the total-size limit.`);
+    }
+    digest.update(`${Buffer.byteLength(entry.path)}:${entry.path}:${bytes.byteLength}:`);
+    digest.update(bytes);
+    files.set(entry.path, bytes);
+    artifactEntries.push({ path: entry.path, bytes });
+  }
+  return {
+    files,
+    totalBytes,
+    digest: digest.digest("hex"),
+    artifactDigest: hashAppPlatformArtifact(artifactEntries),
+  };
+}
+
+async function readExactPackageFile(entry: PackageFile, label: string): Promise<Uint8Array> {
+  const handle = await open(entry.absolutePath, constants.O_RDONLY);
+  try {
+    const before = await handle.stat({ bigint: true });
+    assertSamePackageFile(entry, before, label);
+    const allocation = Buffer.allocUnsafe(entry.size + 1);
+    let offset = 0;
+    while (offset < allocation.byteLength) {
+      const { bytesRead } = await handle.read(allocation, offset, allocation.byteLength - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    assertSamePackageFile(entry, after, label);
+    if (offset !== entry.size) throw new Error(`Restricted app ${label} file changed while it was being read: ${entry.path}`);
+    return allocation.subarray(0, entry.size);
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertSamePackageFile(
+  entry: PackageFile,
+  stat: BigIntStats,
+  label: string,
+): void {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== BigInt(entry.size)
+    || stat.dev !== entry.dev || stat.ino !== entry.ino
+    || stat.ctimeNs !== entry.ctimeNs || stat.mtimeNs !== entry.mtimeNs) {
+    throw new Error(`Restricted app ${label} file changed after enumeration: ${entry.path}`);
+  }
 }
 
 function requirePackageFile(files: Map<string, PackageFile>, path: string, label: string): PackageFile {
@@ -304,6 +395,7 @@ function stageReceipt(inspection: RestrictedAppPackageInspection, stagedRoot: st
     packageName: inspection.packageName,
     version: inspection.packageVersion,
     digest: inspection.digest,
+    artifactDigest: inspection.artifactDigest,
     stagedRoot,
     fileCount: inspection.files.length,
     totalBytes: inspection.totalBytes,

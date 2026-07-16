@@ -1,0 +1,67 @@
+{
+  "formatVersion": 1,
+  "declarations": [
+    {
+      "name": "recursive-key-order",
+      "value": { "b": 2, "a": 1 },
+      "canonical": "{\"a\":1,\"b\":2}",
+      "digest": "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "name": "rfc8785-numbers-and-nesting",
+      "value": {
+        "numbers": [333333333.33333329, 1e30, 4.5, 0.002, 1e-27, 0],
+        "literals": [null, true, false],
+        "nested": { "z": 1, "a": [{ "d": 4, "c": 3 }] }
+      },
+      "canonical": "{\"literals\":[null,true,false],\"nested\":{\"a\":[{\"c\":3,\"d\":4}],\"z\":1},\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27,0]}",
+      "digest": "sha256:6f1970c5882b77b1f1c43536442c990d0742245e4a128a0a8c639770a41a3c79"
+    },
+    {
+      "name": "utf16-key-order",
+      "value": {
+        "€": "Euro Sign",
+        "\r": "Carriage Return",
+        "דּ": "Hebrew Letter Dalet With Dagesh",
+        "1": "One",
+        "😀": "Emoji: Grinning Face",
+        "": "Control",
+        "ö": "Latin Small Letter O With Diaeresis"
+      },
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "digest": "sha256:5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "empty",
+      "entries": [],
+      "digest": "workspace-artifact-v1:sha256:838001471cad4c828412e488f0dc7a48b9c8a0edd54db316603d317f04a7f0f4"
+    },
+    {
+      "name": "portable-multi-file",
+      "entries": [
+        { "path": "index.html", "bytesBase64": "PGgxPkhlbGxvPC9oMT4K" },
+        { "path": "assets/app.js", "bytesBase64": "Y29uc29sZS5sb2coImhpIik7Cg==" }
+      ],
+      "digest": "workspace-artifact-v1:sha256:1a6f54828f901cf26e732332bcf2e5f0ba15b4939b53d6da2c0e3038cf0fe3da"
+    },
+    {
+      "name": "unicode-byte-order",
+      "entries": [
+        { "path": "z.txt", "bytesBase64": "eg==" },
+        { "path": "é.txt", "bytesBase64": "YWNjZW50" },
+        { "path": "😀.txt", "bytesBase64": "ZW1vamk=" }
+      ],
+      "digest": "workspace-artifact-v1:sha256:1f95028a0c636956f57ee2e456b09e5e3b9e4849403bb42b4eacd1d47c6fe6a9"
+    },
+    {
+      "name": "case-distinct-paths",
+      "entries": [
+        { "path": "A.txt", "bytesBase64": "dXBwZXI=" },
+        { "path": "a.txt", "bytesBase64": "bG93ZXI=" }
+      ],
+      "digest": "workspace-artifact-v1:sha256:02501fd9c791d4eef9b35f265f4911591fed8927d5ffba1cd6325f4da0fcdb29"
+    }
+  ]
+}

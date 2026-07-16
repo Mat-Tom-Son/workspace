@@ -46,6 +46,7 @@ export interface RestrictedAppFileContext {
   workspaceRoot: string;
   declarations: readonly RestrictedAppFileDeclaration[];
   grants: readonly RestrictedAppFileGrant[];
+  authorizeCommit?: () => void | Promise<void>;
 }
 
 export interface RestrictedAppFileListRequest {
@@ -298,6 +299,7 @@ export class RestrictedAppFileBroker {
       if (latest?.isSymbolicLink() || (latest && !latest.isFile())) {
         throw new RestrictedAppFileError("FILE_DENIED", "Restricted apps can write only ordinary files.");
       }
+      await context.authorizeCommit?.();
       if (request.mode === "create") {
         if (latest) throw new RestrictedAppFileError("FILE_CONFLICT", "A file already exists at the requested app path.");
         await link(temporary, target.absolutePath).catch((error: NodeJS.ErrnoException) => {

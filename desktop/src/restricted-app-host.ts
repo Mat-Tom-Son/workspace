@@ -12,6 +12,7 @@ import {
 } from "electron";
 
 import {
+  assertRestrictedAppEffectAuthority,
   RestrictedAppError,
   RestrictedAppNetworkBroker,
   type RestrictedAppConnectionStore,
@@ -39,9 +40,15 @@ import {
   type RestrictedAppStageReceipt,
 } from "../../src/local/agent/restricted-app-package.js";
 import type {
+  RestrictedAppRuntimeAuthority,
   RestrictedAppRuntimeDescriptor,
   RestrictedAppRuntimeHost,
 } from "../../src/local/agent/restricted-app-service.js";
+import {
+  authorityStampsEqual,
+  parsePrincipalId,
+  type EffectivePrincipal,
+} from "../../src/local/agent/app-platform-contract.js";
 
 export const restrictedAppProtocol = "agent-app";
 const networkChannel = "workspace:restricted-app:network";
@@ -113,14 +120,27 @@ interface RestrictedAppInstance {
   token: string;
   origin: string;
   app: RestrictedAppRuntimeDescriptor;
+  generation: number;
   snapshot: RestrictedAppPackageSnapshot;
   window: BrowserWindow;
   session: Session;
-  pendingOperation: { kind: "action" | "automation"; id: string } | null;
+  pendingOperation: RestrictedAppPendingOperation | null;
   idleTimer?: NodeJS.Timeout;
   crashed: boolean;
   abortController: AbortController;
   destroyPromise?: Promise<void>;
+}
+
+interface RestrictedAppPendingOperation {
+  kind: "action" | "automation";
+  id: string;
+  effectivePrincipal: EffectivePrincipal;
+}
+
+interface RestrictedAppEffectLease {
+  instance: RestrictedAppNetworkInstance;
+  operation?: RestrictedAppPendingOperation;
+  requireActiveUi: boolean;
 }
 
 interface RestrictedAppLaunch {
@@ -138,6 +158,7 @@ interface RestrictedAppUiInstance {
   origin: string;
   entryPath: string;
   app: RestrictedAppRuntimeDescriptor;
+  generation: number;
   snapshot: RestrictedAppPackageSnapshot;
   parent: BrowserWindow;
   view: WebContentsView;
@@ -181,6 +202,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   readonly #instancesByWebContents = new Map<number, RestrictedAppNetworkInstance>();
   readonly #launches = new Map<string, RestrictedAppLaunch>();
   readonly #generations = new Map<string, number>();
+  readonly #authorities = new Map<string, RestrictedAppRuntimeAuthority>();
   readonly #pendingStorageEvents = new Map<string, PendingStorageEvent>();
   readonly #storageLastEmittedAt = new Map<string, number>();
   #notificationsSuspended = false;
@@ -205,6 +227,33 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     ipcMain.handle(tabCommandChannel, (event, value) => this.#handleTabCommand(event, value));
   }
 
+  syncAuthority(authorities: readonly RestrictedAppRuntimeAuthority[]): void {
+    const next = new Map<string, RestrictedAppRuntimeAuthority>();
+    for (const authority of authorities) {
+      const key = appScopeKey(authority.workspaceId, authority.appId);
+      if (next.has(key)) throw new Error("Restricted app authority contains a duplicate runtime scope.");
+      next.set(key, structuredClone(authority));
+    }
+    this.#authorities.clear();
+    for (const [key, authority] of next) this.#authorities.set(key, authority);
+    const invalidatedScopes = new Map<string, { workspaceId: string; appId: string }>();
+    for (const instance of [...this.#instances.values(), ...this.#uiInstances.values()]) {
+      if (!this.#persistentAuthorityMatches(instance.app)) {
+        invalidatedScopes.set(appScopeKey(instance.app.workspaceId, instance.app.manifest.id), {
+          workspaceId: instance.app.workspaceId,
+          appId: instance.app.manifest.id,
+        });
+      }
+    }
+    for (const scope of invalidatedScopes.values()) this.#advanceGeneration(scope.workspaceId, scope.appId);
+    for (const instance of [...this.#instances.values()]) {
+      if (!this.#persistentAuthorityMatches(instance.app)) void this.#destroy(instance);
+    }
+    for (const instance of [...this.#uiInstances.values()]) {
+      if (!this.#persistentAuthorityMatches(instance.app)) void this.#destroyUi(instance, "stopped");
+    }
+  }
+
   async invoke(app: RestrictedAppRuntimeDescriptor, action: string, input: unknown): Promise<unknown> {
     this.#assertOpen();
     if (!app.manifest.runtime.worker) throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose a worker.");
@@ -225,7 +274,11 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       throw error;
     }
     if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling an action.");
-    instance.pendingOperation = { kind: "action", id: randomUUID() };
+    instance.pendingOperation = {
+      kind: "action",
+      id: randomUUID(),
+      effectivePrincipal: { principalId: app.principalId, kind: "human", realm: "local" },
+    };
     const serializedInput = JSON.stringify(input);
     const expression = `globalThis.__workspaceInvoke(${JSON.stringify(action)},JSON.parse(${JSON.stringify(serializedInput)}))`;
     try {
@@ -261,6 +314,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       handler: string;
       reason: "scheduled" | "manual" | "resume";
       scheduledAt: string;
+      effectivePrincipal: EffectivePrincipal;
     },
     signal?: AbortSignal,
   ): Promise<void> {
@@ -270,7 +324,9 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     if (!app.manifest.runtime.worker || !automation) {
       throw new RestrictedAppError("APP_UNAVAILABLE", "This app does not expose the requested automation.");
     }
-    assertBoundedJson(event, "Restricted app automation event", maxInvocationBytes);
+    const effectivePrincipal = automationEffectivePrincipal(event.effectivePrincipal, event.reason, app.principalId);
+    const { effectivePrincipal: _hostPrincipal, ...rendererEvent } = event;
+    assertBoundedJson(rendererEvent, "Restricted app automation event", maxInvocationBytes);
     const generation = this.#generation(app.workspaceId, app.manifest.id);
     const instance = await this.#instance(app, generation);
     if (signal?.aborted) {
@@ -284,8 +340,8 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       throw error;
     }
     if (instance.pendingOperation) throw new RestrictedAppError("APP_UNAVAILABLE", "This restricted app is already handling work.");
-    instance.pendingOperation = { kind: "automation", id: event.runId };
-    const serializedEvent = JSON.stringify(event);
+    instance.pendingOperation = { kind: "automation", id: event.runId, effectivePrincipal };
+    const serializedEvent = JSON.stringify(rendererEvent);
     const expression = `globalThis.__workspaceRunAutomation(JSON.parse(${JSON.stringify(serializedEvent)}))`;
     const abort = () => { void this.#destroy(instance); };
     signal?.addEventListener("abort", abort, { once: true });
@@ -334,6 +390,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       packageName: app.packageName,
       version: app.version,
       digest: app.digest,
+      artifactDigest: app.artifactDigest,
       stagedRoot: app.stagedRoot,
       fileCount: app.fileCount,
       totalBytes: app.totalBytes,
@@ -398,6 +455,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       origin,
       entryPath,
       app: structuredClone(app),
+      generation,
       snapshot,
       parent,
       view,
@@ -541,6 +599,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       packageName: app.packageName,
       version: app.version,
       digest: app.digest,
+      artifactDigest: app.artifactDigest,
       stagedRoot: app.stagedRoot,
       fileCount: app.fileCount,
       totalBytes: app.totalBytes,
@@ -606,6 +665,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         token,
         origin,
         app: structuredClone(app),
+        generation,
         snapshot,
         window,
         session: isolatedSession,
@@ -645,12 +705,8 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
     contents.on("will-navigate", (event) => event.preventDefault());
     contents.on("will-frame-navigate", (event) => event.preventDefault());
-    let mainFrameObserved = false;
-    contents.on("frame-created", () => {
-      if (!mainFrameObserved) {
-        mainFrameObserved = true;
-        return;
-      }
+    contents.on("frame-created", (_event, details) => {
+      if (details.frame === contents.mainFrame) return;
       this.#terminate(instance);
     });
     contents.on("will-attach-webview", (event) => event.preventDefault());
@@ -749,6 +805,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     const fromMainFrame = ipcFromMainFrame(event);
     const instance = this.#ownedActiveUiInstance(event.sender, fromMainFrame);
     if (!instance) throw new RestrictedAppError("APP_UNAVAILABLE", "The tab request did not come from an installed app's main frame.");
+    this.#assertEffectAuthorized(instance);
     const command = parseTabCommand(value, instance);
     this.#onTabCommand?.(command);
   }
@@ -757,6 +814,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     const instance = this.#ownedPowerInstance(event.sender, ipcFromMainFrame(event));
     if (!instance) return { ok: false, error: { code: "NETWORK_DENIED", message: "The network caller is not an active restricted app." } };
     try {
+      const lease = this.#captureEffectLease(instance);
       if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > maxNetworkEnvelopeBytes) {
         throw new RestrictedAppError("NETWORK_DENIED", "The network request envelope exceeds the size limit.");
       }
@@ -767,11 +825,18 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         throw new RestrictedAppError("NETWORK_DENIED", "The network request envelope is invalid.");
       }
       const response = await this.#network.request({
-        workspaceId: instance.app.workspaceId,
-        appId: instance.app.manifest.id,
-        digest: instance.app.digest,
+        tenantId: instance.app.tenantId,
+        runtimeInstanceId: instance.app.runtimeInstanceId,
+        featureId: instance.app.manifest.id,
+        featureInstallationId: instance.app.featureInstallationId,
+        featureRevisionDigest: instance.app.artifactDigest,
+        effectivePrincipalId: lease.operation
+          ? lease.operation.effectivePrincipal.principalId
+          : instance.app.principalId,
+        connectionOwner: { kind: "instance", runtimeInstanceId: instance.app.runtimeInstanceId },
         networkGrants: [...instance.app.networkGrants],
-      }, instance.app.manifest, request, instance.abortController.signal);
+      }, instance.app.manifest, request, instance.abortController.signal, () => this.#assertEffectLease(lease));
+      this.#assertEffectLease(lease);
       return { ok: true, value: response };
     } catch (error) {
       const code = error instanceof RestrictedAppError ? error.code : "NETWORK_FAILED";
@@ -785,8 +850,16 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       return hostError("STORAGE_FAILED", "The storage caller is not an active restricted app.");
     }
     try {
+      const lease = this.#captureEffectLease(instance, false);
       const request = jsonEnvelope(value, maxStorageEnvelopeBytes, "storage");
-      const owner = { workspaceId: instance.app.workspaceId, appId: instance.app.manifest.id };
+      const owner = {
+        ownerClass: "instance" as const,
+        tenantId: instance.app.tenantId,
+        runtimeInstanceId: instance.app.runtimeInstanceId,
+        featureInstallationId: instance.app.featureInstallationId,
+        dataNamespaceId: instance.app.dataNamespaceId,
+      };
+      const authorizeCommit = () => this.#assertEffectLease(lease);
       let result: unknown;
       let mutation: RestrictedAppStorageMutationResult | undefined;
       if (request.operation === "usage") {
@@ -800,27 +873,30 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         result = await this.#storage.get(owner, stringField(request.key, "Storage key", 256));
       } else if (request.operation === "set") {
         assertRequestKeys(request, ["operation", "key", "value"]);
-        mutation = await this.#storage.set(owner, stringField(request.key, "Storage key", 256), request.value as never);
+        mutation = await this.#storage.set(owner, stringField(request.key, "Storage key", 256), request.value as never, authorizeCommit);
         result = mutation;
       } else if (request.operation === "delete") {
         assertRequestKeys(request, ["operation", "key"]);
-        mutation = await this.#storage.delete(owner, stringField(request.key, "Storage key", 256));
+        mutation = await this.#storage.delete(owner, stringField(request.key, "Storage key", 256), authorizeCommit);
         result = mutation;
       } else if (request.operation === "clear") {
         assertRequestKeys(request, ["operation"]);
-        mutation = await this.#storage.clear(owner);
+        mutation = await this.#storage.clear(owner, authorizeCommit);
         result = mutation;
       } else if (request.operation === "transaction") {
         assertRequestKeys(request, ["operation", "transaction"]);
-        mutation = await this.#storage.transaction(owner, request.transaction as never);
+        mutation = await this.#storage.transaction(owner, request.transaction as never, authorizeCommit);
         result = mutation;
       } else {
         throw new RestrictedAppStorageError("STORAGE_INVALID", "Restricted app storage operation is unsupported.");
       }
+      this.#assertEffectLease(lease);
       if (mutation?.changed) this.#queueStorageChanged(instance, mutation);
       return { ok: true, value: result };
     } catch (error) {
-      const code = error instanceof RestrictedAppStorageError ? error.code : "STORAGE_FAILED";
+      const code = error instanceof RestrictedAppStorageError || error instanceof RestrictedAppError
+        ? error.code
+        : "STORAGE_FAILED";
       return hostError(code, errorMessage(error));
     }
   }
@@ -829,6 +905,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
     const instance = this.#ownedPowerInstance(event.sender, ipcFromMainFrame(event));
     if (!instance) return hostError("FILE_DENIED", "The file caller is not an active restricted app.");
     try {
+      const lease = this.#captureEffectLease(instance);
       const envelope = jsonEnvelope(value, maxFileEnvelopeBytes, "file");
       assertRequestKeys(envelope, ["operation", "request"]);
       const workspaceRoot = await this.#resolveWorkspaceRoot(instance.app.workspaceId);
@@ -837,6 +914,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         workspaceRoot,
         declarations: instance.app.manifest.permissions.files,
         grants: instance.app.fileGrants,
+        authorizeCommit: () => this.#assertEffectLease(lease),
       };
       let result: unknown;
       if (envelope.operation === "list") result = await this.#files.list(context, envelope.request);
@@ -855,9 +933,12 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
           throw error;
         }
       } else throw new RestrictedAppFileError("FILE_DENIED", "Restricted app file operation is unsupported.");
+      this.#assertEffectLease(lease);
       return { ok: true, value: result };
     } catch (error) {
-      const code = error instanceof RestrictedAppFileError ? error.code : "FILE_FAILED";
+      const code = error instanceof RestrictedAppFileError || error instanceof RestrictedAppError
+        ? error.code
+        : "FILE_FAILED";
       return hostError(code, errorMessage(error));
     }
   }
@@ -868,6 +949,7 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
       return hostError("NOTIFICATION_DENIED", "Notifications are available only during an enabled automation run.");
     }
     try {
+      const lease = this.#captureEffectLease(instance);
       const request = jsonEnvelope(value, maxNotificationEnvelopeBytes, "notification");
       const result = this.#notifications.show({
         workspaceId: instance.app.workspaceId,
@@ -877,11 +959,14 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
         declarations: instance.app.manifest.permissions.notifications,
         grants: instance.app.notificationGrants,
         automationEnabled: instance.app.automations.some((automation) => automation.enabled),
-        invocationId: instance.pendingOperation.id,
+        invocationId: lease.operation!.id,
       }, request, (owner) => this.#onNotificationOpen?.(owner));
+      this.#assertEffectLease(lease);
       return { ok: true, value: result };
     } catch (error) {
-      const code = error instanceof RestrictedAppNotificationError ? error.code : "NOTIFICATION_FAILED";
+      const code = error instanceof RestrictedAppNotificationError || error instanceof RestrictedAppError
+        ? error.code
+        : "NOTIFICATION_FAILED";
       return hostError(code, errorMessage(error));
     }
   }
@@ -968,6 +1053,29 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   #ownedActiveUiInstance(sender: WebContents, isMainFrame: boolean): RestrictedAppUiInstance | null {
     const instance = this.#ownedInstance(sender, isMainFrame);
     return instance && "view" in instance && this.#uiIsActive(instance) ? instance : null;
+  }
+
+  #captureEffectLease(instance: RestrictedAppNetworkInstance, requireActiveUi = true): RestrictedAppEffectLease {
+    if ("window" in instance) {
+      if (!instance.pendingOperation) throw new RestrictedAppError("AUTHORITY_STALE", "The restricted app operation has ended.");
+      const lease = { instance, operation: instance.pendingOperation, requireActiveUi };
+      this.#assertEffectLease(lease);
+      return lease;
+    }
+    const lease = { instance, requireActiveUi };
+    this.#assertEffectLease(lease);
+    return lease;
+  }
+
+  #assertEffectLease(lease: RestrictedAppEffectLease): void {
+    this.#assertEffectAuthorized(lease.instance);
+    if ("window" in lease.instance) {
+      if (!lease.operation || lease.instance.pendingOperation !== lease.operation) {
+        throw new RestrictedAppError("AUTHORITY_STALE", "The restricted app operation ended before the effect could commit.");
+      }
+    } else if (lease.requireActiveUi && !this.#uiIsActive(lease.instance)) {
+      throw new RestrictedAppError("AUTHORITY_STALE", "The restricted app view became inactive before the effect could commit.");
+    }
   }
 
   #uiIsActive(instance: RestrictedAppUiInstance): boolean {
@@ -1120,6 +1228,35 @@ export class RestrictedAppHost implements RestrictedAppRuntimeHost {
   #assertLaunchCurrent(app: RestrictedAppRuntimeDescriptor, generation: number): void {
     if (this.#closed || this.#generation(app.workspaceId, app.manifest.id) !== generation) {
       throw new RestrictedAppError("APP_UNAVAILABLE", "The restricted app was stopped before startup completed.");
+    }
+    this.#assertPersistentAuthority(app);
+  }
+
+  #persistentAuthorityMatches(app: RestrictedAppRuntimeDescriptor): boolean {
+    const current = this.#authorities.get(appScopeKey(app.workspaceId, app.manifest.id));
+    return Boolean(current
+      && current.digest === app.digest
+      && current.runtimeInstanceId === app.runtimeInstanceId
+      && current.featureInstallationId === app.featureInstallationId
+      && authorityStampsEqual(current.authority, app.authority));
+  }
+
+  #assertEffectAuthorized(instance: RestrictedAppNetworkInstance): void {
+    const app = instance.app;
+    assertRestrictedAppEffectAuthority({
+      hostOpen: !this.#closed,
+      launchGeneration: instance.generation,
+      currentGeneration: this.#generation(app.workspaceId, app.manifest.id),
+      live: !instance.crashed
+        && !instance.abortController.signal.aborted
+        && this.#instancesByWebContents.get(instance.webContentsId) === instance,
+      persistentAuthorityCurrent: this.#persistentAuthorityMatches(app),
+    });
+  }
+
+  #assertPersistentAuthority(app: RestrictedAppRuntimeDescriptor): void {
+    if (!this.#persistentAuthorityMatches(app)) {
+      throw new RestrictedAppError("AUTHORITY_STALE", "The restricted app authority changed before the effect could commit.");
     }
   }
 }
@@ -1462,6 +1599,28 @@ function parseInvocationEnvelope(value: unknown): unknown {
   } catch {
     throw new RestrictedAppError("OUTPUT_INVALID", "Restricted app output must be valid JSON.");
   }
+}
+
+function automationEffectivePrincipal(
+  value: EffectivePrincipal,
+  reason: "scheduled" | "manual" | "resume",
+  localHumanPrincipalId: RestrictedAppRuntimeDescriptor["principalId"],
+): EffectivePrincipal {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || Object.keys(value).length !== 3
+    || !Object.prototype.hasOwnProperty.call(value, "principalId")
+    || !Object.prototype.hasOwnProperty.call(value, "kind")
+    || !Object.prototype.hasOwnProperty.call(value, "realm")) {
+    throw new RestrictedAppError("APP_UNAVAILABLE", "The automation effective Principal is invalid.");
+  }
+  const principalId = parsePrincipalId(value.principalId);
+  const expectedKind = reason === "manual" ? "human" : "service";
+  if (value.realm !== "local" || value.kind !== expectedKind
+    || (reason === "manual" && principalId !== localHumanPrincipalId)) {
+    throw new RestrictedAppError("APP_UNAVAILABLE", "The automation effective Principal does not match its run reason.");
+  }
+  return Object.freeze({ principalId, kind: expectedKind, realm: "local" });
 }
 
 function instanceKey(workspaceId: string, appId: string, digest: string): string {

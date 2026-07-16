@@ -2,14 +2,41 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createRestrictedAppTools } from "../src/local/agent/pi-client.js";
+import { parseAppPlatformArtifactDigest } from "../src/local/agent/app-platform-artifact.js";
+import {
+  parseAuthorityStamp,
+  parseDataNamespaceId,
+  parseFeatureInstallationId,
+  parsePrincipalId,
+  parseProjectId,
+  parseRuntimeInstanceId,
+  parseTenantId,
+} from "../src/local/agent/app-platform-contract.js";
 import type { RestrictedAppInstalled } from "../src/local/agent/restricted-app-service.js";
 
 const digest = "a".repeat(64);
 const installed: RestrictedAppInstalled = {
   workspaceId: "space-one",
+  projectId: parseProjectId("project_fixture"),
+  tenantId: parseTenantId("tenant_fixture"),
+  principalId: parsePrincipalId("principal_fixture"),
+  runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_fixture"),
+  runtimeInstanceKind: "development",
+  featureInstallationId: parseFeatureInstallationId("feature-installation_fixture"),
+  dataNamespaceId: parseDataNamespaceId("data-namespace_fixture"),
+  authority: parseAuthorityStamp({
+    runtimeInstanceGeneration: "runtime-1",
+    featureInstallationGeneration: "installation-1",
+    grantGeneration: "grant-1",
+    connectionGeneration: "connection-1",
+    jobGeneration: "job-1",
+    principalGeneration: "principal-1",
+    dataGeneration: "data-1",
+  }),
   packageName: "connected-inbox",
   version: "1.0.0",
   digest,
+  artifactDigest: parseAppPlatformArtifactDigest(`workspace-artifact-v1:sha256:${"b".repeat(64)}`),
   fileCount: 4,
   totalBytes: 1024,
   networkGrants: ["mail-api"],

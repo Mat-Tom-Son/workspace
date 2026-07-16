@@ -2,13 +2,21 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { isIP } from "node:net";
 
-export interface RestrictedAppOAuthBinding {
-  workspaceId: string;
-  appId: string;
-  digest: string;
-  destinationId: string;
-  origin: string;
-}
+import { parseAppPlatformArtifactDigest } from "./app-platform-artifact.js";
+import {
+  parseFeatureInstallationId,
+  parsePrincipalId,
+  parseRuntimeInstanceId,
+  parseSha256Digest,
+  parseTenantId,
+  type DeclarationDigest,
+} from "./app-platform-contract.js";
+import type {
+  RestrictedAppConnectionBinding,
+  RestrictedAppEffectAuthorizer,
+} from "./restricted-app-connections.js";
+
+export type RestrictedAppOAuthBinding = RestrictedAppConnectionBinding;
 
 export interface RestrictedAppOAuthPkceConfiguration {
   issuer: string;
@@ -37,8 +45,8 @@ export interface RestrictedAppOAuthConnection {
 export interface RestrictedAppOAuthEncryptedConnectionStore {
   readonly encrypted: true;
   get(binding: RestrictedAppOAuthBinding): Promise<RestrictedAppOAuthConnection | undefined>;
-  set(binding: RestrictedAppOAuthBinding, connection: RestrictedAppOAuthConnection): Promise<void>;
-  delete(binding: RestrictedAppOAuthBinding): Promise<boolean>;
+  set(binding: RestrictedAppOAuthBinding, connection: RestrictedAppOAuthConnection, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<void>;
+  delete(binding: RestrictedAppOAuthBinding, authorizeCommit?: RestrictedAppEffectAuthorizer): Promise<boolean>;
 }
 
 export interface RestrictedAppOAuthJsonResponse {
@@ -55,12 +63,12 @@ export interface RestrictedAppOAuthJsonResponse {
 export interface RestrictedAppOAuthPublicHttpsTransport {
   getJson(
     url: URL,
-    options: { signal: AbortSignal; maxResponseBytes: number },
+    options: { signal: AbortSignal; maxResponseBytes: number; authorizeEffect?: RestrictedAppEffectAuthorizer },
   ): Promise<RestrictedAppOAuthJsonResponse>;
   postForm(
     url: URL,
     form: URLSearchParams,
-    options: { signal: AbortSignal; maxResponseBytes: number },
+    options: { signal: AbortSignal; maxResponseBytes: number; authorizeEffect?: RestrictedAppEffectAuthorizer },
   ): Promise<RestrictedAppOAuthJsonResponse>;
 }
 
@@ -153,6 +161,7 @@ export class RestrictedAppOAuthPkceClient {
     bindingValue: RestrictedAppOAuthBinding,
     configurationValue: RestrictedAppOAuthPkceConfiguration,
     cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<RestrictedAppOAuthConnectionStatus> {
     const binding = normalizeBinding(bindingValue);
     const configuration = normalizeConfiguration(configurationValue);
@@ -160,7 +169,7 @@ export class RestrictedAppOAuthPkceClient {
     const flow = timedSignal(cancellation, this.#flowTimeoutMs);
     let callback: CallbackListener | undefined;
     try {
-      const metadata = await this.#discover(configuration, flow.signal);
+      const metadata = await this.#discover(binding, generation, configuration, flow.signal, authorizeEffect);
       const state = base64Url(this.#entropy(32));
       const verifier = base64Url(this.#entropy(32));
       const challenge = base64Url(createHash("sha256").update(verifier, "ascii").digest());
@@ -183,6 +192,7 @@ export class RestrictedAppOAuthPkceClient {
         state,
         challenge,
       });
+      await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
       try {
         await abortable(this.#openExternal(authorizationUrl.href), flow.signal);
       } catch (error) {
@@ -190,13 +200,24 @@ export class RestrictedAppOAuthPkceClient {
         throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not open the OAuth authorization page.");
       }
       const authorization = await callback.result;
-      const token = await this.#exchangeCode(metadata, configuration, callback.redirectUri, verifier, authorization.code, flow.signal);
-      this.#assertGeneration(binding, generation);
-      try {
-        await this.#store.set(binding, token);
-      } catch {
-        throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not save the OAuth connection securely.");
-      }
+      const token = await this.#exchangeCode(
+        binding,
+        generation,
+        metadata,
+        configuration,
+        callback.redirectUri,
+        verifier,
+        authorization.code,
+        flow.signal,
+        authorizeEffect,
+      );
+      await this.#storeMutation(
+        binding,
+        generation,
+        authorizeEffect,
+        (authorizeCommit) => this.#store.set(binding, token, authorizeCommit),
+        "Workspace could not save the OAuth connection securely.",
+      );
       return status(token);
     } finally {
       flow.dispose();
@@ -220,36 +241,47 @@ export class RestrictedAppOAuthPkceClient {
     configurationValue: RestrictedAppOAuthPkceConfiguration,
     headers: Headers,
     cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<void> {
     const binding = normalizeBinding(bindingValue);
     const configuration = normalizeConfiguration(configurationValue);
+    const generation = this.#generation(binding);
     let connection = await this.#read(binding, configuration);
     if (!connection) throw new RestrictedAppOAuthError("AUTH_REQUIRED", "Connect this app before it accesses the destination.");
     if (expiresSoon(connection, this.#now(), this.#refreshLeewayMs)) {
-      connection = await this.#refresh(binding, configuration, cancellation);
+      connection = await this.#refresh(binding, configuration, cancellation, authorizeEffect);
     }
+    await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
     headers.set("authorization", `${connection.tokenType} ${connection.accessToken}`);
   }
 
-  async disconnect(bindingValue: RestrictedAppOAuthBinding): Promise<boolean> {
+  async disconnect(bindingValue: RestrictedAppOAuthBinding, authorizeEffect?: RestrictedAppEffectAuthorizer): Promise<boolean> {
     const binding = normalizeBinding(bindingValue);
-    this.#advanceGeneration(binding);
-    try {
-      return await this.#store.delete(binding);
-    } catch {
-      throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not remove the OAuth connection securely.");
-    }
+    const generation = this.#advanceGeneration(binding);
+    return await this.#storeMutation(
+      binding,
+      generation,
+      authorizeEffect,
+      (authorizeCommit) => this.#store.delete(binding, authorizeCommit),
+      "Workspace could not remove the OAuth connection securely.",
+    );
   }
 
   async #refresh(
     binding: RestrictedAppOAuthBinding,
     configuration: RestrictedAppOAuthPkceConfiguration,
     cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<RestrictedAppOAuthConnection> {
     const key = bindingKey(binding);
     const active = this.#refreshes.get(key);
-    if (active) return await active;
-    const refresh = this.#performRefresh(binding, configuration, cancellation);
+    if (active) {
+      const generation = this.#generation(binding);
+      const connection = await active;
+      await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
+      return connection;
+    }
+    const refresh = this.#performRefresh(binding, configuration, cancellation, authorizeEffect);
     this.#refreshes.set(key, refresh);
     try {
       return await refresh;
@@ -262,6 +294,7 @@ export class RestrictedAppOAuthPkceClient {
     binding: RestrictedAppOAuthBinding,
     configuration: RestrictedAppOAuthPkceConfiguration,
     cancellation?: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<RestrictedAppOAuthConnection> {
     const generation = this.#generation(binding);
     const current = await this.#read(binding, configuration);
@@ -270,23 +303,24 @@ export class RestrictedAppOAuthPkceClient {
     if (!current.refreshToken) throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The OAuth connection must be renewed in the browser.");
     const flow = timedSignal(cancellation, this.#networkTimeoutMs);
     try {
-      const metadata = await this.#discover(configuration, flow.signal);
-      const response = await this.#postForm(metadata.tokenEndpoint, new URLSearchParams({
+      const metadata = await this.#discover(binding, generation, configuration, flow.signal, authorizeEffect);
+      const response = await this.#postForm(binding, generation, metadata.tokenEndpoint, new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: current.refreshToken,
         client_id: configuration.clientId,
-      }), flow.signal);
+      }), flow.signal, authorizeEffect);
       const refreshed = tokenConnection(response, configuration, this.#now(), {
         connectedAt: current.connectedAt,
         refreshToken: current.refreshToken,
         scopes: current.grantedScopes,
       });
-      this.#assertGeneration(binding, generation);
-      try {
-        await this.#store.set(binding, refreshed);
-      } catch {
-        throw new RestrictedAppOAuthError("STORAGE_FAILED", "Workspace could not rotate the OAuth connection securely.");
-      }
+      await this.#storeMutation(
+        binding,
+        generation,
+        authorizeEffect,
+        (authorizeCommit) => this.#store.set(binding, refreshed, authorizeCommit),
+        "Workspace could not rotate the OAuth connection securely.",
+      );
       return refreshed;
     } finally {
       flow.dispose();
@@ -294,12 +328,15 @@ export class RestrictedAppOAuthPkceClient {
   }
 
   async #discover(
+    binding: RestrictedAppOAuthBinding,
+    generation: number,
     configuration: RestrictedAppOAuthPkceConfiguration,
     cancellation: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<AuthorizationServerMetadata> {
     const issuer = new URL(configuration.issuer);
     const metadataUrl = authorizationServerMetadataUrl(issuer);
-    const response = await this.#getJson(metadataUrl, cancellation);
+    const response = await this.#getJson(binding, generation, metadataUrl, cancellation, authorizeEffect);
     const metadata = strictRecord(response, "OAuth authorization-server metadata");
     if (metadata.issuer !== configuration.issuer) {
       throw new RestrictedAppOAuthError("PROVIDER_UNSUPPORTED", "The OAuth provider metadata does not match its declared issuer.");
@@ -323,20 +360,23 @@ export class RestrictedAppOAuthPkceClient {
   }
 
   async #exchangeCode(
+    binding: RestrictedAppOAuthBinding,
+    generation: number,
     metadata: AuthorizationServerMetadata,
     configuration: RestrictedAppOAuthPkceConfiguration,
     redirectUri: string,
     verifier: string,
     code: string,
     cancellation: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
   ): Promise<RestrictedAppOAuthConnection> {
-    const response = await this.#postForm(metadata.tokenEndpoint, new URLSearchParams({
+    const response = await this.#postForm(binding, generation, metadata.tokenEndpoint, new URLSearchParams({
       grant_type: "authorization_code",
       code,
       client_id: configuration.clientId,
       redirect_uri: redirectUri,
       code_verifier: verifier,
-    }), cancellation);
+    }), cancellation, authorizeEffect);
     return tokenConnection(response, configuration, this.#now());
   }
 
@@ -360,14 +400,34 @@ export class RestrictedAppOAuthPkceClient {
     return normalized;
   }
 
-  async #getJson(url: URL, cancellation: AbortSignal): Promise<unknown> {
+  async #getJson(
+    binding: RestrictedAppOAuthBinding,
+    generation: number,
+    url: URL,
+    cancellation: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
+  ): Promise<unknown> {
     const network = timedSignal(cancellation, this.#networkTimeoutMs);
     try {
       let response: RestrictedAppOAuthJsonResponse;
+      await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
+      let authorityError: unknown;
+      const authorizeTransportEffect = async (): Promise<void> => {
+        try {
+          await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
+        } catch (error) {
+          authorityError = error;
+          throw error;
+        }
+      };
       try {
-        response = await this.#transport.getJson(url, { signal: network.signal, maxResponseBytes: this.#maxResponseBytes });
+        response = await this.#transport.getJson(url, {
+          signal: network.signal,
+          maxResponseBytes: this.#maxResponseBytes,
+          authorizeEffect: authorizeTransportEffect,
+        });
       } catch (error) {
-        if (error instanceof RestrictedAppOAuthError) throw error;
+        if (error === authorityError || error instanceof RestrictedAppOAuthError) throw error;
         throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not read the OAuth provider metadata.");
       }
       return successfulJson(response, this.#maxResponseBytes, "OAuth provider metadata");
@@ -376,14 +436,35 @@ export class RestrictedAppOAuthPkceClient {
     }
   }
 
-  async #postForm(url: URL, form: URLSearchParams, cancellation: AbortSignal): Promise<unknown> {
+  async #postForm(
+    binding: RestrictedAppOAuthBinding,
+    generation: number,
+    url: URL,
+    form: URLSearchParams,
+    cancellation: AbortSignal,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
+  ): Promise<unknown> {
     const network = timedSignal(cancellation, this.#networkTimeoutMs);
     try {
       let response: RestrictedAppOAuthJsonResponse;
+      await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
+      let authorityError: unknown;
+      const authorizeTransportEffect = async (): Promise<void> => {
+        try {
+          await this.#assertEffectAuthorized(binding, generation, authorizeEffect);
+        } catch (error) {
+          authorityError = error;
+          throw error;
+        }
+      };
       try {
-        response = await this.#transport.postForm(url, form, { signal: network.signal, maxResponseBytes: this.#maxResponseBytes });
+        response = await this.#transport.postForm(url, form, {
+          signal: network.signal,
+          maxResponseBytes: this.#maxResponseBytes,
+          authorizeEffect: authorizeTransportEffect,
+        });
       } catch (error) {
-        if (error instanceof RestrictedAppOAuthError) throw error;
+        if (error === authorityError || error instanceof RestrictedAppOAuthError) throw error;
         throw new RestrictedAppOAuthError("NETWORK_FAILED", "Workspace could not complete the OAuth token request.");
       }
       return successfulJson(response, this.#maxResponseBytes, "OAuth token response");
@@ -415,6 +496,41 @@ export class RestrictedAppOAuthPkceClient {
       throw new RestrictedAppOAuthError("AUTH_REQUIRED", "The OAuth connection changed before authorization completed.");
     }
   }
+
+  async #assertEffectAuthorized(
+    binding: RestrictedAppOAuthBinding,
+    expectedGeneration: number,
+    authorizeEffect?: RestrictedAppEffectAuthorizer,
+  ): Promise<void> {
+    this.#assertGeneration(binding, expectedGeneration);
+    await authorizeEffect?.();
+    this.#assertGeneration(binding, expectedGeneration);
+  }
+
+  async #storeMutation<T>(
+    binding: RestrictedAppOAuthBinding,
+    expectedGeneration: number,
+    authorizeEffect: RestrictedAppEffectAuthorizer | undefined,
+    mutate: (authorizeCommit: RestrictedAppEffectAuthorizer) => Promise<T>,
+    failureMessage: string,
+  ): Promise<T> {
+    let authorityError: unknown;
+    const authorizeCommit = async (): Promise<void> => {
+      try {
+        await this.#assertEffectAuthorized(binding, expectedGeneration, authorizeEffect);
+      } catch (error) {
+        authorityError = error;
+        throw error;
+      }
+    };
+    await authorizeCommit();
+    try {
+      return await mutate(authorizeCommit);
+    } catch (error) {
+      if (error === authorityError || error instanceof RestrictedAppOAuthError) throw error;
+      throw new RestrictedAppOAuthError("STORAGE_FAILED", failureMessage);
+    }
+  }
 }
 
 function normalizeConfiguration(value: RestrictedAppOAuthPkceConfiguration): RestrictedAppOAuthPkceConfiguration {
@@ -438,16 +554,52 @@ function normalizeConfiguration(value: RestrictedAppOAuthPkceConfiguration): Res
 }
 
 function normalizeBinding(value: RestrictedAppOAuthBinding): RestrictedAppOAuthBinding {
-  const record = strictRecord(value, "OAuth connection binding", ["workspaceId", "appId", "digest", "destinationId", "origin"]);
-  const workspaceId = identifier(record.workspaceId, "OAuth Space id", 200);
-  const appId = identifier(record.appId, "OAuth app id");
-  const destinationId = identifier(record.destinationId, "OAuth destination id");
-  if (typeof record.digest !== "string" || !/^[0-9a-f]{64}$/.test(record.digest)) configInvalid("OAuth app digest is invalid.");
-  const originUrl = publicHttpsUrl(record.origin, "OAuth destination origin");
-  if (originUrl.origin !== record.origin || originUrl.pathname !== "/" || originUrl.search || originUrl.hash) {
-    configInvalid("OAuth destination origin must be an exact public HTTPS origin.");
+  const record = strictRecord(value, "OAuth connection binding", [
+    "tenantId", "runtimeInstanceId", "featureId", "featureInstallationId", "featureRevisionDigest",
+    "declarationId", "declarationDigest", "targetIdentity", "owner",
+  ]);
+  let tenantId;
+  let runtimeInstanceId;
+  let featureInstallationId;
+  let featureRevisionDigest;
+  let declarationDigest: DeclarationDigest;
+  try {
+    tenantId = parseTenantId(record.tenantId);
+    runtimeInstanceId = parseRuntimeInstanceId(record.runtimeInstanceId);
+    featureInstallationId = parseFeatureInstallationId(record.featureInstallationId);
+    featureRevisionDigest = parseAppPlatformArtifactDigest(record.featureRevisionDigest);
+    declarationDigest = parseSha256Digest(record.declarationDigest, "OAuth declaration digest") as unknown as DeclarationDigest;
+  } catch (error) {
+    configInvalid(error instanceof Error ? error.message : "OAuth connection identity is invalid.");
   }
-  return { workspaceId, appId, digest: record.digest, destinationId, origin: originUrl.origin };
+  const featureId = identifier(record.featureId, "OAuth Feature id");
+  const declarationId = identifier(record.declarationId, "OAuth declaration id");
+  const originUrl = publicHttpsUrl(record.targetIdentity, "OAuth destination identity");
+  if (originUrl.origin !== record.targetIdentity || originUrl.pathname !== "/" || originUrl.search || originUrl.hash) {
+    configInvalid("OAuth destination identity must be an exact public HTTPS origin.");
+  }
+  const ownerRecord = strictRecord(record.owner, "OAuth connection owner", (record.owner as { kind?: unknown })?.kind === "instance"
+    ? ["kind", "runtimeInstanceId"]
+    : ["kind", "principalId"]);
+  const owner = ownerRecord.kind === "instance"
+    ? { kind: "instance" as const, runtimeInstanceId: parseRuntimeInstanceId(ownerRecord.runtimeInstanceId) }
+    : ownerRecord.kind === "principal"
+      ? { kind: "principal" as const, principalId: parsePrincipalId(ownerRecord.principalId) }
+      : configInvalid("OAuth connection owner kind is invalid.");
+  if (owner.kind === "instance" && owner.runtimeInstanceId !== runtimeInstanceId) {
+    configInvalid("OAuth instance-owned connection does not belong to its Runtime Instance.");
+  }
+  return {
+    tenantId,
+    runtimeInstanceId,
+    featureId,
+    featureInstallationId,
+    featureRevisionDigest,
+    declarationId,
+    declarationDigest,
+    targetIdentity: originUrl.origin,
+    owner,
+  };
 }
 
 export function normalizeRestrictedAppOAuthConnection(value: RestrictedAppOAuthConnection): RestrictedAppOAuthConnection {
@@ -783,7 +935,18 @@ function sameStrings(left: string[], right: string[]): boolean {
 }
 
 function bindingKey(binding: RestrictedAppOAuthBinding): string {
-  return JSON.stringify([binding.workspaceId, binding.appId, binding.digest, binding.destinationId, binding.origin]);
+  return JSON.stringify([
+    binding.tenantId,
+    binding.runtimeInstanceId,
+    binding.featureId,
+    binding.featureInstallationId,
+    binding.featureRevisionDigest,
+    binding.declarationId,
+    binding.declarationDigest,
+    binding.targetIdentity,
+    binding.owner.kind,
+    binding.owner.kind === "instance" ? binding.owner.runtimeInstanceId : binding.owner.principalId,
+  ]);
 }
 
 function boundedDuration(value: number, label: string, minimum: number, maximum: number): number {

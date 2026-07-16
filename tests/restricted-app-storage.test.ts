@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+
+import {
+  parseDataNamespaceId,
+  parseFeatureInstallationId,
+  parseRuntimeInstanceId,
+  parseTenantId,
+} from "../src/local/agent/app-platform-contract.js";
 
 import {
   FileRestrictedAppStorage,
@@ -12,7 +20,13 @@ import {
   type RestrictedAppStorageOwner,
 } from "../src/local/agent/restricted-app-storage.js";
 
-const owner: RestrictedAppStorageOwner = { workspaceId: "space-one", appId: "mail-app" };
+const owner: RestrictedAppStorageOwner = {
+  ownerClass: "instance",
+  tenantId: parseTenantId("tenant_one"),
+  runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_one"),
+  featureInstallationId: parseFeatureInstallationId("feature-installation_one"),
+  dataNamespaceId: parseDataNamespaceId("data-namespace_one"),
+};
 
 async function temporaryStore(t: test.TestContext): Promise<{
   root: string;
@@ -32,7 +46,7 @@ async function onlyStorageFile(root: string): Promise<string> {
   return join(root, shards[0]!, owners[0]!, "storage.json");
 }
 
-test("restricted app storage persists JSON values and isolates Space-and-app owners", async (t) => {
+test("restricted app storage persists JSON values and isolates Tenant and Data Namespace owners", async (t) => {
   const { root, store } = await temporaryStore(t);
   const value = {
     cursor: "message-42",
@@ -57,8 +71,8 @@ test("restricted app storage persists JSON values and isolates Space-and-app own
   assert.deepEqual(await reopened.keys(owner), ["inbox/state"]);
   assert.deepEqual(await reopened.keys(owner, "inbox/"), ["inbox/state"]);
   assert.equal((await reopened.usage(owner)).keyCount, 1);
-  assert.equal(await reopened.get({ workspaceId: "space-two", appId: "mail-app" }, "inbox/state"), undefined);
-  assert.equal(await reopened.get({ workspaceId: "space-one", appId: "calendar-app" }, "inbox/state"), undefined);
+  assert.equal(await reopened.get({ ...owner, tenantId: parseTenantId("tenant_two") }, "inbox/state"), undefined);
+  assert.equal(await reopened.get({ ...owner, dataNamespaceId: parseDataNamespaceId("data-namespace_two") }, "inbox/state"), undefined);
 });
 
 test("restricted app storage commits bounded transactions atomically with revision conflicts", async (t) => {
@@ -185,6 +199,64 @@ test("restricted app storage clear and deleteApp have distinct durable cleanup s
     keyCount: 0,
     keyLimit: restrictedAppStorageLimits.keys,
   });
+});
+
+test("restricted app storage reauthorizes immediately before an atomic commit", async (t) => {
+  const { root, store } = await temporaryStore(t);
+  await store.set(owner, "state", { value: 1 });
+  let checks = 0;
+  let revoked = false;
+  let reachedCommit!: () => void;
+  let releaseCommit!: () => void;
+  const commitReached = new Promise<void>((resolve) => { reachedCommit = resolve; });
+  const release = new Promise<void>((resolve) => { releaseCommit = resolve; });
+
+  const mutation = store.set(owner, "state", { value: 2 }, async () => {
+    checks += 1;
+    reachedCommit();
+    await release;
+    if (revoked) throw new Error("authority changed");
+  });
+  await commitReached;
+  revoked = true;
+  releaseCommit();
+
+  await assert.rejects(mutation, /authority changed/);
+  assert.equal(checks, 1);
+  assert.deepEqual(await store.get(owner, "state"), { value: 1 });
+  assert.deepEqual((await new FileRestrictedAppStorage(root).usage(owner)), {
+    revision: 1,
+    usageBytes: 21,
+    quotaBytes: restrictedAppStorageLimits.appBytes,
+    keyCount: 1,
+    keyLimit: restrictedAppStorageLimits.keys,
+  });
+});
+
+test("restricted app storage adopts the legacy Space/app store exactly once", async (t) => {
+  const { root, store } = await temporaryStore(t);
+  const legacyOwner = { workspaceId: "space-one", appId: "mail-app" };
+  const legacyHash = createHash("sha256")
+    .update("workspace-restricted-app-storage-v1\0")
+    .update(legacyOwner.workspaceId)
+    .update("\0")
+    .update(legacyOwner.appId)
+    .digest("hex");
+  const legacyDirectory = join(root, legacyHash.slice(0, 2), legacyHash);
+  await mkdir(legacyDirectory, { recursive: true });
+  await writeFile(join(legacyDirectory, "storage.json"), JSON.stringify({
+    schemaVersion: 1,
+    ...legacyOwner,
+    revision: 4,
+    usageBytes: Buffer.byteLength(JSON.stringify(["state", { preserved: true }]), "utf8"),
+    entries: [{ key: "state", value: { preserved: true } }],
+  }), "utf8");
+
+  assert.equal(await store.migrateLegacyOwner(legacyOwner, owner), true);
+  assert.deepEqual(await store.get(owner, "state"), { preserved: true });
+  assert.equal((await store.usage(owner)).revision, 4);
+  await assert.rejects(readFile(join(legacyDirectory, "storage.json")), { code: "ENOENT" });
+  assert.equal(await store.migrateLegacyOwner(legacyOwner, owner), false);
 });
 
 test("restricted app storage writes one atomic regular file and fails closed on corruption", async (t) => {

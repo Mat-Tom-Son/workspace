@@ -414,6 +414,7 @@ export interface RestrictedAppReview {
   packageName: string;
   version: string;
   digest: string;
+  artifactDigest: string;
   manifest: RestrictedAppManifest;
   fileCount: number;
   totalBytes: number;
@@ -421,6 +422,14 @@ export interface RestrictedAppReview {
 
 export interface RestrictedAppInstalled extends RestrictedAppReview {
   workspaceId: string;
+  projectId: string;
+  tenantId: string;
+  principalId: string;
+  runtimeInstanceId: string;
+  runtimeInstanceKind: "development";
+  featureInstallationId: string;
+  dataNamespaceId: string;
+  authority: AppPlatformAuthorityStamp;
   networkGrants: string[];
   fileGrants: RestrictedAppFileGrant[];
   notificationGrants: string[];
@@ -438,14 +447,44 @@ export interface RestrictedAppAutomationState {
 }
 
 export interface RestrictedAppAutomationRunReceipt {
+  receiptId: string;
+  verification: "captured" | "legacy-unverified";
   runId: string;
   automationId: string;
   reason: "scheduled" | "manual" | "resume";
   scheduledAt: string;
   startedAt: string;
   finishedAt: string;
-  outcome: "success" | "failure" | "skipped" | "cancelled";
+  outcome: "success" | "failure" | "skipped" | "cancelled" | "interrupted";
   error?: string;
+  kind?: "job";
+  tenantId?: string;
+  runtimeInstanceId?: string;
+  featureInstallationId?: string;
+  featureRevisionDigest?: string;
+  dataNamespaceId?: string;
+  effectivePrincipal?: AppPlatformEffectivePrincipal;
+  authority?: AppPlatformAuthorityStamp;
+  acceptedAt?: string;
+  state?: "succeeded" | "failed" | "skipped" | "cancelled" | "expired";
+  occurrenceId?: string;
+  attemptId?: string;
+}
+
+export interface AppPlatformEffectivePrincipal {
+  principalId: string;
+  kind: "human" | "agent" | "service" | "system";
+  realm: "local" | "cloud";
+}
+
+export interface AppPlatformAuthorityStamp {
+  runtimeInstanceGeneration: string;
+  featureInstallationGeneration: string;
+  grantGeneration: string;
+  connectionGeneration: string;
+  jobGeneration: string;
+  principalGeneration: string;
+  dataGeneration: string;
 }
 
 export interface RestrictedAppViewRequest {
@@ -478,6 +517,7 @@ export interface RestrictedAppProposal {
 
 export interface RestrictedAppConnectionStatus {
   destinationId: string;
+  owner: "instance" | "principal";
   kind: "api-key" | "bearer" | "basic" | "oauth2-pkce" | "none" | null;
   configured: boolean;
 }

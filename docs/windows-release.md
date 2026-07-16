@@ -95,12 +95,12 @@ GitHub's release API exposes asset names, sizes, URLs, and SHA-256 digests for a
 
 When possible, keep a lower installed version for the final smoke test:
 
-1. Confirm the installed version and `resources/app-update.yml`. Record one installed version-2 restricted app's reviewed digest, grants, connection status, automation settings and recent receipt count, and a harmless local-storage value when available.
+1. Confirm the installed version and `resources/app-update.yml`. Record one installed version-2 restricted app's reviewed digest, grants, connection status, automation settings and recent receipt count, and a harmless local-storage value when available. For a 0.2.9-or-earlier connection, use only a disposable credential and expect the stronger identity migration below to require explicit reconnect.
 2. Open **Help > Check for Updates…**.
 3. Confirm the new version is offered without a missing-feed or network error.
 4. Choose **Update now** to download it.
 5. Confirm Workspace performs its update-specific shutdown and relaunch after the download. If a ready-update prompt appears instead, exercise **Restart now** or choose **Later** and then explicitly quit the app.
-6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, Pi state, version-2 restricted-app installs and reviewed digests, explicit grants, encrypted connection status, automation settings and receipts, and local app storage. Reopen the app's owning Space and verify its rail surface and any persistent Space-owned tab still resolve to that Space.
+6. Confirm the restarted installed application reports the new version and preserves its Spaces, Chats, preferences, Pi state, version-2 restricted-app installs and reviewed digests, explicit grants, automation settings, receipts, and local app storage. Reopen the app's owning Space and verify its rail surface and any persistent Space-owned tab still resolve to that Space. Every connection stored by 0.2.9 or earlier must appear disconnected; the first explicit reconnect replaces the legacy store and discards its ambiguous bindings rather than assigning them the new Tenant/runtime/installation authority. Existing receipts must remain visible as `legacy-unverified`, not be rewritten with invented authority facts.
 
 Do not silently install over a user's test environment merely to verify a release; leave the lower installed version available when the user is meant to exercise the update themselves.
 

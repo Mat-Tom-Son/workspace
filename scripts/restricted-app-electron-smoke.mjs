@@ -13,6 +13,19 @@ import {
 import { stageRestrictedAppPackage } from "../dist/desktop/src/local/agent/restricted-app-package.js";
 import { FileRestrictedAppStorage } from "../dist/desktop/src/local/agent/restricted-app-storage.js";
 import { RestrictedAppNotificationBroker } from "../dist/desktop/src/local/agent/restricted-app-notifications.js";
+import {
+  RestrictedAppError,
+  RestrictedAppNetworkBroker,
+} from "../dist/desktop/src/local/agent/restricted-app-connections.js";
+import {
+  createAuthorityStamp,
+  createDataNamespaceId,
+  createFeatureInstallationId,
+  createPrincipalId,
+  createProjectId,
+  createRuntimeInstanceId,
+  createTenantId,
+} from "../dist/desktop/src/local/agent/app-platform-contract.js";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -67,6 +80,24 @@ async function runSmoke() {
     const receipt = await stageRestrictedAppPackage(sourceRoot, stagingRoot);
     await mark("package-staged");
     const connections = new EmptyConnections();
+    const networkOwners = [];
+    let lateNetworkEffects = 0;
+    const productionNetworkBroker = new RestrictedAppNetworkBroker({ credentials: connections });
+    const networkBroker = {
+      async request(owner, manifest, request, signal, authorizeEffect) {
+        if (request?.destinationId === "principal-probe") {
+          networkOwners.push(structuredClone(owner));
+          throw new RestrictedAppError("NETWORK_DENIED", "Principal attribution probe completed.");
+        }
+        if (request?.destinationId === "late-effect") {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 180));
+          await authorizeEffect?.();
+          lateNetworkEffects += 1;
+          return { status: 204, headers: {}, body: "", encoding: "utf8" };
+        }
+        return await productionNetworkBroker.request(owner, manifest, request, signal, authorizeEffect);
+      },
+    };
     const storage = new FileRestrictedAppStorage(join(sandbox, "app-data"));
     const tabCommands = [];
     const shownNotifications = [];
@@ -82,6 +113,7 @@ async function runSmoke() {
     });
     host = new RestrictedAppHost({
       connections,
+      networkBroker,
       storage,
       resolveWorkspaceRoot: (workspaceId) => workspaceId === "ws-electron-smoke" ? workspaceRoot : undefined,
       preloadPath: join(rootDir, "dist", "desktop", "desktop", "src", "restricted-app-preload.cjs"),
@@ -91,11 +123,20 @@ async function runSmoke() {
     });
     const descriptor = {
       workspaceId: "ws-electron-smoke",
+      projectId: createProjectId(),
+      tenantId: createTenantId(),
+      principalId: createPrincipalId(),
+      servicePrincipalId: createPrincipalId(),
+      runtimeInstanceId: createRuntimeInstanceId(),
+      featureInstallationId: createFeatureInstallationId(),
+      dataNamespaceId: createDataNamespaceId(),
+      authority: createAuthorityStamp(),
       packageName: receipt.packageName,
       version: receipt.version,
       digest: receipt.digest,
+      artifactDigest: receipt.artifactDigest,
       manifest: receipt.manifest,
-      networkGrants: ["escape"],
+      networkGrants: ["escape", "principal-probe", "late-effect"],
       fileGrants: [{ id: "exports", declarationId: "exports", root: "exports", access: "read-write" }],
       notificationGrants: ["automation-update", "post-return", "suspend-probe"],
       automations: [{ id: "smoke-automation", enabled: true }],
@@ -105,6 +146,21 @@ async function runSmoke() {
       updatedAt: "2026-07-13T00:00:00.000Z",
       stagedRoot: receipt.stagedRoot,
     };
+    const storageOwner = {
+      ownerClass: "instance",
+      tenantId: descriptor.tenantId,
+      runtimeInstanceId: descriptor.runtimeInstanceId,
+      featureInstallationId: descriptor.featureInstallationId,
+      dataNamespaceId: descriptor.dataNamespaceId,
+    };
+    host.syncAuthority([{
+      workspaceId: descriptor.workspaceId,
+      appId: descriptor.manifest.id,
+      digest: descriptor.digest,
+      runtimeInstanceId: descriptor.runtimeInstanceId,
+      featureInstallationId: descriptor.featureInstallationId,
+      authority: descriptor.authority,
+    }]);
 
     const probe = await host.invoke(descriptor, "probe", { text: "Hello, 🌍 — 你好", escapeUrl });
     await mark(`probe-complete ${JSON.stringify(probe)}`);
@@ -141,8 +197,20 @@ async function runSmoke() {
     assert.equal(hits, 0);
     await mark("recovery-complete");
 
-    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:00.000Z"));
-    assert.deepEqual(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "automation"), {
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:00.000Z", "manual", {
+      principalId: descriptor.principalId,
+      kind: "human",
+      realm: "local",
+    }));
+    assert.equal(networkOwners.at(-1)?.effectivePrincipalId, descriptor.principalId, "manual work reaches the broker as the human Principal");
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:15.000Z", "manual", {
+      principalId: descriptor.principalId,
+      kind: "human",
+      realm: "local",
+    }));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    assert.equal(lateNetworkEffects, 0, "unawaited network work cannot outlive its exact worker operation");
+    assert.deepEqual(await storage.get(storageOwner, "automation"), {
       runId: "smoke-2026-07-13T00:00:00.000Z",
       automationId: "smoke-automation",
       handler: "smoke",
@@ -159,11 +227,16 @@ async function runSmoke() {
     }]);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
     assert.equal(shownNotifications.length, 1, "notification calls after handleAutomation returns are denied");
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "worker-storage-events"), 0);
-    const suspendedRun = host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:30.000Z"));
+    assert.equal(await storage.get(storageOwner, "worker-storage-events"), 0);
+    const suspendedRun = host.runAutomation(descriptor, automationEvent("2026-07-13T00:00:30.000Z", "scheduled", {
+      principalId: descriptor.servicePrincipalId,
+      kind: "service",
+      realm: "local",
+    }));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
     host.suspend();
     await assert.rejects(suspendedRun, (error) => error?.code === "APP_ERROR");
+    assert.equal(networkOwners.at(-1)?.effectivePrincipalId, descriptor.servicePrincipalId, "scheduled work reaches the broker as the service Principal");
     assert.equal(shownNotifications.length, 1, "suspend denies an in-flight automation notification");
     host.resume();
     await mark("automation-complete");
@@ -213,12 +286,16 @@ async function runSmoke() {
         state: { directFetchBlocked: true, stored: "visible-ui", file: "host-brokered" },
       },
     }]);
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "ui-notification-denied"), true);
-    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:01:00.000Z"));
+    assert.equal(await storage.get(storageOwner, "ui-notification-denied"), true);
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:01:00.000Z", "scheduled", {
+      principalId: descriptor.servicePrincipalId,
+      kind: "service",
+      realm: "local",
+    }));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "active-storage-event"), true, "automation storage changes reach the active owning UI");
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "reset-storage-event"), true, "more than 128 coalesced keys produce a bounded reset hint");
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "automation-storage-event-count"), 1, "coalesced automation mutations emit once");
+    assert.equal(await storage.get(storageOwner, "active-storage-event"), true, "automation storage changes reach the active owning UI");
+    assert.equal(await storage.get(storageOwner, "reset-storage-event"), true, "more than 128 coalesced keys produce a bounded reset hint");
+    assert.equal(await storage.get(storageOwner, "automation-storage-event-count"), 1, "coalesced automation mutations emit once");
     host.layoutUi(parent.webContents.id, {
       mountId,
       placement: "navigator",
@@ -231,14 +308,19 @@ async function runSmoke() {
       theme: "dark",
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-    assert.deepEqual(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "inactive-powers"), {
+    assert.deepEqual(await storage.get(storageOwner, "inactive-powers"), {
       fileDenied: true,
       networkDenied: true,
     });
     assert.equal(hits, 0, "an inactive app view must not retain file or network powers");
-    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:02:00.000Z"));
+    await host.runAutomation(descriptor, automationEvent("2026-07-13T00:02:00.000Z", "resume", {
+      principalId: descriptor.servicePrincipalId,
+      kind: "service",
+      realm: "local",
+    }));
+    assert.equal(networkOwners.at(-1)?.effectivePrincipalId, descriptor.servicePrincipalId, "resumed work reaches the broker as the service Principal");
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    assert.equal(await storage.get({ workspaceId: descriptor.workspaceId, appId: descriptor.manifest.id }, "inactive-storage-event"), undefined, "inactive app views receive no storage event or replay");
+    assert.equal(await storage.get(storageOwner, "inactive-storage-event"), undefined, "inactive app views receive no storage event or replay");
     await host.unmountUi(parent.webContents.id, mountId);
     parent.destroy();
     await mark("ui-complete");
@@ -372,6 +454,12 @@ export async function handleAction(action, input) {
 
 export async function handleAutomation(event) {
   if (event.automationId !== "smoke-automation" || event.handler !== "smoke") throw new Error("Unknown automation.");
+  if (event.scheduledAt === "2026-07-13T00:00:15.000Z") {
+    void globalThis.workspaceRestrictedApp.request({ destinationId: "late-effect", method: "POST", path: "/commit" }).catch(() => {});
+    return;
+  }
+  try { await globalThis.workspaceRestrictedApp.request({ destinationId: "principal-probe", method: "GET", path: "/probe" }); }
+  catch {}
   if (event.scheduledAt === "2026-07-13T00:00:30.000Z") {
     await new Promise((resolve) => setTimeout(resolve, 200));
     await globalThis.workspaceRestrictedApp.notifications.show({ permissionId: "suspend-probe" });
@@ -461,7 +549,7 @@ function smokeManifest(loopbackPort) {
       handler: "smoke",
       trigger: { kind: "interval", intervalMinutes: 30 },
       permissions: {
-        network: [],
+        network: ["principal-probe", "late-effect"],
         files: ["exports"],
         notifications: ["automation-update", "post-return", "suspend-probe"],
       },
@@ -477,19 +565,22 @@ function smokeManifest(loopbackPort) {
       ],
       network: [
         { id: "mail-api", target: { kind: "public-https", origin: "https://mail.example.com" }, methods: ["GET"], auth: [{ kind: "none" }] },
+        { id: "principal-probe", target: { kind: "public-https", origin: "https://principal-probe.example.com" }, methods: ["GET"], auth: [{ kind: "none" }] },
+        { id: "late-effect", target: { kind: "public-https", origin: "https://late-effect.example.com" }, methods: ["POST"], auth: [{ kind: "none" }] },
         { id: "escape", target: { kind: "loopback-http", host: "127.0.0.1", port: loopbackPort }, methods: ["GET"], auth: [{ kind: "none" }] },
       ],
     },
   };
 }
 
-function automationEvent(scheduledAt) {
+function automationEvent(scheduledAt, reason, effectivePrincipal) {
   return {
     runId: `smoke-${scheduledAt}`,
     automationId: "smoke-automation",
     handler: "smoke",
-    reason: "manual",
+    reason,
     scheduledAt,
+    effectivePrincipal,
   };
 }
 
