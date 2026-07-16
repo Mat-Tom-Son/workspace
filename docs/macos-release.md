@@ -58,6 +58,8 @@ Workspace 0.2.8 to 0.2.9 and 0.2.9 to 0.2.10 passed this proof on July 15, 2026.
 
 Workspace 0.2.10 to 0.2.11 passed the same proof on July 15, 2026. The installed 0.2.10 app offered 0.2.11 from **Workspace > Check for Updates...**, downloaded a ZIP whose SHA-256 matched the published GitHub digest `adeb9fac93452443d72364b85e2bc7ef07b2f0f1b09025aaa8dd302c0b3da6b7`, replaced itself, and relaunched as 0.2.11. Installed-bundle verification passed, the registered Space retained the same identity, application-menu Quit and Command-Q exited on their first request, the Dock/system termination path exited, and closing then reopening the last window reused the same process. No SecurityAgent or Keychain dialog appeared.
 
+Workspace 0.2.11 to 0.3.0 passed the same proof on July 16, 2026. The installed 0.2.11 app offered 0.3.0 from **Workspace > Check for Updates...**, downloaded a ZIP whose SHA-256 matched the published GitHub digest `d8bb801498c2823f54b10340395b0ee2428b3154c33c0b4b49658106c269bcea`, replaced itself, and relaunched as 0.3.0. Installed-bundle verification passed; the registered Space retained the same identity and its 25-capability projection remained unchanged. Native About reported 0.3.0, the update command reported the app current, application-menu Quit, Command-Q, and the Dock/system termination path exited, and closing then reopening the last window reused the same process. No SecurityAgent or Keychain dialog appeared.
+
 ## Recovery rules
 
 - Never replace assets in a published release. Correct a bad release with a higher shared version.
