@@ -50,8 +50,9 @@ test("macOS CLI shim uses the same atomic bounded protocol-v1 handoff", async ()
   for (const field of ["protocolVersion", "id", "argv", "cwd", "createdAt"]) {
     assert.match(jxaHelper, new RegExp(`\\b${field}:`), `request must include ${field}`);
   }
-  assert.match(jxaHelper, /Library\/Application Support\/Workspace/);
-  assert.match(jxaHelper, /WORKSPACE_DESKTOP_USER_DATA_DIR/);
+  assert.match(jxaHelper, /Library\/Application Support\/\$\{defaultStateName\}/);
+  assert.match(jxaHelper, /WORKSPACE_CLI_STATE_DIR/);
+  assert.match(jxaHelper, /Workspace Local Smoke/);
   assert.match(jxaHelper, /WORKSPACE_CLI_APP/);
   assert.match(jxaHelper, /WORKSPACE_CLI_TIMEOUT_MS/);
   assert.match(jxaHelper, /moveItemAtPathToPathError/);
@@ -60,7 +61,8 @@ test("macOS CLI shim uses the same atomic bounded protocol-v1 handoff", async ()
   assert.match(jxaHelper, /fileHandleWithStandardError/);
   assert.match(jxaHelper, /\$\.exit\(exitCode\)/);
   const desktopMain = await read("desktop/src/main.ts");
-  assert.match(desktopMain, /process\.env\.WORKSPACE_DESKTOP_USER_DATA_DIR = app\.getPath\("userData"\)/);
+  assert.match(desktopMain, /process\.env\.WORKSPACE_CLI_STATE_DIR = app\.getPath\("userData"\)/);
+  assert.doesNotMatch(desktopMain, /process\.env\.WORKSPACE_DESKTOP_(?:USER_DATA|STATE)_DIR\s*=/);
 });
 
 test("Windows CLI shim uses an atomic bounded protocol-v1 handoff", async () => {
@@ -78,7 +80,7 @@ test("Windows CLI shim uses an atomic bounded protocol-v1 handoff", async () => 
   for (const field of ["protocolVersion", "id", "argv", "cwd", "createdAt"]) {
     assert.match(powerShellShim, new RegExp(`\\b${field}\\s*=`), `request must include ${field}`);
   }
-  assert.match(powerShellShim, /'Workspace\\cli'/);
+  assert.match(powerShellShim, /\$cliRoot\s*=\s*Join-Path\s+\$stateDirectory\s+'cli'/);
   assert.match(powerShellShim, /'requests'/);
   assert.match(powerShellShim, /'responses'/);
   assert.match(powerShellShim, /CurrentFileSystemLocation\.ProviderPath/);
@@ -90,6 +92,9 @@ test("Windows CLI shim uses an atomic bounded protocol-v1 handoff", async () => 
   assert.match(powerShellShim, /\[IO\.File\]::Move\(\$temporaryRequestPath,\s*\$requestPath\)/);
   assert.match(powerShellShim, /Start-Process[\s\S]*?'--workspace-cli-request'[\s\S]*?-WindowStyle Hidden/);
   assert.match(powerShellShim, /WORKSPACE_CLI_APP/);
+  assert.match(powerShellShim, /WORKSPACE_CLI_STATE_DIR/);
+  assert.match(powerShellShim, /Uninstall Workspace\.exe/);
+  assert.match(powerShellShim, /Workspace Development/);
   assert.match(powerShellShim, /WORKSPACE_CLI_TIMEOUT_MS/);
   assert.match(powerShellShim, /ElapsedMilliseconds\s+-ge\s+\$timeoutMs/);
   assert.match(powerShellShim, /\[Console\]::Out\.Write\(\[string\]\$response\.stdout\)/);

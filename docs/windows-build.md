@@ -17,6 +17,8 @@ Use the smallest lane that exercises the layer you changed:
 
 During UI work, `npm run local:dev` is the normal live-reload loop. Run independent checks in parallel when the machine has capacity. Do not repeatedly run `desktop:make` to validate a renderer-only copy or styling change; promote the change through the later lanes once it is ready to hand off.
 
+The `local:api`, `local:dev`, non-packaged Electron, and every uninstalled Windows package directory default to `%APPDATA%\Workspace Development`, separate from the installed product's `%APPDATA%\Workspace` state. That includes the feed-less smoke output and the feed-bearing `win-unpacked` directory created by `desktop:make`: updater metadata does not prove that a package has been installed. Only an NSIS-installed app with its installer-owned sibling uninstaller selects production state, including when the person chose a custom installation directory. Use `WORKSPACE_STATE_DIR` for the local API or `WORKSPACE_DESKTOP_STATE_DIR` for Electron only as an explicit override for a disposable test or migration state tree; ordinary development and unpacked-package QA must not advance schemas in installed-user data. Packaged shell children receive the distinct `WORKSPACE_CLI_STATE_DIR` broker root, so CLI routing does not masquerade as consent to reuse desktop state.
+
 The lanes are cumulative confidence, not interchangeable artifacts. A passing development server does not verify ASAR/package paths, and an unpacked app does not verify the NSIS updater output. The retained `npm run desktop:package` command creates the slower Forge package and is useful only when diagnosing or changing that alternate lane; routine packaged QA should use `desktop:package:smoke` because it shares Electron Builder configuration with the release.
 
 Electron Builder's unpacked `--dir` lane does not generate `resources/app-update.yml`. Workspace therefore keeps updater controls disabled in that smoke package instead of presenting a missing-feed error. The NSIS `desktop:make` lane and the tagged GitHub build are the updater verification boundary.
@@ -77,7 +79,7 @@ Use Node 22.19.0 or newer. On the primary development workstation, `build-signed
 
 ## Packaged QA checklist
 
-- Launch the exact `win-unpacked` binary rather than an older installed copy and confirm **About Workspace** reports the candidate version.
+- Launch the exact `win-unpacked` binary rather than an older installed copy and confirm **About Workspace** reports the candidate version. It must use `%APPDATA%\Workspace Development` even when the release candidate contains `app-update.yml`; install through NSIS for any test that intentionally requires production state.
 - Exercise Files, Capabilities, Chats, Library, History, Settings, tabs, native menus, close-to-tray, and background-turn continuity.
 - Confirm the `desktop:prepare` output reports a passing restricted-app Electron smoke. Treat a skipped, mocked, or Node-only substitute as a failed release gate.
 - In a disposable Space, add the checked-in restricted Connected inbox example through the advanced local-preview path. Confirm adding it grants no network destination, Space file, notification category, connection, or automation schedule; then exercise its rail navigator, persistent Space-owned tab, storage refresh, and explicit grant/revoke controls.

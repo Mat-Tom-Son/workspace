@@ -27,6 +27,7 @@ import {
 } from "../src/local/agent/app-platform-contract.js";
 import { FileRestrictedAppStorage, type RestrictedAppStorageOwner } from "../src/local/agent/restricted-app-storage.js";
 import { RestrictedAppNotificationBroker } from "../src/local/agent/restricted-app-notifications.js";
+import { RestrictedAppRegistryVersionUnsupportedError } from "../src/local/agent/restricted-app-registry-error.js";
 import {
   RestrictedAppOAuthError,
   RestrictedAppOAuthPkceClient,
@@ -1571,6 +1572,29 @@ test("RestrictedAppService fails closed when its durable registry is corrupt", a
       RestrictedAppService.create({ rootPath }),
       /could not read the restricted app registry/i,
     );
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("RestrictedAppService identifies a registry written by a newer Workspace without rewriting it", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-newer-registry-"));
+  const rootPath = join(sandbox, "restricted-apps");
+  const registryPath = join(rootPath, "registry.json");
+  const newerRegistry = `${JSON.stringify({ schemaVersion: 5, futureState: true }, null, 2)}\n`;
+  try {
+    await mkdir(rootPath, { recursive: true });
+    await writeFile(registryPath, newerRegistry, "utf8");
+    await assert.rejects(
+      RestrictedAppService.create({ rootPath }),
+      (error) => {
+        assert.ok(error instanceof RestrictedAppRegistryVersionUnsupportedError);
+        assert.equal(error.actualVersion, 5);
+        assert.equal(error.supportedVersion, 4);
+        return true;
+      },
+    );
+    assert.equal(await readFile(registryPath, "utf8"), newerRegistry);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }

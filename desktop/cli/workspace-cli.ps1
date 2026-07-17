@@ -98,6 +98,15 @@ try {
     throw "Workspace executable was not found at $appPath."
   }
 
+  $stateDirectory = if ([string]::IsNullOrWhiteSpace($env:WORKSPACE_CLI_STATE_DIR)) {
+    $uninstallerPath = Join-Path ([IO.Path]::GetDirectoryName($appPath)) 'Uninstall Workspace.exe'
+    $stateName = if ([IO.File]::Exists($uninstallerPath)) { 'Workspace' } else { 'Workspace Development' }
+    Join-Path $appData $stateName
+  } else {
+    $env:WORKSPACE_CLI_STATE_DIR
+  }
+  $stateDirectory = [IO.Path]::GetFullPath($stateDirectory)
+
   $timeoutMs = 120000
   if (-not [string]::IsNullOrWhiteSpace($env:WORKSPACE_CLI_TIMEOUT_MS)) {
     $configuredTimeout = 0
@@ -108,7 +117,7 @@ try {
   }
 
   $requestId = [Guid]::NewGuid().ToString('D')
-  $cliRoot = Join-Path $appData 'Workspace\cli'
+  $cliRoot = Join-Path $stateDirectory 'cli'
   $requestDirectory = Join-Path $cliRoot 'requests'
   $responseDirectory = Join-Path $cliRoot 'responses'
   [IO.Directory]::CreateDirectory($requestDirectory) | Out-Null

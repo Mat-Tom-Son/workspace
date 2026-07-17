@@ -94,6 +94,7 @@ import {
   LocalAppReleaseStoreError,
   type LocalAppReleaseStoreVerifiedProjection,
 } from "./local-app-release-store.js";
+import { RestrictedAppRegistryVersionUnsupportedError } from "./restricted-app-registry-error.js";
 export interface RestrictedAppReview {
   packageName: string;
   version: string;
@@ -2735,7 +2736,7 @@ async function readRegistry(
       needsWrite: true,
     };
   }
-  throw new Error("Restricted app registry version is unsupported.");
+  throw new RestrictedAppRegistryVersionUnsupportedError(record.schemaVersion, 4);
 }
 
 async function syncRestrictedAppDirectory(path: string): Promise<void> {

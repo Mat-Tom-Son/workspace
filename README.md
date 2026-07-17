@@ -139,6 +139,8 @@ npm run desktop:make:mac
 
 Use `npm run local:dev` for the fast UI loop, `check` and `test` for normal implementation feedback, and `desktop:prepare` for desktop integration. See [Windows builds](docs/windows-build.md) and [macOS builds](docs/macos-build.md) for platform packaging and release gates.
 
+`npm run local:api`, `npm run local:dev`, non-packaged Electron runs, and Windows package directories that have not been installed keep development data in a dedicated platform application-data directory by default (`%APPDATA%\Workspace Development` on Windows, `~/Library/Application Support/Workspace Development` on macOS, or the corresponding XDG configuration directory on Linux). This includes both feed-less smoke output and the feed-bearing `win-unpacked` release candidate: only an NSIS-installed Windows app with its installer-owned uninstaller selects the installed product's `Workspace` state. Set `WORKSPACE_STATE_DIR` for the local API or `WORKSPACE_DESKTOP_STATE_DIR` for Electron only when you intentionally want a specific state tree, such as an isolated migration fixture. `WORKSPACE_CLI_STATE_DIR` is the separate exact broker root used by packaged CLI shims and is propagated only to child commands.
+
 CI runs `check`, `test`, and `desktop:package:smoke`, so every branch verifies the same unpacked Electron Builder layout used by the release lane without paying the NSIS cost.
 
 ### Developing with Codex or Claude Code
@@ -158,7 +160,7 @@ In-process driver runs use temporary application state unless `WORKSPACE_STATE_D
 
 The Windows installer includes a `workspace` command and adds its package-root `bin` directory to the current user's `PATH`. The Mac app carries the same command under `Workspace.app/Contents/bin`; Workspace adds that directory to child processes so Pi shell tools can use it. A DMG does not silently edit shell profiles, so exposing the command to unrelated Terminal sessions remains an explicit installation action.
 
-The command uses a bounded protocol-v1 handoff under the platform application-data directory: `%APPDATA%\Workspace\cli` on Windows and `~/Library/Application Support/Workspace/cli` on macOS. It writes one atomic request, starts or contacts the packaged app, returns stdout, stderr, and the exit code, and removes the response. Platform helpers remain outside `app.asar`, and Electron's `RunAsNode` fuse stays disabled.
+The command uses a bounded protocol-v1 handoff under the owning app's platform application-data directory. Installed production apps use `%APPDATA%\Workspace\cli` on Windows and `~/Library/Application Support/Workspace/cli` on macOS; uninstalled Windows packages use `%APPDATA%\Workspace Development\cli`, and the separately identified Mac smoke app uses its own directory. It writes one atomic request, starts or contacts the packaged app, returns stdout, stderr, and the exit code, and removes the response. Platform helpers remain outside `app.asar`, Electron's `RunAsNode` fuse stays disabled, and the CLI-only state root cannot opt another desktop process into the parent's data.
 
 ```powershell
 workspace context --json

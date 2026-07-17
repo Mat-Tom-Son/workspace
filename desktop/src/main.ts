@@ -56,6 +56,17 @@ import { createRestrictedAppOAuthClient } from "./restricted-app-oauth.js";
 import { RestrictedAppHost, restrictedAppProtocol } from "./restricted-app-host.js";
 import { SecureSettingsStore } from "./settings.js";
 import { WorkspaceUpdater, type WorkspaceUpdateStatus } from "./updater.js";
+import {
+  workspaceDesktopUserDataPath,
+  workspaceDesktopStateOverride,
+  workspaceDesktopUsesInstalledProductData,
+} from "./user-data-path.js";
+import {
+  latestWorkspaceReleaseUrl,
+  runWorkspaceStartupRecovery,
+  workspaceStartupRecoveryPlan,
+  type WorkspaceStartupRecoveryPlan,
+} from "./startup-recovery.js";
 import { AppLifetimeResource } from "./app-lifetime-resource.js";
 import {
   nativeFileMenuItems,
@@ -132,6 +143,7 @@ let quittingForUpdate = false;
 let activeAgentTurns = 0;
 let powerBlockerId: number | null = null;
 let workspaceUpdater: WorkspaceUpdater | null = null;
+let startupRecoveryPromise: Promise<void> | null = null;
 let shutdownPromise: Promise<void> | null = null;
 let rendererProtocolRegistered = false;
 let ipcRegistered = false;
@@ -453,9 +465,54 @@ async function quitAfterCliRequest(): Promise<void> {
 
 function reportStartupError(error: unknown): void {
   console.error(`${productName} could not start: ${errorMessage(error)}`);
+  const recovery = workspaceStartupRecoveryPlan(error);
+  if (interactiveRequested && recovery) {
+    startupRecoveryPromise ??= recoverFromNewerLocalState(recovery).catch((recoveryError) => {
+      console.error(`${productName} update recovery failed: ${errorMessage(recoveryError)}`);
+      dialog.showErrorBox(
+        `${productName} update recovery failed`,
+        "Workspace could not complete update recovery. Your Spaces and app data are still safe.",
+      );
+      quitting = true;
+      app.quit();
+    });
+    return;
+  }
   if (interactiveRequested) dialog.showErrorBox(`${productName} could not start`, errorMessage(error));
   quitting = true;
   app.quit();
+}
+
+async function recoverFromNewerLocalState(plan: WorkspaceStartupRecoveryPlan): Promise<void> {
+  await runWorkspaceStartupRecovery(plan, {
+    showDialog: async (prompt) => (await dialog.showMessageBox({
+      type: prompt.type,
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: prompt.buttons,
+      defaultId: prompt.defaultId,
+      cancelId: prompt.cancelId,
+      noLink: true,
+    })).response,
+    checkForUpdate: async () => {
+      configureUpdater();
+      const checked = await checkForUpdates(true);
+      if (checked.phase === "error") throw new Error(checked.error ?? checked.message);
+      return checked.phase === "available" ? checked.availableVersion : null;
+    },
+    downloadAndInstall: async () => {
+      if (!workspaceUpdater) return false;
+      let status = await workspaceUpdater.updateNow();
+      if (status.phase === "ready") status = await workspaceUpdater.install();
+      return status.phase === "installing";
+    },
+    openReleases: () => openExternal(latestWorkspaceReleaseUrl),
+    quit: () => {
+      quitting = true;
+      app.quit();
+    },
+  });
 }
 
 function ensureInteractiveLocalApi(): Promise<Awaited<ReturnType<typeof startLocalApi>>> {
@@ -1091,8 +1148,18 @@ async function checkForUpdatesFromMenu(): Promise<void> {
 }
 
 function configureStableUserDataPath(): void {
-  const override = process.env.WORKSPACE_DESKTOP_USER_DATA_DIR?.trim();
-  const target = override ? resolve(override) : join(app.getPath("appData"), productName);
+  const useInstalledProductData = workspaceDesktopUsesInstalledProductData({
+    executablePath: process.execPath,
+    productName,
+    isPackaged: app.isPackaged,
+    fileExists: existsSync,
+  });
+  const target = workspaceDesktopUserDataPath({
+    appDataPath: app.getPath("appData"),
+    productName,
+    useInstalledProductData,
+    override: workspaceDesktopStateOverride(process.env),
+  });
   if (app.getPath("userData") !== target) app.setPath("userData", target);
 }
 
@@ -1113,7 +1180,7 @@ function configurePackagedCliEnvironment(): void {
   // Agent shell tools inherit this process environment. Pinning the executable
   // makes their CLI calls address this exact installed Workspace build.
   process.env.WORKSPACE_CLI_APP = process.execPath;
-  process.env.WORKSPACE_DESKTOP_USER_DATA_DIR = app.getPath("userData");
+  process.env.WORKSPACE_CLI_STATE_DIR = app.getPath("userData");
 }
 
 function createFolderGrant(rootPath: string): string {

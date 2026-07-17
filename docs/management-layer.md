@@ -86,7 +86,7 @@ The current CLI is intentionally content-free and read-only. It returns Space na
 
 The public command does not run Electron as Node; the `RunAsNode` fuse remains disabled. Instead it uses a bounded protocol-v1 file handoff:
 
-1. The shim writes an atomic UUID-named request beneath the platform profile (`%APPDATA%\Workspace\cli\requests` on Windows or `~/Library/Application Support/Workspace/cli/requests` on macOS) containing the arguments, current working directory, protocol version, and timestamp.
+1. The shim writes an atomic UUID-named request beneath the owning app's platform profile containing the arguments, current working directory, protocol version, and timestamp. An installed production app uses `%APPDATA%\Workspace\cli\requests` on Windows or `~/Library/Application Support/Workspace/cli/requests` on macOS. An uninstalled Windows package uses `%APPDATA%\Workspace Development\cli\requests`, and the separately identified Mac smoke app uses its own product directory. Packaged child commands receive that exact root through the CLI-only `WORKSPACE_CLI_STATE_DIR`; desktop state selection never reads it.
 2. It starts or contacts the exact installed Windows executable or Mac app executable with that request id. Electron's single-instance handoff routes the request to the existing desktop host when the app is already open.
 3. The desktop host claims and serializes the request, executes it through `WorkspaceCliKernelAdapter`, and atomically writes stdout, stderr, structured result, and exit code beneath `responses`.
 4. The shim returns that output and removes its request and response files. The broker also removes stale bounded files during initialization.

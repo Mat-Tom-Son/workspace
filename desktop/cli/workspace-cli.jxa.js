@@ -11,15 +11,6 @@ function run(rawArguments) {
   let exitCode = 1;
 
   try {
-    const homeDirectory = environmentValue("HOME") || ObjC.unwrap($.NSHomeDirectory());
-    const configuredStateRoot = environmentValue("WORKSPACE_DESKTOP_USER_DATA_DIR");
-    const stateRoot = configuredStateRoot || `${homeDirectory}/Library/Application Support/Workspace`;
-    const cliRoot = `${stateRoot}/cli`;
-    const requestDirectory = `${cliRoot}/requests`;
-    const responseDirectory = `${cliRoot}/responses`;
-    createDirectory(requestDirectory);
-    createDirectory(responseDirectory);
-
     const configuredAppPath = environmentValue("WORKSPACE_CLI_APP");
     const bundledAppPaths = [
       `${scriptDirectory}/../MacOS/Workspace`,
@@ -29,6 +20,16 @@ function run(rawArguments) {
     if (!fileManager.fileExistsAtPath($(appPath))) {
       throw new Error(`Workspace executable was not found at ${appPath}.`);
     }
+
+    const homeDirectory = environmentValue("HOME") || ObjC.unwrap($.NSHomeDirectory());
+    const configuredStateRoot = environmentValue("WORKSPACE_CLI_STATE_DIR");
+    const defaultStateName = appPath.endsWith("/Workspace Local Smoke") ? "Workspace Local Smoke" : "Workspace";
+    const stateRoot = configuredStateRoot || `${homeDirectory}/Library/Application Support/${defaultStateName}`;
+    const cliRoot = `${stateRoot}/cli`;
+    const requestDirectory = `${cliRoot}/requests`;
+    const responseDirectory = `${cliRoot}/responses`;
+    createDirectory(requestDirectory);
+    createDirectory(responseDirectory);
 
     const timeoutValue = environmentValue("WORKSPACE_CLI_TIMEOUT_MS");
     const timeoutMs = timeoutValue ? Number(timeoutValue) : 120000;

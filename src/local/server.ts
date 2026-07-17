@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createReadStream, existsSync, readFileSync, watch } from "node:fs";
+import { createReadStream, existsSync, watch } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +68,10 @@ import {
 } from "./resources.js";
 import { configureWorkspaceStateRoot, restrictedAppRoot } from "./state-paths.js";
 import { WorkspaceKernel } from "./workspace-kernel.js";
+import {
+  createLocalDevelopmentApiOptions,
+  loadLocalEnvironmentFile,
+} from "./server-dev-options.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
 import { canonicalWorkspaceWatchRoot } from "./workspace-watch.js";
 import {
@@ -190,10 +194,15 @@ interface MultipartBody {
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 export async function startLocalApi(options: LocalApiOptions = {}): Promise<LocalApiHandle> {
-  if (options.loadEnv !== false) loadLocalEnv(join(repoRoot, ".env"));
-  configureWorkspaceStateRoot(options.stateBase);
+  if (options.loadEnv !== false) loadLocalEnvironmentFile(join(repoRoot, ".env"));
+  const appMode = options.appMode ?? "dev";
+  const developmentDefaults = appMode === "dev"
+    && (options.stateBase === undefined || options.port === undefined)
+    ? createLocalDevelopmentApiOptions()
+    : null;
+  configureWorkspaceStateRoot(options.stateBase ?? developmentDefaults?.stateBase);
   const host = options.host ?? "127.0.0.1";
-  const requestedPort = options.port ?? numberFromEnv("WORKSPACE_LOCAL_API_PORT", 4327);
+  const requestedPort = options.port ?? developmentDefaults?.port ?? numberFromEnv("WORKSPACE_LOCAL_API_PORT", 4327);
   const extensionUi = options.extensionUiBridge ?? new RoutedPiExtensionUiBridge();
   const extensionRuntimeProvider: PiRuntimeProvider = {
     async resolveRuntime(workspaceRoot) {
@@ -229,7 +238,7 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
   const runtimeProvider = new RegisteredSpaceRuntimeProvider(extensionRuntimeProvider, spaceTrustAuthority);
   const kernel = options.kernel ?? new WorkspaceKernel({ runtimeProvider });
   const state: LocalApiState = {
-    appMode: options.appMode ?? "dev",
+    appMode,
     workspaceBase: options.workspaceBase ? resolve(options.workspaceBase) : undefined,
     allowedOrigins: options.allowedOrigins ?? ["http://127.0.0.1:5173", "http://localhost:5173"],
     sessionToken: options.sessionToken,
@@ -2147,16 +2156,6 @@ function turnStateEvent(conversationId: string, running: boolean): { type: "turn
 function numberFromEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
-}
-
-function loadLocalEnv(path: string): void {
-  if (!existsSync(path)) return;
-  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
-    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
-    if (!match || match[1] in process.env) continue;
-    const value = match[2].replace(/^(['"])(.*)\1$/, "$2");
-    process.env[match[1]] = value;
-  }
 }
 
 function listen(server: Server, port: number, host: string): Promise<void> {

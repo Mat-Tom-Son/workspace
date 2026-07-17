@@ -45,12 +45,12 @@ Use `-- --arch x64` after a build command when an Intel candidate is required. A
 
 ## Interactive packaged smoke
 
-Do not interactively launch an ad hoc candidate under a normal macOS account. An ad hoc app using the production identity can invalidate Keychain access control and cause password prompts even when `WORKSPACE_DESKTOP_USER_DATA_DIR` points at `/tmp`; the profile override does not isolate Keychain. The checked-in smoke lane's distinct name and bundle id prevent it from impersonating production, but routine ad hoc verification remains non-interactive.
+Do not interactively launch an ad hoc candidate under a normal macOS account. An ad hoc app using the production identity can invalidate Keychain access control and cause password prompts even when `WORKSPACE_DESKTOP_STATE_DIR` points at `/tmp`; the profile override does not isolate Keychain. The checked-in smoke lane's distinct name and bundle id prevent it from impersonating production, but routine ad hoc verification remains non-interactive.
 
 Use a Developer ID-signed candidate for interactive checks on the release workstation:
 
 ```bash
-WORKSPACE_DESKTOP_USER_DATA_DIR=/tmp/workspace-macos-smoke \
+WORKSPACE_DESKTOP_STATE_DIR=/tmp/workspace-macos-smoke \
   out/builder/mac-arm64/Workspace.app/Contents/MacOS/Workspace
 ```
 
@@ -59,7 +59,8 @@ That production-name path exists only after `npm run desktop:make:mac:release`; 
 The packaged CLI can be tested directly:
 
 ```bash
-WORKSPACE_DESKTOP_USER_DATA_DIR=/tmp/workspace-macos-smoke \
+WORKSPACE_DESKTOP_STATE_DIR=/tmp/workspace-macos-smoke \
+WORKSPACE_CLI_STATE_DIR=/tmp/workspace-macos-smoke \
 WORKSPACE_CLI_APP="$PWD/out/builder/mac-arm64/Workspace.app/Contents/MacOS/Workspace" \
   out/builder/mac-arm64/Workspace.app/Contents/bin/workspace context --json
 ```
