@@ -17,11 +17,13 @@ import type { RestrictedAppInstalled } from "../src/local/agent/restricted-app-s
 const digest = "a".repeat(64);
 const installed: RestrictedAppInstalled = {
   workspaceId: "space-one",
+  sourceWorkspaceId: "space-one",
   projectId: parseProjectId("project_fixture"),
   tenantId: parseTenantId("tenant_fixture"),
   principalId: parsePrincipalId("principal_fixture"),
   runtimeInstanceId: parseRuntimeInstanceId("runtime-instance_fixture"),
   runtimeInstanceKind: "development",
+  releaseDigest: null,
   featureInstallationId: parseFeatureInstallationId("feature-installation_fixture"),
   dataNamespaceId: parseDataNamespaceId("data-namespace_fixture"),
   authority: parseAuthorityStamp({

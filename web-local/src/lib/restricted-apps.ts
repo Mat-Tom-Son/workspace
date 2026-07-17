@@ -7,6 +7,17 @@ import type {
   RestrictedAppProposal,
   RestrictedAppReview,
   RestrictedAppStorageUsage,
+  LocalAppInstallOperation,
+  LocalAppInstance,
+  LocalAppOperation,
+  LocalAppPresentation,
+  LocalAppProject,
+  LocalAppRelease,
+  LocalAppReleaseDeletionResult,
+  LocalAppRetainedData,
+  LocalAppStudioSnapshot,
+  LocalAppWorkspaceRemovalImpact,
+  LocalAppUpdateOperation,
 } from "../types";
 
 function collectionPath(workspaceId: string): string {
@@ -16,6 +27,102 @@ function collectionPath(workspaceId: string): string {
 function proposalPath(workspaceId: string, conversationId: string, proposalId?: string): string {
   const collection = `/api/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/restricted-app-proposals`;
   return proposalId ? `${collection}/${encodeURIComponent(proposalId)}` : collection;
+}
+
+function studioPath(workspaceId: string): string {
+  return `/api/workspaces/${encodeURIComponent(workspaceId)}/app-studio`;
+}
+
+export async function getLocalAppStudio(workspaceId: string): Promise<LocalAppStudioSnapshot> {
+  return (await api<{ studio: LocalAppStudioSnapshot }>(studioPath(workspaceId))).studio;
+}
+
+export async function getLocalAppWorkspaceRemovalImpact(workspaceId: string): Promise<LocalAppWorkspaceRemovalImpact> {
+  return (await api<{ impact: LocalAppWorkspaceRemovalImpact }>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/app-removal-impact`,
+  )).impact;
+}
+
+export async function declareLocalAppProject(workspaceId: string, presentation: LocalAppPresentation): Promise<LocalAppProject> {
+  return (await api<{ project: LocalAppProject }>(studioPath(workspaceId), {
+    method: "PUT",
+    body: presentation,
+  })).project;
+}
+
+export async function prepareLocalAppRelease(workspaceId: string, displayVersion: string): Promise<LocalAppRelease> {
+  return (await api<{ release: LocalAppRelease }>(`${studioPath(workspaceId)}/releases/prepare`, {
+    method: "POST",
+    body: { displayVersion },
+  })).release;
+}
+
+export async function publishLocalAppRelease(workspaceId: string, releaseDigest: string): Promise<LocalAppRelease> {
+  return (await api<{ release: LocalAppRelease }>(`${studioPath(workspaceId)}/releases/publish`, {
+    method: "POST",
+    body: { releaseDigest },
+  })).release;
+}
+
+export async function deleteLocalAppRelease(
+  workspaceId: string,
+  releaseDigest: string,
+): Promise<LocalAppReleaseDeletionResult> {
+  return (await api<{ deletion: LocalAppReleaseDeletionResult }>(
+    `${studioPath(workspaceId)}/releases/${encodeURIComponent(releaseDigest)}`,
+    { method: "DELETE" },
+  )).deletion;
+}
+
+export async function prepareLocalAppInstall(
+  workspaceId: string,
+  targetWorkspaceId: string,
+  releaseDigest: string,
+): Promise<LocalAppInstallOperation> {
+  return (await api<{ operation: LocalAppInstallOperation }>(`${studioPath(workspaceId)}/installs/prepare`, {
+    method: "POST",
+    body: { targetWorkspaceId, releaseDigest },
+  })).operation;
+}
+
+export async function prepareLocalAppUpdate(
+  workspaceId: string,
+  runtimeInstanceId: string,
+  releaseDigest: string,
+  continuityPolicy: "eligible" | "reset" = "eligible",
+): Promise<LocalAppUpdateOperation> {
+  return (await api<{ operation: LocalAppUpdateOperation }>(`${studioPath(workspaceId)}/instances/${encodeURIComponent(runtimeInstanceId)}/updates/prepare`, {
+    method: "POST",
+    body: { releaseDigest, continuityPolicy },
+  })).operation;
+}
+
+export async function activateLocalAppOperation(
+  workspaceId: string,
+  operationId: string,
+): Promise<{ instance: LocalAppInstance; apps: RestrictedAppInstalled[] }> {
+  return api(`${studioPath(workspaceId)}/operations/${encodeURIComponent(operationId)}/activate`, { method: "POST" });
+}
+
+export async function cancelLocalAppOperation(workspaceId: string, operationId: string): Promise<boolean> {
+  return (await api<{ cancelled: boolean }>(`${studioPath(workspaceId)}/operations/${encodeURIComponent(operationId)}`, {
+    method: "DELETE",
+  })).cancelled;
+}
+
+export async function uninstallLocalApp(
+  targetWorkspaceId: string,
+  runtimeInstanceId: string,
+  dataDisposition: "retain" | "purge",
+): Promise<{ removed: boolean; retainedData: LocalAppRetainedData[]; cleanupPending: boolean }> {
+  return api(`/api/workspaces/${encodeURIComponent(targetWorkspaceId)}/local-app-instances/${encodeURIComponent(runtimeInstanceId)}`, {
+    method: "DELETE",
+    body: { dataDisposition },
+  });
+}
+
+export async function purgeLocalAppRetainedData(workspaceId: string, retainedDataId: string): Promise<{ purged: boolean; cleanupPending: boolean }> {
+  return api(`${studioPath(workspaceId)}/retained-data/${encodeURIComponent(retainedDataId)}`, { method: "DELETE" });
 }
 
 export async function listRestrictedAppProposals(workspaceId: string, conversationId: string): Promise<RestrictedAppProposal[]> {

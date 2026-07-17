@@ -359,6 +359,7 @@ async function ensureDesktopHost(): Promise<DesktopHost> {
         connections: restrictedConnections,
         oauth: restrictedOAuth,
         storage: restrictedStorage,
+        deferAutomationStart: true,
       });
     } catch (error) {
       await restrictedRuntime.close();

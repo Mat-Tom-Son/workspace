@@ -123,6 +123,11 @@ function release(
   const runtimeMajor = options.runtimeMajor ?? 1;
   return assembleAppRelease({
     projectId: parseProjectId(options.project ?? projectId),
+    presentation: {
+      title: "Test App",
+      description: null,
+      icon: null,
+    },
     displayVersion: options.displayVersion ?? "1.0.0",
     runtimeApi: { name: "workspace-feature-broker", compatibleRange: `${runtimeMajor}.x` },
     features,

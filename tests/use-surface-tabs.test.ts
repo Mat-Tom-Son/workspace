@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const surfaceTabsModuleUrl = pathToFileURL(join(process.cwd(), "web-local/src/hooks/useSurfaceTabs.ts")).href;
 const {
+  appStudioSurfaceTab,
   closeFileSurfaceTabs,
   fileSurfaceTab,
   normalizeStoredSurfaceTabsValue,
@@ -29,7 +30,7 @@ interface SpaceSummary {
 
 interface SurfaceTab {
   id: string;
-  kind: "chat" | "file" | "history" | "appearance" | "extension" | "restricted-app";
+  kind: "chat" | "file" | "history" | "appearance" | "app-studio" | "extension" | "restricted-app";
   workspaceId: string;
   conversationId?: string | null;
   path?: string;
@@ -46,6 +47,7 @@ interface SurfaceTab {
 }
 
 interface SurfaceTabsExports {
+  appStudioSurfaceTab: (space: SpaceSummary) => SurfaceTab;
   closeFileSurfaceTabs: (tabs: SurfaceTab[], workspaceId: string, deletedPaths: Set<string>) => SurfaceTab[];
   fileSurfaceTab: (space: SpaceSummary, path: string) => SurfaceTab;
   normalizeStoredSurfaceTabsValue: (parsed: unknown) => { tabs: SurfaceTab[]; activeTabId: string | null };
@@ -135,6 +137,7 @@ test("tab restore accepts only known, well-formed surface types", () => {
       { id: 4, kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md" },
       { id: "file:space-1", kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md", ignored: "yes" },
       { id: "history:space-1", kind: "history", workspaceId: "space-1", title: "History" },
+      { id: "spoofed-studio", kind: "app-studio", workspaceId: "space-1", title: "Renamed Studio" },
       { id: "extension:space-1:inbox:overview", kind: "extension", workspaceId: "space-1", surfaceId: "inbox", viewId: "overview", title: "Overview", ignored: true },
       { id: "restricted:bad", kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "bad", appTabId: "message:release", route: "/message/release", title: "Bad app tab" },
       { id: "app-controlled-spoof", kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "a".repeat(64), appTabId: "message:release", route: "/message/release", state: { selected: true }, title: "Release checklist" },
@@ -146,6 +149,7 @@ test("tab restore accepts only known, well-formed surface types", () => {
       { id: "chat:space-1:new", kind: "chat", workspaceId: "space-1", conversationId: null, title: "New chat" },
       { id: "file:space-1", kind: "file", workspaceId: "space-1", path: "Notes.md", title: "Notes.md" },
       { id: "history:space-1", kind: "history", workspaceId: "space-1", checkpointId: undefined, title: "History" },
+      { id: "app-studio:space-1", kind: "app-studio", workspaceId: "space-1", title: "Renamed Studio" },
       { id: "extension:space-1:inbox:overview", kind: "extension", workspaceId: "space-1", surfaceId: "inbox", surfaceExecution: "full-trust-pi", viewId: "overview", title: "Overview" },
       { id: restrictedAppSurfaceTabId("space-1", "mail", "a".repeat(64), "message:release"), kind: "restricted-app", workspaceId: "space-1", appId: "mail", digest: "a".repeat(64), appTabId: "message:release", route: "/message/release", state: { selected: true }, title: "Release checklist" },
     ],
@@ -183,7 +187,7 @@ test("each Space remembers its most recently active tab", () => {
 test("activating a cross-Space tab switches to the tab's Space", () => {
   const tabs: SurfaceTab[] = [
     { id: "chat:space-1:new", kind: "chat", workspaceId: "space-1", conversationId: null, title: "New chat" },
-    { id: "chat:space-2:conversation-1", kind: "chat", workspaceId: "space-2", conversationId: "conversation-1", title: "Other chat" },
+    appStudioSurfaceTab(otherSpace),
   ];
 
   assert.equal(surfaceTabWorkspaceSwitchTarget({
@@ -193,11 +197,24 @@ test("activating a cross-Space tab switches to the tab's Space", () => {
     workspaces: [space, otherSpace],
   }), null);
   assert.deepEqual(surfaceTabWorkspaceSwitchTarget({
-    activeTabId: "chat:space-2:conversation-1",
+    activeTabId: "app-studio:space-2",
     activeWorkspaceId: "space-1",
     tabs,
     workspaces: [space, otherSpace],
   }), otherSpace);
+});
+
+test("App Studio uses one canonical persistent tab per Space", () => {
+  const first = appStudioSurfaceTab(space);
+  const second = appStudioSurfaceTab({ ...space, name: "Renamed Space" });
+
+  assert.deepEqual(first, {
+    id: "app-studio:space-1",
+    kind: "app-studio",
+    workspaceId: "space-1",
+    title: "App Studio",
+  });
+  assert.deepEqual(upsertSurfaceTab(upsertSurfaceTab([], first), second), [second]);
 });
 
 test("switching Spaces activates the recent tab, then draft, then creates a draft", () => {

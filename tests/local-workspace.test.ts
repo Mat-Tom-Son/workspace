@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -12,16 +12,21 @@ import {
   legacyWorkspaceManifestFile,
   resourceLibraryRoot,
   workspaceManifestFile,
+  workspaceRegistryFile,
 } from "../src/local/state-paths.js";
 import {
+  beginWorkspaceRemoval,
   createManagedWorkspace,
+  finalizeWorkspaceRemoval,
   listWorkspaces,
+  listPendingWorkspaceRemovals,
+  markWorkspaceRemovalAppStateRemoved,
   readWorkspaceTextFile,
-  removeWorkspace,
   renameWorkspace,
   registerLinkedWorkspace,
   resolveWorkspacePath,
   scanWorkspaceTree,
+  type WorkspaceRegistry,
   writeUploadedFiles,
   writeWorkspaceTextFile,
 } from "../src/local/workspace.js";
@@ -205,9 +210,252 @@ test("linked folders cannot overlap Workspace application state", async () => {
 
 test("managed Space removal refuses a mismatched managed-content boundary", async () => {
   const workspace = await createManagedWorkspace("Removal guard", contentRoot);
-  await assert.rejects(removeWorkspace(workspace.id, join(sandbox, "different-managed-root")), /only delete a managed Space/);
+  await assert.rejects(beginWorkspaceRemoval(workspace.id, join(sandbox, "different-managed-root")), /only delete a managed Space/);
   assert.equal(existsSync(workspace.rootPath), true);
 });
+
+test("a removal-intent persistence failure leaves the Space and managed folder untouched", async () => {
+  const workspace = await createManagedWorkspace("Removal intent failure", contentRoot);
+  await writeFile(join(workspace.rootPath, "keep.txt"), "keep", "utf8");
+
+  await assert.rejects(beginWorkspaceRemoval(workspace.id, contentRoot, {
+    async persistRegistry() {
+      throw new Error("simulated registry write failure");
+    },
+  }), /simulated registry write failure/);
+
+  assert.equal((await listWorkspaces()).some((item) => item.id === workspace.id), true);
+  assert.equal(await readFile(join(workspace.rootPath, "keep.txt"), "utf8"), "keep");
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+test("managed-folder cleanup failure leaves a hidden, recoverable removal intent", async () => {
+  const workspace = await createManagedWorkspace("Removal cleanup retry", contentRoot);
+  await writeFile(join(workspace.rootPath, "retry.txt"), "retry", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const pending = await finalizeWorkspaceRemoval(workspace.id, {
+    async claimManagedRoot() {
+      throw new Error("simulated managed-folder lock");
+    },
+  });
+  assert.deepEqual(pending, {
+    removed: true,
+    deleted: false,
+    rootPath: workspace.rootPath,
+    cleanupPending: true,
+  });
+  assert.equal((await listWorkspaces()).some((item) => item.id === workspace.id), false);
+  assert.equal(await readFile(join(workspace.rootPath, "retry.txt"), "utf8"), "retry");
+  assert.equal((await listPendingWorkspaceRemovals())[0]?.phase, "app-state-removed");
+
+  const recovered = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(recovered.cleanupPending, false);
+  assert.equal(recovered.deleted, true);
+  assert.equal(existsSync(workspace.rootPath), false);
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+test("a durable claim hint cannot finalize while the approved root still exists", async () => {
+  const workspace = await createManagedWorkspace("Removal claim replay", contentRoot);
+  await writeFile(join(workspace.rootPath, "approved-original.txt"), "original", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const registry = JSON.parse(await readFile(workspaceRegistryFile(), "utf8")) as {
+    pendingRemovals: Array<{ managedRootClaimed: boolean }>;
+  };
+  registry.pendingRemovals[0]!.managedRootClaimed = true;
+  await writeFile(workspaceRegistryFile(), `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+
+  const removed = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(removed.cleanupPending, false);
+  assert.equal(removed.deleted, true);
+  assert.equal(existsSync(workspace.rootPath), false,
+    "recovery must reclaim and delete the exact root instead of trusting the progress hint");
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+test("a final registry-write failure remains idempotently recoverable after managed content is gone", async () => {
+  const workspace = await createManagedWorkspace("Removal registry retry", contentRoot);
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const pending = await finalizeWorkspaceRemoval(workspace.id, {
+    async persistRegistry(registry) {
+      if (registry.pendingRemovals.length === 0) {
+        throw new Error("simulated final registry write failure");
+      }
+      await persistWorkspaceRegistryForTest(registry);
+    },
+  });
+  assert.equal(pending.cleanupPending, true);
+  assert.equal(pending.deleted, true);
+  assert.equal(existsSync(workspace.rootPath), false);
+  assert.equal((await listWorkspaces()).some((item) => item.id === workspace.id), false);
+  assert.equal((await listPendingWorkspaceRemovals())[0]?.workspaceId, workspace.id);
+
+  await mkdir(workspace.rootPath, { recursive: true });
+  const replacementSentinel = join(workspace.rootPath, "unrelated-replacement.txt");
+  await writeFile(replacementSentinel, "do not delete", "utf8");
+  const recovered = await finalizeWorkspaceRemoval(workspace.id);
+  assert.deepEqual(recovered, {
+    removed: true,
+    deleted: true,
+    rootPath: workspace.rootPath,
+    cleanupPending: false,
+  });
+  assert.equal(await readFile(replacementSentinel, "utf8"), "do not delete");
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+test("an unclaimed replacement folder or junction keeps managed removal pending", async () => {
+  const workspace = await createManagedWorkspace("Removal replacement guard", contentRoot);
+  await writeFile(join(workspace.rootPath, "approved-original.txt"), "original", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const originalAside = join(contentRoot, "approved-original-aside");
+  await rename(workspace.rootPath, originalAside);
+  await mkdir(workspace.rootPath, { recursive: false });
+  const replacementSentinel = join(workspace.rootPath, "unrelated-replacement.txt");
+  await writeFile(replacementSentinel, "do not delete", "utf8");
+
+  const refusedReplacement = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(refusedReplacement.cleanupPending, true);
+  assert.equal(refusedReplacement.deleted, false);
+  assert.equal(await readFile(replacementSentinel, "utf8"), "do not delete");
+  assert.equal(await readFile(join(originalAside, "approved-original.txt"), "utf8"), "original");
+
+  await rm(workspace.rootPath, { recursive: true, force: true });
+  const junctionTarget = join(sandbox, "unrelated-junction-target");
+  const junctionSentinel = join(junctionTarget, "outside-managed-root.txt");
+  await mkdir(junctionTarget, { recursive: true });
+  await writeFile(junctionSentinel, "also do not delete", "utf8");
+  await symlink(junctionTarget, workspace.rootPath, process.platform === "win32" ? "junction" : "dir");
+  assert.equal(
+    (await listPendingWorkspaceRemovals())[0]?.workspaceId,
+    workspace.id,
+    "a later link at the pending path must not make intent parsing inspect live content",
+  );
+  const refusedJunction = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(refusedJunction.cleanupPending, true);
+  assert.equal(refusedJunction.deleted, false);
+  assert.equal(await readFile(junctionSentinel, "utf8"), "also do not delete");
+
+  await unlink(workspace.rootPath);
+  await rm(junctionTarget, { recursive: true, force: true });
+  await rename(originalAside, workspace.rootPath);
+  const recovered = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(recovered.cleanupPending, false);
+  assert.equal(recovered.deleted, true);
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+test("a root swap during the managed claim never deletes either directory", async () => {
+  const workspace = await createManagedWorkspace("Removal claim swap", contentRoot);
+  await writeFile(join(workspace.rootPath, "approved-original.txt"), "original", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const originalAside = join(contentRoot, "claim-swap-original-aside");
+  let claimedReplacement = "";
+  const pending = await finalizeWorkspaceRemoval(workspace.id, {
+    async claimManagedRoot(rootPath, claimPath) {
+      claimedReplacement = claimPath;
+      await rename(rootPath, originalAside);
+      await mkdir(rootPath, { recursive: false });
+      await writeFile(join(rootPath, "replacement-sentinel.txt"), "replacement", "utf8");
+      await rename(rootPath, claimPath);
+    },
+  });
+
+  assert.equal(pending.cleanupPending, true);
+  assert.equal(pending.deleted, false);
+  assert.equal(await readFile(join(originalAside, "approved-original.txt"), "utf8"), "original");
+  assert.equal(existsSync(claimedReplacement), false, "the mismatched claim is restored when the root name is still free");
+  assert.equal(await readFile(join(workspace.rootPath, "replacement-sentinel.txt"), "utf8"), "replacement");
+  assert.equal((await listPendingWorkspaceRemovals())[0]?.managedRootClaimed, false);
+
+  await rm(workspace.rootPath, { recursive: true, force: true });
+  await rename(originalAside, workspace.rootPath);
+  const recovered = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(recovered.cleanupPending, false);
+  assert.equal(recovered.deleted, true);
+});
+
+test("recovery retries restoration of a mismatched managed claim", async () => {
+  const workspace = await createManagedWorkspace("Removal claim restore retry", contentRoot);
+  await writeFile(join(workspace.rootPath, "approved-original.txt"), "original", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  const originalAside = join(contentRoot, "claim-restore-original-aside");
+  let claimPath = "";
+  const first = await finalizeWorkspaceRemoval(workspace.id, {
+    async claimManagedRoot(rootPath, destination) {
+      claimPath = destination;
+      await rename(rootPath, originalAside);
+      await mkdir(rootPath, { recursive: false });
+      await writeFile(join(rootPath, "replacement-sentinel.txt"), "replacement", "utf8");
+      await rename(rootPath, destination);
+    },
+    async restoreMismatchedManagedClaim() {
+      throw new Error("simulated transient restore failure");
+    },
+  });
+  assert.equal(first.cleanupPending, true);
+  assert.equal(await readFile(join(claimPath, "replacement-sentinel.txt"), "utf8"), "replacement");
+
+  const retry = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(retry.cleanupPending, true);
+  assert.equal(retry.deleted, false);
+  assert.equal(existsSync(claimPath), false);
+  assert.equal(await readFile(join(workspace.rootPath, "replacement-sentinel.txt"), "utf8"), "replacement");
+  assert.equal(await readFile(join(originalAside, "approved-original.txt"), "utf8"), "original");
+
+  await rm(workspace.rootPath, { recursive: true, force: true });
+  await rename(originalAside, workspace.rootPath);
+  const recovered = await finalizeWorkspaceRemoval(workspace.id);
+  assert.equal(recovered.cleanupPending, false);
+  assert.equal(recovered.deleted, true);
+});
+
+test("a replacement created after the managed claim survives approved-folder deletion", async () => {
+  const workspace = await createManagedWorkspace("Removal post-claim replacement", contentRoot);
+  await writeFile(join(workspace.rootPath, "approved-original.txt"), "original", "utf8");
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+
+  let claimPath = "";
+  const replacementSentinel = join(workspace.rootPath, "replacement-sentinel.txt");
+  const removed = await finalizeWorkspaceRemoval(workspace.id, {
+    async claimManagedRoot(rootPath, destination) {
+      claimPath = destination;
+      await rename(rootPath, destination);
+      await mkdir(rootPath, { recursive: false });
+      await writeFile(replacementSentinel, "replacement", "utf8");
+      await mkdir(join(rootPath, ".workspace"), { recursive: false });
+      await writeFile(join(rootPath, ".workspace", "replacement-metadata.txt"), "replacement metadata", "utf8");
+    },
+  });
+
+  assert.equal(removed.cleanupPending, false);
+  assert.equal(removed.deleted, true);
+  assert.equal(existsSync(claimPath), false, "only the identity-verified claim is recursively deleted");
+  assert.equal(await readFile(replacementSentinel, "utf8"), "replacement");
+  assert.equal(
+    await readFile(join(workspace.rootPath, ".workspace", "replacement-metadata.txt"), "utf8"),
+    "replacement metadata",
+    "external Workspace state cleanup must not touch a replacement folder's portable metadata",
+  );
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
+async function persistWorkspaceRegistryForTest(registry: WorkspaceRegistry): Promise<void> {
+  await writeFile(workspaceRegistryFile(), `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+}
 
 test("Library items copy into a visible From Library folder", async () => {
   assert.equal(resourceLibraryRoot(), join(stateRoot, "resources"));

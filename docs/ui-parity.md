@@ -64,7 +64,7 @@ The translation is intentionally narrow. It does not justify replacing the shell
 
 - A reviewed restricted app belongs to exactly one Space and contributes its rail navigator without becoming a full-trust Pi Extension or silently inheriting another Space's identity.
 - App-requested work tabs are ordinary persistent Space-owned tabs. Restoring or activating one restores its owning Space, while removal or a reviewed-digest change cannot leave a stale executable view mounted.
-- Installation, each network destination, each Space-file grant, each notification category, each stored connection, and each named automation remain separate, visible controls. Installation grants none of them.
+- Adding a preview, each network destination, each Space-file grant, each notification category, each stored connection, and each named automation remain separate, visible controls. Adding the preview grants none of them.
 - Visible UI and optional worker execution use separate sandbox hosts. Direct networking, Node access, arbitrary navigation, and host powers outside an accepted UI/action/automation lifecycle remain denied.
 - Machine-local app storage survives a reviewed app update and an application update. Active visible app UI receives bounded invalidation hints; inactive views recover durable state when reopened instead of receiving queued hidden updates.
 - System notifications use only reviewed static copy during a separately enabled automation whose permission subset includes the granted category. Clicking one targets the exact owning Space and app, and revocation, suspend, app stop, removal, or shutdown closes outstanding authority and native handles.

@@ -18,7 +18,7 @@ import {
 } from "./app-platform-contract.js";
 
 export const appReleaseFormat = "workspace-app-release" as const;
-export const appReleaseFormatVersion = 1 as const;
+export const appReleaseFormatVersion = 2 as const;
 export const appReleaseRecordVersion = 1 as const;
 
 export const appReleaseDefaultLimits = Object.freeze({
@@ -149,6 +149,7 @@ export interface AppReleaseFeatureInput {
 
 export interface AppReleaseAssemblyInput {
   readonly projectId: ProjectId;
+  readonly presentation: AppReleasePresentation;
   readonly displayVersion: string;
   readonly runtimeApi: Readonly<{
     name: string;
@@ -159,6 +160,12 @@ export interface AppReleaseAssemblyInput {
   readonly buildProvenance: AppReleaseRecordInput;
   readonly inspectionEvidence: AppReleaseRecordInput;
   readonly createdAt: string;
+}
+
+export interface AppReleasePresentation {
+  readonly title: string;
+  readonly description: string | null;
+  readonly icon: string | null;
 }
 
 export interface AppReleaseRecordReference {
@@ -219,6 +226,7 @@ export interface AppReleaseManifest {
   readonly format: typeof appReleaseFormat;
   readonly formatVersion: typeof appReleaseFormatVersion;
   readonly projectId: ProjectId;
+  readonly presentation: AppReleasePresentation;
   readonly displayVersion: string;
   readonly runtimeApi: Readonly<{
     name: string;
@@ -303,6 +311,7 @@ export function assembleAppRelease(
   const input = expectRecord(value, "Release assembly input");
   expectExactKeys(input, [
     "projectId",
+    "presentation",
     "displayVersion",
     "runtimeApi",
     "features",
@@ -329,6 +338,7 @@ export function assembleAppRelease(
     format: appReleaseFormat,
     formatVersion: appReleaseFormatVersion,
     projectId,
+    presentation: parsePresentation(input.presentation),
     displayVersion: parseBoundedString(input.displayVersion, "displayVersion", 128),
     runtimeApi,
     features,
@@ -596,6 +606,7 @@ function parseManifest(value: unknown, limits: NormalizedLimits): AppReleaseMani
     "format",
     "formatVersion",
     "projectId",
+    "presentation",
     "displayVersion",
     "runtimeApi",
     "features",
@@ -620,6 +631,7 @@ function parseManifest(value: unknown, limits: NormalizedLimits): AppReleaseMani
     format: appReleaseFormat,
     formatVersion: appReleaseFormatVersion,
     projectId: parseProjectIdOrReleaseError(record.projectId),
+    presentation: parsePresentation(record.presentation),
     displayVersion: parseBoundedString(record.displayVersion, "displayVersion", 128),
     runtimeApi,
     features,
@@ -956,6 +968,18 @@ function parseRuntimeApi(value: unknown): AppReleaseManifest["runtimeApi"] {
   return {
     name: parseBoundedString(record.name, "runtimeApi name", 128),
     compatibleRange: parseBoundedString(record.compatibleRange, "runtimeApi compatibleRange", 128),
+  };
+}
+
+function parsePresentation(value: unknown): AppReleasePresentation {
+  const record = expectRecord(value, "presentation");
+  expectExactKeys(record, ["title", "description", "icon"], "presentation");
+  return {
+    title: parseBoundedString(record.title, "presentation title", 80),
+    description: record.description === null
+      ? null
+      : parseBoundedString(record.description, "presentation description", 280),
+    icon: record.icon === null ? null : parseStableId(record.icon, "presentation icon"),
   };
 }
 

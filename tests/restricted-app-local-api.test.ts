@@ -25,6 +25,20 @@ import { startLocalApi } from "../src/local/server.js";
 
 test("restricted app API keeps review, install, grants, connections, invocation, and removal separate", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-api-"));
+  let nextAssistantBlock: { entered(): void; released: Promise<void> } | null = null;
+  const blockNextAssistantRuntime = () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const control = {
+      entered: new Promise<void>((resolvePromise) => { entered = resolvePromise; }),
+      release: () => release(),
+    };
+    nextAssistantBlock = {
+      entered,
+      released: new Promise<void>((resolvePromise) => { release = resolvePromise; }),
+    };
+    return control;
+  };
   const runtime = new RuntimeHost();
   const connections = new Connections();
   const storage = new FileRestrictedAppStorage(join(sandbox, "state", "restricted-apps", "data"));
@@ -42,6 +56,18 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     workspaceBase: join(sandbox, "spaces"),
     loadEnv: false,
     restrictedAppService: service,
+    piRuntimeProvider: {
+      async resolveRuntime() {
+        const block = nextAssistantBlock;
+        nextAssistantBlock = null;
+        if (block) {
+          block.entered();
+          await block.released;
+          throw new Error("simulated completed Assistant turn");
+        }
+        return {};
+      },
+    },
   });
   try {
     const created = await request<{ workspace: { id: string; rootPath: string } }>(api.origin, "/api/workspaces", {
@@ -77,6 +103,14 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     assert.deepEqual(installed.app.fileGrants, []);
     assert.deepEqual(installed.app.notificationGrants, []);
     assert.deepEqual(installed.app.automations, [{ id: "refresh-mail", enabled: false }]);
+
+    await storage.set({
+      ownerClass: "instance",
+      tenantId: installed.app.tenantId,
+      runtimeInstanceId: installed.app.runtimeInstanceId,
+      featureInstallationId: installed.app.featureInstallationId,
+      dataNamespaceId: installed.app.dataNamespaceId,
+    }, "view", { folder: "inbox" });
 
     const granted = await request<{ app: { networkGrants: string[] } }>(
       api.origin,
@@ -141,6 +175,19 @@ test("restricted app API keeps review, install, grants, connections, invocation,
         },
       );
       assert.equal(blockedMutation.status, 409, "a manual automation run must reserve the Space capability-mutation lane");
+      const blockedClear = await fetch(
+        `${api.origin}/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedDigest: inspected.review.digest }),
+        },
+      );
+      assert.equal(blockedClear.status, 409, "storage clear must join the Space capability-mutation lane");
+      assert.equal((await request<{ usage: { keyCount: number } }>(
+        api.origin,
+        `/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage?expectedDigest=${inspected.review.digest}`,
+      )).usage.keyCount, 1, "read-only storage usage remains available during a capability mutation");
     } finally {
       automationControl.release();
     }
@@ -173,18 +220,47 @@ test("restricted app API keeps review, install, grants, connections, invocation,
     );
     assert.deepEqual(automationRuns.runs, [automationRun.run]);
 
-    await storage.set({
-      ownerClass: "instance",
-      tenantId: installed.app.tenantId,
-      runtimeInstanceId: installed.app.runtimeInstanceId,
-      featureInstallationId: installed.app.featureInstallationId,
-      dataNamespaceId: installed.app.dataNamespaceId,
-    }, "view", { folder: "inbox" });
     const usage = await request<{ usage: { keyCount: number } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage?expectedDigest=${inspected.review.digest}`,
     );
     assert.equal(usage.usage.keyCount, 1);
+
+    const conversation = await request<{ conversation: { id: string } }>(
+      api.origin,
+      `/api/workspaces/${workspace.id}/conversations`,
+      { method: "POST" },
+    );
+    const assistantControl = blockNextAssistantRuntime();
+    const activeTurn = await fetch(
+      `${api.origin}/api/workspaces/${workspace.id}/conversations/${conversation.conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "Hold storage authority for this test." }),
+      },
+    );
+    assert.equal(activeTurn.status, 202, await activeTurn.text());
+    await assistantControl.entered;
+    try {
+      const blockedClear = await fetch(
+        `${api.origin}/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedDigest: inspected.review.digest }),
+        },
+      );
+      assert.equal(blockedClear.status, 409, "active Assistant work must prevent storage authority changes");
+      assert.equal((await request<{ usage: { keyCount: number } }>(
+        api.origin,
+        `/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage?expectedDigest=${inspected.review.digest}`,
+      )).usage.keyCount, 1);
+    } finally {
+      assistantControl.release();
+    }
+    await waitFor(async () => (await api.kernel.getTasks({ kind: "system" })).tasks.length === 0);
+
     const cleared = await request<{ usage: { keyCount: number } }>(
       api.origin,
       `/api/workspaces/${workspace.id}/restricted-apps/mail-app/storage`,
@@ -330,6 +406,14 @@ async function request<T = unknown>(
   const value = await response.json() as T & { error?: string };
   assert.equal(response.ok, true, value.error);
   return value;
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!await predicate()) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error("Timed out waiting for restricted app API state.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
 }
 
 async function writePackage(root: string): Promise<void> {

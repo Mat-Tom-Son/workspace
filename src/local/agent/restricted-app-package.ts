@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import { copyFile, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -9,7 +9,9 @@ import {
 } from "./restricted-app-manifest.js";
 import {
   hashAppPlatformArtifact,
+  parseAppPlatformArtifactDigest,
   type AppPlatformArtifactDigest,
+  type AppPlatformArtifactEntry,
 } from "./app-platform-artifact.js";
 export const restrictedAppPackageLimits = {
   files: 2_048,
@@ -54,6 +56,11 @@ export interface RestrictedAppStageReceipt {
 export interface RestrictedAppPackageSnapshot {
   receipt: RestrictedAppStageReceipt;
   files: ReadonlyMap<string, Uint8Array>;
+}
+
+export interface RestrictedAppReleaseArtifactEntry {
+  readonly path: string;
+  readonly bytesBase64: string;
 }
 
 export interface RestrictedAppPackageInspectionHooks {
@@ -145,6 +152,10 @@ export async function stageRestrictedAppPackage(
   }
   const root = resolve(stagingRoot);
   await mkdir(root, { recursive: true });
+  const rootStat = await lstat(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error("Restricted app staging root must be a regular directory, not a link.");
+  }
   const destination = join(root, source.digest);
   if (await isDirectory(destination)) {
     const existing = await inspectRestrictedAppPackage(destination);
@@ -153,25 +164,104 @@ export async function stageRestrictedAppPackage(
   }
 
   const temporary = join(root, `.staging-${randomUUID()}`);
-  await mkdir(temporary, { recursive: false });
+  await mkdir(temporary, { recursive: false, mode: 0o700 });
   try {
     for (const packagePath of source.files) {
       const from = join(source.sourceRoot, ...packagePath.split("/"));
       const to = join(temporary, ...packagePath.split("/"));
-      await mkdir(dirname(to), { recursive: true });
+      await mkdir(dirname(to), { recursive: true, mode: 0o700 });
       await copyFile(from, to, constants.COPYFILE_EXCL);
+      await chmod(to, 0o600);
+      await syncRestrictedAppFile(to);
     }
     const staged = await inspectRestrictedAppPackage(temporary);
     if (staged.digest !== source.digest) throw new Error("Restricted app package changed while it was being staged.");
     if (expectedDigest !== undefined && staged.digest !== expectedDigest) throw new Error("Restricted app package changed after review.");
+    await syncRestrictedAppPackageDirectories(temporary, staged.files);
     try {
       await rename(temporary, destination);
     } catch (error) {
       if (!await isDirectory(destination)) throw error;
     }
+    await syncRestrictedAppDirectory(root);
     const installed = await inspectRestrictedAppPackage(destination);
     if (installed.digest !== source.digest) throw new Error("Restricted app staged digest does not match its install receipt.");
     return stageReceipt(installed, destination);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Materialize one already-verified App Release Feature artifact into the
+ * restricted-app package store. Release bytes are still treated as hostile at
+ * this boundary: paths, base64, package declarations, and both content digests
+ * are revalidated before a receipt can be returned.
+ */
+export async function stageRestrictedAppReleaseArtifact(
+  entries: readonly RestrictedAppReleaseArtifactEntry[],
+  expectedArtifactDigest: AppPlatformArtifactDigest,
+  stagingRoot: string,
+): Promise<RestrictedAppStageReceipt> {
+  const expected = parseAppPlatformArtifactDigest(expectedArtifactDigest);
+  const decoded = decodeReleaseArtifactEntries(entries);
+  if (hashAppPlatformArtifact(decoded, {
+    files: restrictedAppPackageLimits.files,
+    pathBytes: 240,
+    fileBytes: restrictedAppPackageLimits.fileBytes,
+    totalBytes: restrictedAppPackageLimits.bytes,
+  }) !== expected) {
+    throw new Error("Restricted app release artifact digest does not match its entries.");
+  }
+  assertMaterializablePackagePaths(decoded.map((entry) => entry.path));
+
+  const root = resolve(stagingRoot);
+  await mkdir(root, { recursive: true });
+  const rootStat = await lstat(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error("Restricted app staging root must be a regular directory, not a link.");
+  }
+
+  const temporary = join(root, `.release-${randomUUID()}`);
+  await mkdir(temporary, { recursive: false, mode: 0o700 });
+  try {
+    let fileCount = 0;
+    let totalBytes = 0;
+    for (const entry of decoded) {
+      fileCount += 1;
+      totalBytes += entry.bytes.byteLength;
+      if (fileCount > restrictedAppPackageLimits.files) {
+        throw new Error("Restricted app release artifact exceeds the file-count limit while being written.");
+      }
+      if (entry.bytes.byteLength > restrictedAppPackageLimits.fileBytes) {
+        throw new Error(`Restricted app release artifact file exceeds the per-file limit: ${entry.path}`);
+      }
+      if (totalBytes > restrictedAppPackageLimits.bytes) {
+        throw new Error("Restricted app release artifact exceeds the total-size limit while being written.");
+      }
+
+      const destination = join(temporary, ...entry.path.split("/"));
+      assertContainedPath(temporary, destination);
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      const handle = await open(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+      try {
+        await handle.writeFile(entry.bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const materialized = await inspectRestrictedAppPackage(temporary);
+    if (materialized.artifactDigest !== expected) {
+      throw new Error("Restricted app release artifact changed while it was being materialized.");
+    }
+    await syncRestrictedAppPackageDirectories(temporary, materialized.files);
+    const receipt = await stageRestrictedAppPackage(temporary, root, materialized.digest);
+    if (receipt.artifactDigest !== expected) {
+      throw new Error("Restricted app staged artifact digest does not match the verified App Release.");
+    }
+    return receipt;
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -308,6 +398,89 @@ async function readExactPackageFile(entry: PackageFile, label: string): Promise<
   }
 }
 
+function decodeReleaseArtifactEntries(
+  values: readonly RestrictedAppReleaseArtifactEntry[],
+): AppPlatformArtifactEntry[] {
+  if (!Array.isArray(values)) throw new Error("Restricted app release artifact entries must be an array.");
+  if (values.length > restrictedAppPackageLimits.files) {
+    throw new Error("Restricted app release artifact exceeds the file-count limit.");
+  }
+
+  const decoded: AppPlatformArtifactEntry[] = [];
+  let totalBytes = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value: unknown = values[index];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`Restricted app release artifact entry ${index + 1} must be an object.`);
+    }
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length !== 2 || !Object.hasOwn(record, "path") || !Object.hasOwn(record, "bytesBase64")) {
+      throw new Error(`Restricted app release artifact entry ${index + 1} must contain only path and bytesBase64.`);
+    }
+    if (typeof record.path !== "string") {
+      throw new Error(`Restricted app release artifact entry ${index + 1} path must be a string.`);
+    }
+    assertPortablePackagePath(record.path, `Restricted app release artifact entry ${index + 1} path`);
+    const bytes = decodeCanonicalBase64(
+      record.bytesBase64,
+      `Restricted app release artifact entry ${index + 1}`,
+    );
+    totalBytes += bytes.byteLength;
+    if (totalBytes > restrictedAppPackageLimits.bytes) {
+      throw new Error("Restricted app release artifact exceeds the total-size limit.");
+    }
+    decoded.push({ path: record.path, bytes });
+  }
+  return decoded;
+}
+
+const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function decodeCanonicalBase64(value: unknown, label: string): Uint8Array {
+  if (typeof value !== "string" || value.length % 4 !== 0
+    || value.length > Math.ceil(restrictedAppPackageLimits.fileBytes / 3) * 4
+    || !canonicalBase64Pattern.test(value)) {
+    throw new Error(`${label} bytesBase64 must be canonical RFC 4648 base64.`);
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const expectedBytes = (value.length / 4) * 3 - padding;
+  if (expectedBytes > restrictedAppPackageLimits.fileBytes) {
+    throw new Error(`${label} exceeds the per-file limit.`);
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.byteLength !== expectedBytes || decoded.toString("base64") !== value) {
+    throw new Error(`${label} bytesBase64 must be canonical RFC 4648 base64.`);
+  }
+  return new Uint8Array(decoded);
+}
+
+function assertMaterializablePackagePaths(paths: readonly string[]): void {
+  const nodes = new Map<string, { path: string; kind: "directory" | "file" }>();
+  for (const path of paths) {
+    const segments = path.split("/");
+    if (segments.length - 1 > restrictedAppPackageLimits.depth) {
+      throw new Error("Restricted app release artifact exceeds the directory depth limit.");
+    }
+    for (let index = 1; index <= segments.length; index += 1) {
+      const nodePath = segments.slice(0, index).join("/");
+      const kind = index === segments.length ? "file" : "directory";
+      const key = nodePath.toLocaleLowerCase("en-US");
+      const existing = nodes.get(key);
+      if (existing) {
+        if (existing.kind !== kind) {
+          throw new Error(`Restricted app release artifact path conflicts with a file ancestor: ${path}`);
+        }
+        if (existing.path !== nodePath) {
+          throw new Error(`Restricted app release artifact paths collide on portable filesystems: ${path}`);
+        }
+      } else {
+        nodes.set(key, { path: nodePath, kind });
+      }
+    }
+  }
+}
+
 function assertSamePackageFile(
   entry: PackageFile,
   stat: BigIntStats,
@@ -386,6 +559,49 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
+  }
+}
+
+async function syncRestrictedAppFile(path: string): Promise<void> {
+  // Windows requires a writable file handle for FlushFileBuffers even though
+  // this operation does not change the staged bytes.
+  const handle = await open(path, constants.O_RDWR);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncRestrictedAppPackageDirectories(root: string, packagePaths: readonly string[]): Promise<void> {
+  const directories = new Set<string>([root]);
+  for (const packagePath of packagePaths) {
+    const segments = packagePath.split("/");
+    for (let index = 1; index < segments.length; index += 1) {
+      directories.add(join(root, ...segments.slice(0, index)));
+    }
+  }
+  const deepestFirst = [...directories].sort((left, right) => {
+    const leftRelative = relative(root, left);
+    const rightRelative = relative(root, right);
+    const leftDepth = leftRelative ? leftRelative.split(sep).length : 0;
+    const rightDepth = rightRelative ? rightRelative.split(sep).length : 0;
+    const depthDifference = rightDepth - leftDepth;
+    return depthDifference || right.localeCompare(left);
+  });
+  for (const directory of deepestFirst) await syncRestrictedAppDirectory(directory);
+}
+
+async function syncRestrictedAppDirectory(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY);
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "EISDIR" && code !== "EPERM" && code !== "ENOTSUP") throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 

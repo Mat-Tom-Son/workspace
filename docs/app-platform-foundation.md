@@ -1,7 +1,7 @@
 # App platform foundation
 
-> **Status:** Accepted product and architecture direction; local foundation
-> implemented, private hosted semantic core proven
+> **Status:** Accepted product and architecture direction; local App Studio and
+> release-backed App Instances implemented, private hosted semantic core proven
 >
 > **Scope:** This document is the normative foundation for evolving restricted
 > Space apps into a local-first App platform. It fixes the product objects,
@@ -13,9 +13,10 @@ Workspace is both a local studio and a runtime surface. A person and the
 Assistant work in an ordinary folder-backed Space, may explicitly declare an App
 Project there, and may build reviewed Features that contribute pages, actions,
 data, connections, and named automations. Publication closes selected reviewed
-material into an immutable App Release. A release can then be installed locally
-or deployed privately as an App Instance without uploading or converting the
-source Space.
+material into an immutable App Release. Workspace 0.4 ships that lifecycle
+locally: prepare, separately publish, install in a chosen Space, update or roll
+back, and uninstall with an explicit data choice. It does not ship upload,
+hosted deployment, sync, accounts, discovery, or an App Store.
 
 This direction resolves the original “should Spaces be Apps?” question by
 keeping the useful distinction:
@@ -79,7 +80,9 @@ The complete definitions and journey tests live in
 
 1. **Ordinary folders remain the source of truth.** Declaring an App Project
    does not convert, move, upload, or make a Space proprietary. A local App
-   Instance does not need to own or live inside a project folder.
+   Instance does not need to own or live inside a project folder. In 0.4 the
+   Project identity and presentation are machine-local application state; no
+   portable App Project file is introduced.
 2. **Project and runtime ownership are separate.** `projectId` is the local App
    lineage across Releases. An optional `cloudProjectId` is an authenticated
    registry binding. A Principal or optional Organization owns the project-role
@@ -146,6 +149,71 @@ The detailed publication/data rules and candidate records live in
 The portable broker semantics live in
 [App platform runtime contract](app-platform-runtime-contract.md).
 
+## Shipped local 0.4 boundary
+
+The desktop implements the first complete local Project-to-Instance journey:
+
+1. One registered source Space owns one machine-local App Project and its
+   Development Instance. App Studio explicitly records the App title,
+   description, and icon; the first direct preview can seed those values from
+   its Feature declaration for migration and compatibility.
+2. The existing Chat-bound proposal/install and advanced local-install paths
+   create reviewed **Local previews**. They remain source-Space-bound,
+   release-less Development Features and never convert in place.
+3. **Prepare Release** snapshots every current reviewed preview into a verified
+   `workspace-app-release` format-version-2 envelope. Presentation, exact
+   Feature artifacts and declarations, dependency inventory, build provenance,
+   and inspection evidence are digest-covered and stored durably by
+   `releaseDigest` in Workspace application data. The local store enforces a
+   four-GiB aggregate byte quota before accepting a new object; an idempotent
+   write of an already verified digest remains safe when the quota is full.
+4. A prepared Release is not installable. **Publish** is a separate local
+   receipt and revalidates that the Development revisions have not changed. It
+   does not upload, sign, list, deploy, or grant the Release.
+5. Installation preparation durably reserves the operation, Runtime Instance,
+   Feature Installation, and Data Namespace identities. Activation re-verifies
+   and stages the exact published closure before one registry commit makes the
+   new App Instance live in the chosen registered Space. Every external power
+   starts off and no Development grant, connection, job, or data transfers.
+6. Update and rollback target another published Release from the same Project.
+   The deterministic plan is persisted and recomputed before activation. Exact
+   unchanged Feature content may retain eligible grants, instance-owned
+   connections, jobs, and data; changed content retains the existing Feature
+   Installation/Data Namespace but resets grants, connections, and jobs. A
+   stricter reset policy is always available.
+7. The current local runtime accepts only version-2 restricted-app Features with
+   no declared data schema or migrations. It rejects schema-bearing Releases and
+   migration execution instead of approximating the transition.
+8. Uninstall fences the whole App Instance and requires `retain` or `purge` for
+   its local data. Retained namespaces have no live installation authority and
+   can be purged later. Source files and separately granted ordinary Space files
+   are never removed.
+
+The first placement rule is intentionally small: at most one local App Instance
+exists for a `(projectId, target Space)` pair, and no target Space may already
+contain a Development preview or installed Feature with the same `featureId`.
+The App Instance is attached to the target Space for navigation and file-grant
+eligibility, while its Release bytes, mutable data, grants, connections,
+schedules, operation journals, and receipts stay in Workspace application data.
+Removing either the Project's source Space or an active Instance's target Space
+is blocked until the release-backed Instance is uninstalled. Retaining data
+keeps the source registered until that data is explicitly purged; it does not
+keep the former target registered. Once nothing remains live or retained,
+removing the source also removes its machine-local Project, Development
+Instance, and Release lineage, then safely reconciles unreferenced Release-store
+objects. A transient reconciliation failure is retried before later App
+mutations and at startup. Startup still fails closed when a referenced object or
+security invariant cannot be validated, but a validated orphan that is merely
+locked remains inert and pending without preventing Workspace from opening.
+Removing a target cancels prepared operations aimed at that Space.
+
+App Studio may also explicitly delete an individual prepared or published
+Release after proving it is unused. Deletion is blocked while any active Runtime
+Instance, prepared operation (including both its source and target Release), or
+retained-data record requires the Release. The lifecycle record is committed
+away before safe content-addressed pruning; an interrupted physical cleanup is
+therefore inert and retried rather than restoring authority.
+
 ## Product language
 
 The friendly surface uses **Space** while a person works locally and the App's
@@ -157,14 +225,15 @@ primary for end users. **Runtime Instance**, **Feature Installation**, **Data
 Namespace**, **Tenant**, **Principal**, governance enums, and **Package** remain
 internal or advanced diagnostic language.
 
-Current restricted Space-app terminology remains accurate for the version-2
-`agent-app.json` UI and package contract until a reviewed product migration
-lands. The new model is carried behind that surface; it is not permission for a
-broad rename.
+The version-2 `agent-app.json` UI and package contract remains the Feature
+authoring format. Its direct-preview surface is called **Local preview**;
+App Studio owns Project, Release, installation, update/rollback, uninstall, and
+retained-data decisions. This does not rename Spaces or merge restricted Apps
+into native Pi Extensions.
 
 ## Implementation order
 
-The first implementation milestone is local and additive:
+The local milestones were implemented additively in this order:
 
 1. add cross-implementation canonical declaration and artifact digest fixtures;
 2. add transport-neutral opaque identifiers, Runtime Instance context,
@@ -178,7 +247,10 @@ The first implementation milestone is local and additive:
 5. migrate storage, connections, schedules, and receipts to the new identities
    with effect-time fencing and owner-class rules; and
 6. add an offline release assembler/verifier plus atomic local App Instance
-   install/update planning before any server becomes authoritative.
+   install/update planning before any server becomes authoritative; and
+7. expose the contracts through App Studio with a durable Release store,
+   separately receipted prepare/publish, persisted install/update operations,
+   activation revalidation, rollback, and explicit uninstall data disposition.
 
 The first hosted milestone is deliberately private and narrow:
 
@@ -194,16 +266,24 @@ projection. It does not require generalized folder sync, public discovery, an
 App Store, mobile packaging, arbitrary long-running services, or exactly-once
 jobs.
 
-### Implemented foundation boundary
+### Implemented local product boundary
 
-The local milestone above is implemented behind the current restricted-app
-surface. It includes language-neutral declaration and artifact vectors checked
-by two code-independent executables, strict opaque identities and seven-domain
-authority, registry migration to Project/Development Instance/installation/data
-records, effect-time host fencing, restart-retried cleanup, authority-captured
-receipts, an offline immutable Release assembler/verifier, and a deterministic
-local App Instance update planner. The desktop does not yet expose Release
-publication or App Instance installation UI.
+The local milestone above is exposed through Capabilities and the Space-bound
+App Studio tab. It includes language-neutral declaration and artifact vectors
+checked by two code-independent executables, strict opaque identities and
+seven-domain authority, registry migration to
+Project/Development-Instance/installation/data records, effect-time host
+fencing, restart-retried cleanup, authority-captured receipts, a durable
+immutable Release assembler/verifier/store, and deterministic local App
+Instance install/update/rollback activation. Prepared operations survive a
+restart until they are activated or cancelled; activation rechecks the exact
+Release and durable plan before making authority live.
+
+This boundary is local only. Project presentation is machine-local, Releases
+are stored on this device, “published” means eligible for local installation,
+and the installed App Instance is attached to one registered Space. There is no
+Workspace account, upload, cloud registry, hosted runtime, public listing, App
+Store, folder sync, or cross-device App synchronization in 0.4.
 
 The private hosted journey is implemented as an executable semantic core with
 injected durable compare-and-swap state, scheduler/lease, vault, and egress
@@ -248,9 +328,10 @@ criteria.
 
 ## Compatibility posture
 
-Workspace is unreleased and the checked-in example is the only existing Space
-app, so preserving an accidental internal schema is not a product goal. We may
-replace registry and manifest internals when that materially improves the
-model. We still require an explicit migration for the example and fail-closed
-handling because those are the same mechanics future user data will depend on;
-we do not carry forward confusing concepts merely for compatibility theater.
+Workspace remains an early App-platform product and the checked-in example is
+the only first-party Space app, so preserving an accidental internal schema is
+not a product goal. We may replace registry and manifest internals when that
+materially improves the model. We still require explicit migration and
+fail-closed handling because installed local data already matters and those are
+the same mechanics future user data will depend on; we do not carry forward
+confusing concepts merely for compatibility theater.

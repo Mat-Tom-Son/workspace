@@ -14,11 +14,11 @@ const [capabilities, apps, chat, workspaceApp, viewport, styles, professionalSur
   read("web-local/src/professional-surfaces.css"),
 ]);
 
-test("Apps product hierarchy starts with the Assistant and keeps local package install advanced", () => {
+test("Apps product hierarchy starts with the Assistant and keeps local preview loading advanced", () => {
   assert.match(apps, /Apps in this Space/);
   assert.match(apps, /Build with Assistant/);
-  assert.match(apps, /<details className="restricted-app-advanced"><summary>Advanced local install/);
-  assert.match(apps, /Install local package…/);
+  assert.match(apps, /<details className="restricted-app-advanced"><summary>Advanced local preview/);
+  assert.match(apps, /Add local preview…/);
   assert.doesNotMatch(capabilities, /Sandboxed app extension|onAddRestrictedApp/);
   assert.doesNotMatch(apps, />Add app</);
 });
@@ -28,8 +28,8 @@ test("review prioritizes requested access and visible contribution over collapse
   const contribution = apps.indexOf("What it adds");
   assert.ok(access >= 0 && contribution > access);
   assert.match(apps, /<ReviewDeclarations review=\{review\} \/>[\s\S]*?<details className="restricted-app-package-details"><summary>Package details/);
-  assert.match(apps, /Install, then review access/);
-  assert.match(apps, /Installing grants no network destinations, Space files, notifications, or scheduled execution/);
+  assert.match(apps, /Add preview, then review access/);
+  assert.match(apps, /Adding the preview grants no network destinations, Space files, notifications, or scheduled execution/);
 });
 
 test("Capabilities owns access, connection, and lifecycle management without credential-erasure jargon", () => {

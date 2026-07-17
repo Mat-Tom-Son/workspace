@@ -71,24 +71,29 @@ import { WorkspaceKernel } from "./workspace-kernel.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
 import { canonicalWorkspaceWatchRoot } from "./workspace-watch.js";
 import {
+  beginWorkspaceRemoval,
   createManagedWorkspace,
   createWorkspaceFolder,
   createWorkspaceTextFile,
   deleteWorkspaceEntry,
+  finalizeWorkspaceRemoval,
   findExistingWorkspaceFilePaths,
   getWorkspace,
   getWorkspaceEntryInfo,
   listWorkspaces,
+  listPendingWorkspaceRemovals,
+  markWorkspaceRemovalAppStateRemoved,
   moveWorkspaceEntry,
   readWorkspaceTextFile,
   renameWorkspaceEntry,
   registerLinkedWorkspace,
-  removeWorkspace,
   renameWorkspace,
   resolveWorkspacePath,
   scanWorkspaceTree,
+  workspaceRemovalPendingResult,
   writeWorkspaceTextFile,
   writeUploadedFiles,
+  type WorkspaceRemovalIo,
 } from "./workspace.js";
 
 export interface LocalFolderGrantProvider {
@@ -117,6 +122,10 @@ export interface LocalApiOptions {
   /** Shared with the desktop kernel so registry trust changes apply everywhere. */
   spaceTrustAuthority?: RegisteredSpaceTrustAuthority;
   localFolderGrantProvider?: LocalFolderGrantProvider;
+  /** Failure-injection seam for the durable Space-removal coordinator. */
+  workspaceRemovalIo?: Partial<WorkspaceRemovalIo>;
+  /** Failure-injection seam that runs immediately before mandatory post-reservation Space validation. */
+  beforeRestrictedAppWorkspaceRevalidation?: (workspaceId: string) => Promise<void>;
   maxBodyBytes?: number;
   loadEnv?: boolean;
   onAgentTurnActivity?: (activeTurns: number) => void;
@@ -151,6 +160,8 @@ interface LocalApiState {
   kernel: WorkspaceKernel;
   spaceTrustAuthority: RegisteredSpaceTrustAuthority;
   localFolderGrantProvider?: LocalFolderGrantProvider;
+  workspaceRemovalIo: Partial<WorkspaceRemovalIo>;
+  beforeRestrictedAppWorkspaceRevalidation?: (workspaceId: string) => Promise<void>;
   chatStreams: Map<string, Set<ServerResponse>>;
   clients: Map<string, PiConversationClient>;
   runningTurns: Set<string>;
@@ -193,15 +204,30 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
       };
     },
   };
-  const spaceTrustAuthority = options.spaceTrustAuthority
-    ?? new RegisteredSpaceTrustAuthority((await listWorkspaces()).map((workspace) => workspace.rootPath));
-  const runtimeProvider = new RegisteredSpaceRuntimeProvider(extensionRuntimeProvider, spaceTrustAuthority);
-  const kernel = options.kernel ?? new WorkspaceKernel({ runtimeProvider });
-  const restrictedApps = options.restrictedAppService ?? await RestrictedAppService.create({ rootPath: restrictedAppRoot() });
+  const restrictedApps = options.restrictedAppService ?? await RestrictedAppService.create({
+    rootPath: restrictedAppRoot(),
+    deferAutomationStart: true,
+  });
+  if (options.restrictedAppService?.automationsStarted) {
+    throw new Error(
+      "The Local API requires an injected restricted App service whose automation startup is still deferred.",
+    );
+  }
   const restrictedAppProposals = options.restrictedAppProposalHost ?? await RoutedRestrictedAppProposalHost.create({
     service: restrictedApps,
     registryPath: join(restrictedAppRoot(), "proposals.json"),
   });
+  const recoveredWorkspaceRoots = await recoverPendingWorkspaceRemovals(
+    restrictedApps,
+    restrictedAppProposals,
+    options.workspaceRemovalIo ?? {},
+  );
+  const pendingWorkspaceIds = (await listPendingWorkspaceRemovals()).map((intent) => intent.workspaceId);
+  const spaceTrustAuthority = options.spaceTrustAuthority
+    ?? new RegisteredSpaceTrustAuthority((await listWorkspaces()).map((workspace) => workspace.rootPath));
+  for (const rootPath of recoveredWorkspaceRoots) spaceTrustAuthority.revoke(rootPath);
+  const runtimeProvider = new RegisteredSpaceRuntimeProvider(extensionRuntimeProvider, spaceTrustAuthority);
+  const kernel = options.kernel ?? new WorkspaceKernel({ runtimeProvider });
   const state: LocalApiState = {
     appMode: options.appMode ?? "dev",
     workspaceBase: options.workspaceBase ? resolve(options.workspaceBase) : undefined,
@@ -217,6 +243,8 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     kernel,
     spaceTrustAuthority,
     localFolderGrantProvider: options.localFolderGrantProvider,
+    workspaceRemovalIo: options.workspaceRemovalIo ?? {},
+    beforeRestrictedAppWorkspaceRevalidation: options.beforeRestrictedAppWorkspaceRevalidation,
     chatStreams: new Map(),
     clients: new Map(),
     runningTurns: new Set(),
@@ -233,13 +261,8 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
   const requestListener = (request: PiExtensionUiRequest) => routeExtensionRequest(state, request);
   const eventListener = (event: PiExtensionUiEvent) => routeExtensionEvent(state, event);
   const settledListener = (event: PiExtensionUiSettled) => state.extensionRequests.delete(event.id);
-  extensionUi.on("request", requestListener);
-  extensionUi.on("event", eventListener);
-  extensionUi.on("settled", settledListener);
   const proposalListener = (proposal: RestrictedAppProposalReceipt) => routeRestrictedAppProposal(state, proposal);
   const proposalSettledListener = (event: RestrictedAppProposalSettled) => routeRestrictedAppProposalSettled(state, event.proposal);
-  restrictedAppProposals.on("request", proposalListener);
-  restrictedAppProposals.on("settled", proposalSettledListener);
 
   const server = createServer(async (request, response) => {
     try {
@@ -249,6 +272,17 @@ export async function startLocalApi(options: LocalApiOptions = {}): Promise<Loca
     }
   });
   await listen(server, requestedPort, host);
+  try {
+    restrictedApps.startAutomations(pendingWorkspaceIds);
+  } catch (error) {
+    await closeServer(server).catch(() => undefined);
+    throw error;
+  }
+  extensionUi.on("request", requestListener);
+  extensionUi.on("event", eventListener);
+  extensionUi.on("settled", settledListener);
+  restrictedAppProposals.on("request", proposalListener);
+  restrictedAppProposals.on("settled", proposalSettledListener);
   const address = server.address() as AddressInfo;
   return {
     origin: `http://${host}:${address.port}`,
@@ -326,18 +360,41 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
   }
   if (workspaceMatch && method === "DELETE") {
     const workspace = await getWorkspace(workspaceMatch[1]);
-    await invalidateWorkspaceClients(state, workspace.id);
-    closeWorkspaceStreams(state, workspace.id);
-    for (const request of [...state.extensionRequests.values()]) {
-      if (request.workspaceRoot !== workspace.rootPath) continue;
-      state.extensionUi.cancel(request.id);
-      state.extensionRequests.delete(request.id);
-    }
-    state.workspaceIdsByRoot.delete(workspaceRootKey(workspace.rootPath));
-    await state.restrictedAppProposals.removeWorkspace(workspace.id);
-    await state.restrictedApps.removeWorkspace(workspace.id);
-    const removal = await removeWorkspace(workspace.id, state.workspaceBase);
-    state.spaceTrustAuthority.revoke(workspace.rootPath);
+    const affectedWorkspaceIds = await state.restrictedApps.workspaceRemovalMutationWorkspaceIds(workspace.id);
+    const removal = await runRestrictedAppMutations(state, affectedWorkspaceIds, async () => {
+      const impact = await state.restrictedApps.workspaceRemovalImpact(workspace.id);
+      if (impact.activeSourceInstanceCount > 0 || impact.activeTargetInstanceCount > 0) {
+        throw badRequest("Uninstall release-backed Apps from this Space before removing it.");
+      }
+      if (impact.retainedDataCount > 0) {
+        throw badRequest("Purge this App Project's retained local data in App Studio before removing its source Space.");
+      }
+      const intent = await beginWorkspaceRemoval(workspace.id, state.workspaceBase, state.workspaceRemovalIo);
+      state.restrictedApps.fenceWorkspaceRemoval(workspace.id);
+      state.spaceTrustAuthority.revoke(workspace.rootPath);
+      state.workspaceIdsByRoot.delete(workspaceRootKey(workspace.rootPath));
+      await invalidateWorkspaceClients(state, workspace.id);
+      closeWorkspaceStreams(state, workspace.id);
+      for (const request of [...state.extensionRequests.values()]) {
+        if (request.workspaceRoot !== workspace.rootPath) continue;
+        state.extensionUi.cancel(request.id);
+        state.extensionRequests.delete(request.id);
+      }
+      try {
+        await state.restrictedApps.removeWorkspace(workspace.id);
+        await state.restrictedAppProposals.removeWorkspace(workspace.id);
+      } catch {
+        return workspaceRemovalPendingResult(intent);
+      }
+      try {
+        await markWorkspaceRemovalAppStateRemoved(intent.workspaceId, state.workspaceRemovalIo);
+      } catch {
+        return workspaceRemovalPendingResult(intent);
+      }
+      const result = await finalizeWorkspaceRemoval(intent.workspaceId, state.workspaceRemovalIo);
+      if (!result.cleanupPending) state.restrictedApps.releaseWorkspaceRemovalFence(workspace.id);
+      return result;
+    }, { requiredWorkspaceIds: [workspace.id] });
     sendJson(res, removal);
     return;
   }
@@ -366,6 +423,184 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const proposal = await state.restrictedAppProposals.get(proposalMatch[3]);
     if (!proposal || proposal.workspaceId !== workspace.id || proposal.conversationId !== proposalMatch[2]) throw notFound("App proposal not found.");
     sendJson(res, { dismissed: await state.restrictedAppProposals.dismiss(proposal.id) });
+    return;
+  }
+
+  const localAppStudioMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio$/);
+  if (localAppStudioMatch && method === "GET") {
+    const workspace = await getWorkspace(localAppStudioMatch[1]);
+    sendJson(res, { studio: await state.restrictedApps.localAppStudio(workspace.id) });
+    return;
+  }
+
+  const localAppRemovalImpactMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-removal-impact$/);
+  if (localAppRemovalImpactMatch && method === "GET") {
+    const workspace = await getWorkspace(localAppRemovalImpactMatch[1]);
+    sendJson(res, { impact: await state.restrictedApps.workspaceRemovalImpact(workspace.id) });
+    return;
+  }
+  if (localAppStudioMatch && method === "PUT") {
+    const workspace = await getWorkspace(localAppStudioMatch[1]);
+    const body = await readJsonBody<{ title?: unknown; description?: unknown; icon?: unknown }>(state, req);
+    if (typeof body.title !== "string"
+      || (body.description !== undefined && body.description !== null && typeof body.description !== "string")
+      || (body.icon !== undefined && body.icon !== null && typeof body.icon !== "string")) {
+      throw badRequest("An App title plus optional text description and icon id are required.");
+    }
+    const title = body.title;
+    const description = body.description === undefined ? null : body.description;
+    const icon = body.icon === undefined ? null : body.icon;
+    const project = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.declareLocalAppProject({
+      workspaceId: workspace.id,
+      presentation: { title, description, icon },
+    }));
+    sendJson(res, { project });
+    return;
+  }
+
+  const localAppReleasePrepareMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/releases\/prepare$/);
+  if (localAppReleasePrepareMatch && method === "POST") {
+    const workspace = await getWorkspace(localAppReleasePrepareMatch[1]);
+    const body = await readJsonBody<{ displayVersion?: unknown }>(state, req);
+    if (typeof body.displayVersion !== "string" || !body.displayVersion.trim()) throw badRequest("A Release version is required.");
+    const displayVersion = body.displayVersion;
+    const prepared = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.prepareLocalAppRelease({
+      workspaceId: workspace.id,
+      displayVersion,
+    }));
+    sendJson(res, { release: prepared }, 201);
+    return;
+  }
+
+  const localAppReleasePublishMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/releases\/publish$/);
+  if (localAppReleasePublishMatch && method === "POST") {
+    const workspace = await getWorkspace(localAppReleasePublishMatch[1]);
+    const body = await readJsonBody<{ releaseDigest?: unknown }>(state, req);
+    if (typeof body.releaseDigest !== "string" || !body.releaseDigest.trim()) throw badRequest("A prepared Release digest is required.");
+    const releaseDigest = body.releaseDigest;
+    const release = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.publishLocalAppRelease({
+      workspaceId: workspace.id,
+      releaseDigest,
+    }));
+    sendJson(res, { release });
+    return;
+  }
+
+  const localAppReleaseMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/releases\/([^/]+)$/);
+  if (localAppReleaseMatch && method === "DELETE") {
+    const workspace = await getWorkspace(localAppReleaseMatch[1]);
+    const releaseDigest = localAppReleaseMatch[2];
+    const deletion = await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.deleteLocalAppRelease({
+      workspaceId: workspace.id,
+      releaseDigest,
+    }));
+    sendJson(res, { deletion });
+    return;
+  }
+
+  const localAppInstallPrepareMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/installs\/prepare$/);
+  if (localAppInstallPrepareMatch && method === "POST") {
+    const source = await getWorkspace(localAppInstallPrepareMatch[1]);
+    const body = await readJsonBody<{ targetWorkspaceId?: unknown; releaseDigest?: unknown }>(state, req);
+    if (typeof body.targetWorkspaceId !== "string" || !body.targetWorkspaceId.trim()
+      || typeof body.releaseDigest !== "string" || !body.releaseDigest.trim()) {
+      throw badRequest("A target Space and published Release are required.");
+    }
+    const targetWorkspaceId = body.targetWorkspaceId;
+    const releaseDigest = body.releaseDigest;
+    const target = await getWorkspace(targetWorkspaceId);
+    const operation = await runRestrictedAppMutations(state, [source.id, target.id], () => state.restrictedApps.prepareLocalAppInstall({
+      sourceWorkspaceId: source.id,
+      targetWorkspaceId: target.id,
+      releaseDigest,
+    }));
+    sendJson(res, { operation }, 201);
+    return;
+  }
+
+  const localAppOperationActivateMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/operations\/([^/]+)\/activate$/);
+  if (localAppOperationActivateMatch && method === "POST") {
+    const source = await getWorkspace(localAppOperationActivateMatch[1]);
+    const studio = await state.restrictedApps.localAppStudio(source.id);
+    const operation = studio.operations.find((item) => item.operationId === localAppOperationActivateMatch[2]);
+    if (!operation) throw notFound("Prepared App operation not found.");
+    const target = await getWorkspace(operation.targetWorkspaceId);
+    const result = await runRestrictedAppMutations(state, [source.id, target.id], () => operation.kind === "install"
+      ? state.restrictedApps.activateLocalAppInstall(operation.operationId)
+      : state.restrictedApps.activateLocalAppUpdate(operation.operationId));
+    sendJson(res, result);
+    return;
+  }
+  const localAppOperationMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/operations\/([^/]+)$/);
+  if (localAppOperationMatch && method === "DELETE") {
+    const source = await getWorkspace(localAppOperationMatch[1]);
+    const operationId = localAppOperationMatch[2];
+    const cancelled = await runRestrictedAppMutation(state, source.id, async () => {
+      const studio = await state.restrictedApps.localAppStudio(source.id);
+      if (!studio.operations.some((operation) => operation.operationId === operationId)) {
+        throw notFound("Prepared App operation not found.");
+      }
+      return state.restrictedApps.cancelLocalAppOperation(operationId);
+    });
+    sendJson(res, { cancelled });
+    return;
+  }
+
+  const localAppUpdatePrepareMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/instances\/([^/]+)\/updates\/prepare$/);
+  if (localAppUpdatePrepareMatch && method === "POST") {
+    const source = await getWorkspace(localAppUpdatePrepareMatch[1]);
+    const body = await readJsonBody<{ releaseDigest?: unknown; continuityPolicy?: unknown }>(state, req);
+    if (typeof body.releaseDigest !== "string" || !body.releaseDigest.trim()) throw badRequest("A target published Release is required.");
+    if (body.continuityPolicy !== undefined && body.continuityPolicy !== "eligible" && body.continuityPolicy !== "reset") {
+      throw badRequest("Update continuity must be eligible or reset.");
+    }
+    const releaseDigest = body.releaseDigest;
+    const continuityPolicy = body.continuityPolicy;
+    const studio = await state.restrictedApps.localAppStudio(source.id);
+    const instance = studio.instances.find((item) => item.runtimeInstanceId === localAppUpdatePrepareMatch[2]);
+    if (!instance) throw notFound("Local App Instance not found.");
+    const target = await getWorkspace(instance.workspaceId);
+    const operation = await runRestrictedAppMutations(state, [source.id, target.id], () => state.restrictedApps.prepareLocalAppUpdate({
+      sourceWorkspaceId: source.id,
+      runtimeInstanceId: instance.runtimeInstanceId,
+      releaseDigest,
+      ...(continuityPolicy ? { continuityPolicy } : {}),
+    }));
+    sendJson(res, { operation }, 201);
+    return;
+  }
+
+  const localAppInstanceMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/local-app-instances\/([^/]+)$/);
+  if (localAppInstanceMatch && method === "DELETE") {
+    const workspace = await getWorkspace(localAppInstanceMatch[1]);
+    const body = await readJsonBody<{ dataDisposition?: "retain" | "purge" }>(state, req);
+    if (body.dataDisposition !== "retain" && body.dataDisposition !== "purge") {
+      throw badRequest("Choose whether to retain or purge this App's local data.");
+    }
+    const installed = (await state.restrictedApps.list(workspace.id)).find((app) => (
+      app.runtimeInstanceKind === "app" && app.runtimeInstanceId === localAppInstanceMatch[2]
+    ));
+    if (!installed) throw notFound("Local App Instance not found.");
+    const result = await runRestrictedAppMutations(state, [installed.sourceWorkspaceId, workspace.id], () => state.restrictedApps.uninstallLocalApp({
+      runtimeInstanceId: localAppInstanceMatch[2],
+      dataDisposition: body.dataDisposition!,
+    }), { requiredWorkspaceIds: [workspace.id] });
+    sendJson(res, result);
+    return;
+  }
+
+  const localAppRetainedDataMatch = match(url.pathname, /^\/api\/workspaces\/([^/]+)\/app-studio\/retained-data\/([^/]+)$/);
+  if (localAppRetainedDataMatch && method === "DELETE") {
+    const source = await getWorkspace(localAppRetainedDataMatch[1]);
+    const retainedDataId = localAppRetainedDataMatch[2];
+    const result = await runRestrictedAppMutation(state, source.id, async () => {
+      const studio = await state.restrictedApps.localAppStudio(source.id);
+      if (!studio.retainedData.some((record) => record.retainedDataId === retainedDataId)) {
+        throw notFound("Retained Local App data not found.");
+      }
+      return state.restrictedApps.purgeLocalAppRetainedData(retainedDataId);
+    });
+    sendJson(res, result);
     return;
   }
 
@@ -557,7 +792,11 @@ async function handleRequest(state: LocalApiState, req: IncomingMessage, res: Se
     const expectedDigest = body?.expectedDigest ?? url.searchParams.get("expectedDigest")?.trim();
     if (!expectedDigest) throw badRequest("An installed revision is required.");
     const usage = method === "DELETE"
-      ? await state.restrictedApps.clearStorage(workspace.id, restrictedStorageMatch[2], expectedDigest)
+      ? await runRestrictedAppMutation(state, workspace.id, () => state.restrictedApps.clearStorage(
+          workspace.id,
+          restrictedStorageMatch[2],
+          expectedDigest,
+        ))
       : await state.restrictedApps.storageUsage(workspace.id, restrictedStorageMatch[2], expectedDigest);
     sendJson(res, { usage });
     return;
@@ -1302,12 +1541,73 @@ async function runRestrictedAppMutation<T>(
 ): Promise<T> {
   reserveCapabilityMutation(state, workspaceId, "project", workspaceId);
   try {
+    await revalidateRestrictedAppWorkspace(state, workspaceId);
     const result = await operation();
     await invalidateWorkspaceClients(state, workspaceId);
     return result;
   } finally {
     state.capabilityMutations.delete(workspaceId);
   }
+}
+
+async function recoverPendingWorkspaceRemovals(
+  restrictedApps: RestrictedAppService,
+  restrictedAppProposals: RoutedRestrictedAppProposalHost,
+  io: Partial<WorkspaceRemovalIo>,
+): Promise<string[]> {
+  const pendingRemovals = await listPendingWorkspaceRemovals();
+  for (const pending of pendingRemovals) {
+    try {
+      let intent = pending;
+      if (intent.phase === "requested") {
+        await restrictedApps.removeWorkspace(intent.workspaceId);
+        await restrictedAppProposals.removeWorkspace(intent.workspaceId);
+        intent = await markWorkspaceRemovalAppStateRemoved(intent.workspaceId, io);
+      }
+      await finalizeWorkspaceRemoval(intent.workspaceId, io);
+    } catch {
+      // The durable intent keeps this Space hidden and untrusted. Recovery of
+      // other Spaces and normal startup can proceed; a later startup retries it.
+    }
+  }
+  return pendingRemovals.map((intent) => intent.rootPath);
+}
+
+async function runRestrictedAppMutations<T>(
+  state: LocalApiState,
+  workspaceIds: readonly string[],
+  operation: () => Promise<T>,
+  options: { requiredWorkspaceIds?: readonly string[] } = {},
+): Promise<T> {
+  const ids = [...new Set(workspaceIds)].sort();
+  if (ids.length === 0) throw badRequest("A Space is required for this App change.");
+  const requiredWorkspaceIds = [...new Set(options.requiredWorkspaceIds ?? ids)].sort();
+  if (requiredWorkspaceIds.length === 0 || requiredWorkspaceIds.some((workspaceId) => !ids.includes(workspaceId))) {
+    throw new Error("Restricted App mutation validation must name one or more reserved Spaces.");
+  }
+  if (state.capabilityMutations.has(globalCapabilityMutationKey)
+    || ids.some((workspaceId) => state.capabilityMutations.has(workspaceId))) {
+    throw httpError(409, "Wait for the current capability change to finish.");
+  }
+  if (ids.some((workspaceId) => hasActiveAssistantOperationForWorkspace(state, workspaceId))) {
+    throw httpError(409, "Wait for affected Assistant work to finish before changing capabilities.");
+  }
+  for (const workspaceId of ids) state.capabilityMutations.add(workspaceId);
+  try {
+    for (const workspaceId of requiredWorkspaceIds) {
+      await revalidateRestrictedAppWorkspace(state, workspaceId);
+    }
+    const result = await operation();
+    await Promise.all(ids.map((workspaceId) => invalidateWorkspaceClients(state, workspaceId)));
+    return result;
+  } finally {
+    for (const workspaceId of ids) state.capabilityMutations.delete(workspaceId);
+  }
+}
+
+async function revalidateRestrictedAppWorkspace(state: LocalApiState, workspaceId: string): Promise<void> {
+  await state.beforeRestrictedAppWorkspaceRevalidation?.(workspaceId);
+  await getWorkspace(workspaceId);
 }
 
 function reserveCapabilityMutation(

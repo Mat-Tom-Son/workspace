@@ -11,7 +11,8 @@
 > records labeled candidate remain design guidance until a versioned code format
 > and conformance fixture implements them. The declaration/artifact digest and
 > immutable Release-envelope subset now has versioned code plus independent
-> conformance; other candidate records remain guidance.
+> conformance, and Workspace 0.4 implements its local Project/Release/Instance
+> lifecycle; other candidate records remain guidance.
 
 This document defines the accepted semantic boundaries for App Project, App
 Release, Development Instance, and App Instance implementation. **Runtime
@@ -32,15 +33,18 @@ The current restricted-app implementation establishes useful safety properties:
 - a proposal receipt is bound to one Space, Chat, source path, and digest;
 - installing a digest grants no destination, file root, notification category,
   connection, or automation;
-- host-owned JSON storage is keyed by Space and app id rather than package digest,
-  so it survives a reviewed same-app update;
-- connections and automation execution are bound to the installed digest; and
-- a current update stops the old runtime, preserves app storage, and resets all
-  grants, connections, schedules, and run history.
+- host-owned JSON storage is keyed by Tenant, Runtime Instance, Feature
+  Installation, and Data Namespace, so data lineage is separate from a package
+  digest;
+- connections and automation execution bind the exact runtime, installation,
+  revision, declaration, target, owner, and relevant authority; and
+- Development-preview updates and changed App-Release revisions stop the old
+  runtime, preserve the Feature/Data lineage, and reset grants, connections,
+  schedules, and current-revision run history.
 
-The future model may make safe continuity more selective, but it must never make
-review equivalent to a live grant or let a friendly id substitute for reviewed
-bytes.
+The release-backed local model makes continuity more selective, and future
+hosts must preserve that rule: review is never equivalent to a live grant and a
+friendly id never substitutes for reviewed bytes.
 
 ## Candidate identity model
 
@@ -50,7 +54,7 @@ ownership or authority.
 | Identifier | Meaning | Stability and security use |
 | --- | --- | --- |
 | `spaceId` | Portable identity of one ordinary folder-backed Space | Survives a folder move; is not a cloud credential, tenant id, or project role |
-| `projectId` | Local/project identity of one App Project and its App lineage | Stable across releases; may be portable project metadata but is never a cloud credential or ownership proof |
+| `projectId` | Local/project identity of one App Project and its App lineage | Stable across releases; machine-local in Workspace 0.4, and never a cloud credential or ownership proof; a future portable form needs explicit import/collision rules |
 | `cloudProjectId` | Registry identity of one remotely registered App Project | Bound to `projectId` only through an authenticated, revocable record; excluded from the immutable release identity |
 | `featureId` | Stable logical slot for one feature within the project's App lineage | Names storage and update comparison; cannot prove code or declaration continuity |
 | `featureRevisionDigest` | Content digest of one closed feature artifact | Exact executable identity and the first continuity requirement |
@@ -69,6 +73,41 @@ a Principal or optional Organization, never by a runtime Tenant. Linking a
 local project to a registry creates a distinct `cloudProjectId` binding that
 records the authorizing Principal and current project role. Creating or linking
 an App Instance separately chooses its runtime Tenant.
+
+### Shipped local registry and placement
+
+Workspace 0.4 implements the account-free local subset without creating the
+candidate cloud binding above:
+
+- one source Space has at most one machine-local App Project and one
+  Development Instance;
+- Project presentation is an explicit `{ title, description, icon }` record in
+  Workspace application data, not a new `.workspace/` file. The first reviewed
+  preview may seed it from the Feature declaration, and App Studio can update it;
+- preparing a Release snapshots all current reviewed Development Features into
+  an immutable format-version-2 envelope and stores it by `releaseDigest`;
+- prepared and published are separate durable states. Local publication
+  rechecks the source Feature Installation, package, and artifact stamps and
+  creates eligibility for local installation only;
+- install and update preparation are durable operation records with exact
+  allocated ids and plan content. Activation re-reads the Release, rechecks
+  conflicts or the current active pointer, and consumes the operation only when
+  the registry transition commits;
+- one release-backed local App Instance may exist for a `(projectId, target
+  Space)` pair. A target with any Development or App Feature using the same
+  `featureId` is rejected instead of silently merging runtimes; and
+- the target Space supplies navigation attachment and eligibility for explicit
+  file grants. Release bytes, live authority, connections, schedules, receipts,
+  operation journals, and mutable data remain host-owned application data.
+
+Local “publish” is not upload, registry publication, signing, hosting, sync, or
+App Store submission. Removing either a source Space whose Project has an
+active release-backed instance or that instance's target Space is blocked until
+the App Instance is explicitly uninstalled. A retain choice keeps the source
+registered until its inactive Data Namespaces are explicitly purged; the former
+target may then be removed. Source removal without live or retained data clears
+the machine-local Project and its Release lineage, while target removal cancels
+prepared operations aimed at that registration.
 
 The shared candidate authority stamp is a typed set of independently advancing
 domains, not one global counter:
@@ -297,11 +336,27 @@ another installation. A later reinstall receives a new `featureInstallationId`
 and new data namespace unless an administrator explicitly adopts a compatible
 retained namespace through a reviewed, receipted migration decision.
 
-### Candidate release envelope
+Workspace 0.4 implements the no-schema subset. Its persisted planner treats an
+exact Feature artifact and declaration as `keep`: eligible grants,
+instance-owned connections, enabled jobs, the Feature Installation, and the Data
+Namespace can continue unless the person chooses the stricter reset policy. A
+changed revision is `update`: the installation and data namespace remain, while
+grants, connections, jobs, current-revision runs, and stale hosts reset. Added
+Features receive freshly reserved installation/data ids. Removed Features are
+fenced and their data is retained as inactive data pending an explicit purge.
+Choosing an older published Release uses the same planner and activation path,
+so rollback is not a byte-copy exception. Releases containing a data schema or
+migration are rejected by the current local restricted runtime; no migration is
+executed or implied.
 
-This illustrative shape is not a schema commitment. `releaseDigest` is outside
-the canonical manifest it identifies, avoiding a self-referential hash. Release
-review and publisher attestations are sidecars over that digest.
+### Release envelope
+
+The exact versioned schema is implemented in `app-platform-release.ts`; this
+abbreviated shape remains illustrative. `releaseDigest` is outside the canonical
+manifest it identifies, avoiding a self-referential hash. Release review and
+publisher attestations are sidecars over that digest. Format version 2 adds the
+App-level presentation snapshot to the immutable manifest; the local restricted
+runtime uses `workspace-restricted-app-bridge` compatibility `2.x`.
 
 ```json
 {
@@ -309,12 +364,17 @@ review and publisher attestations are sidecars over that digest.
   "releaseDigest": "sha256:release-content-address",
   "manifest": {
     "format": "workspace-app-release",
-    "formatVersion": 1,
+    "formatVersion": 2,
     "projectId": "project_opaque",
+    "presentation": {
+      "title": "Connected inbox",
+      "description": "A reviewed inbox for this App.",
+      "icon": "mail"
+    },
     "displayVersion": "1.2.0",
     "runtimeApi": {
-      "name": "workspace-feature-broker",
-      "compatibleRange": "1.x"
+      "name": "workspace-restricted-app-bridge",
+      "compatibleRange": "2.x"
     },
     "features": [
       {
@@ -408,9 +468,10 @@ different digest is produced.
 ### Gate 2 acceptance criteria
 
 The foundation accepts Gate 2 as normative semantic design. These criteria gate
-the publication product scope that depends on them; the local foundation meets
-the digest and offline-closure subset, while a public registry must satisfy all
-applicable items before launch:
+the publication product scope that depends on them. The 0.4 local product meets
+the digest/offline-closure boundary plus separately durable
+prepare/publish/install/update acts, while a public registry must satisfy all
+applicable hosted and public-distribution items before launch:
 
 - two independent implementations produce the same digest for every conformance
   fixture, including Unicode and path edge cases;
@@ -855,13 +916,17 @@ connections, jobs, installation incarnations, or old Authority Stamp values.
 
 Local behavior remains understandable without assuming that a release-backed
 local App Instance owns, lives inside, or even has a project folder. Uninstalling
-it removes host-owned runtime state and local connection records according to
-the confirmed retention action, but never deletes separately selected ordinary
-resource targets. Only a Development Instance is source-bound to an App Project
-and Space. Removing a linked Space registration leaves its folder in place and
-revokes future launches of that Development Instance; it does not identify or
-delete an unrelated local App Instance. A future hosted contract must not weaken
-those distinctions.
+it always removes host-owned runtime authority and local connection records and
+then applies the confirmed retain-or-purge choice to each local Data Namespace;
+it never deletes separately selected ordinary resource targets. Retained 0.4
+namespaces are inactive and visible to the source Project for a later explicit
+purge; adoption and export are not implemented. Only a Development Instance is
+source-bound to an App Project and source Space, while a local App Instance is
+attached to its chosen target Space. Workspace blocks removing either
+registration while that release-backed Instance remains active and directs the
+person to uninstall first. Retained data continues to bind the source Project
+until explicit purge, but not the former target. A future hosted contract must
+not weaken those distinctions.
 
 ### Gate 3 risks
 

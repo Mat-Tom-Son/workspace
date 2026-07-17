@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -29,8 +29,23 @@ import type {
 import { RestrictedAppOAuthError, type RestrictedAppOAuthPkceClient } from "./restricted-app-oauth.js";
 import {
   inspectRestrictedAppPackage,
+  snapshotRestrictedAppPackage,
+  stageRestrictedAppReleaseArtifact,
   stageRestrictedAppPackage,
 } from "./restricted-app-package.js";
+import {
+  appReleaseDefaultLimits,
+  assembleAppRelease,
+  verifyAppRelease,
+  type AppReleaseEnvelope,
+  type AppReleaseFeatureInput,
+  type AppReleasePresentation,
+} from "./app-platform-release.js";
+import {
+  planLocalAppInstanceUpdate,
+  type LocalAppInstanceUpdatePlan,
+  type LocalAppUpdateContinuityPolicy,
+} from "./app-instance-update.js";
 import {
   workspaceAutomationMaxErrorLength,
   WorkspaceAutomationService,
@@ -57,6 +72,7 @@ import {
   parsePrincipalId,
   parseProjectId,
   parseRuntimeInstanceId,
+  parseSha256Digest,
   parseTenantId,
   type AuthorityGeneration,
   type AuthorityStamp,
@@ -66,12 +82,18 @@ import {
   type PrincipalId,
   type ProjectId,
   type RuntimeInstanceId,
+  type Sha256Digest,
   type TenantId,
 } from "./app-platform-contract.js";
 import {
   parseAppPlatformArtifactDigest,
   type AppPlatformArtifactDigest,
 } from "./app-platform-artifact.js";
+import {
+  LocalAppReleaseStore,
+  LocalAppReleaseStoreError,
+  type LocalAppReleaseStoreVerifiedProjection,
+} from "./local-app-release-store.js";
 export interface RestrictedAppReview {
   packageName: string;
   version: string;
@@ -84,11 +106,13 @@ export interface RestrictedAppReview {
 
 export interface RestrictedAppInstalled extends RestrictedAppReview {
   workspaceId: string;
+  sourceWorkspaceId: string;
   projectId: ProjectId;
   tenantId: TenantId;
   principalId: PrincipalId;
   runtimeInstanceId: RuntimeInstanceId;
-  runtimeInstanceKind: "development";
+  runtimeInstanceKind: "development" | "app";
+  releaseDigest: Sha256Digest | null;
   featureInstallationId: FeatureInstallationId;
   dataNamespaceId: DataNamespaceId;
   authority: Readonly<AuthorityStamp>;
@@ -98,6 +122,99 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   automations: RestrictedAppAutomationState[];
   installedAt: string;
   updatedAt: string;
+}
+
+export interface LocalAppProject {
+  workspaceId: string;
+  projectId: ProjectId;
+  presentation: AppReleasePresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalAppRelease {
+  projectId: ProjectId;
+  sourceWorkspaceId: string;
+  releaseDigest: Sha256Digest;
+  displayVersion: string;
+  presentation: AppReleasePresentation;
+  featureIds: string[];
+  state: "prepared" | "published";
+  preparedAt: string;
+  publishedAt: string | null;
+}
+
+export interface LocalAppInstance {
+  runtimeInstanceId: RuntimeInstanceId;
+  projectId: ProjectId;
+  workspaceId: string;
+  releaseDigest: Sha256Digest;
+  displayVersion: string;
+  presentation: AppReleasePresentation;
+  featureIds: string[];
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface LocalAppInstallPlan {
+  operationId: string;
+  kind: "install";
+  projectId: ProjectId;
+  targetWorkspaceId: string;
+  releaseDigest: Sha256Digest;
+  runtimeInstanceId: RuntimeInstanceId;
+  features: Array<{
+    featureId: string;
+    featureInstallationId: FeatureInstallationId;
+    dataNamespaceId: DataNamespaceId;
+  }>;
+  preparedAt: string;
+}
+
+export interface LocalAppUpdatePlan {
+  operationId: string;
+  kind: "update";
+  projectId: ProjectId;
+  targetWorkspaceId: string;
+  releaseDigest: Sha256Digest;
+  runtimeInstanceId: RuntimeInstanceId;
+  continuityPolicy: LocalAppUpdateContinuityPolicy;
+  plan: LocalAppInstanceUpdatePlan;
+  preparedAt: string;
+}
+
+export type LocalAppOperation = LocalAppInstallPlan | LocalAppUpdatePlan;
+
+export interface LocalAppRetainedData {
+  retainedDataId: string;
+  projectId: ProjectId;
+  runtimeInstanceId: RuntimeInstanceId;
+  featureId: string;
+  featureInstallationId: FeatureInstallationId;
+  dataNamespaceId: DataNamespaceId;
+  releaseDigest: Sha256Digest;
+  removedAt: string;
+}
+
+export interface LocalAppStudioSnapshot {
+  project: LocalAppProject | null;
+  previews: RestrictedAppInstalled[];
+  releases: LocalAppRelease[];
+  instances: LocalAppInstance[];
+  operations: LocalAppOperation[];
+  retainedData: LocalAppRetainedData[];
+}
+
+export interface LocalAppWorkspaceRemovalImpact {
+  activeSourceInstanceCount: number;
+  activeTargetInstanceCount: number;
+  retainedDataCount: number;
+  incomingPreparedOperationCount: number;
+}
+
+export interface LocalAppReleaseDeletionResult {
+  deleted: boolean;
+  cleanupPending: boolean;
 }
 
 export interface RestrictedAppAutomationState {
@@ -169,11 +286,17 @@ export interface RestrictedAppServiceOptions {
   connections?: RestrictedAppConnectionStore;
   storage?: FileRestrictedAppStorage;
   oauth?: RestrictedAppOAuthPkceClient;
+  releaseStore?: LocalAppReleaseStore;
   now?: () => Date;
+  /**
+   * Persisted jobs are inert by default. Set this to false only when this
+   * service is the top-level lifecycle owner and no recovery must run first.
+   */
+  deferAutomationStart?: boolean;
 }
 
 interface RestrictedAppRegistryFile {
-  schemaVersion: 3;
+  schemaVersion: 4;
   localIdentity: {
     tenantId: TenantId;
     principalId: PrincipalId;
@@ -184,21 +307,50 @@ interface RestrictedAppRegistryFile {
   runtimeInstances: RestrictedAppRuntimeInstanceRegistryEntry[];
   installations: RestrictedAppRegistryEntry[];
   migrations: RestrictedAppRegistryMigration[];
+  releases: LocalAppReleaseRegistryEntry[];
+  operations: LocalAppOperation[];
+  retainedData: LocalAppRetainedData[];
+  adminReceipts: LocalAppAdminReceipt[];
   pendingCleanups: RestrictedAppPendingCleanup[];
   acceptedAutomationRuns: RestrictedAppAcceptedAutomationRegistryReceipt[];
   historicalAutomationRuns: RestrictedAppHistoricalAutomationRegistryReceipt[];
 }
 
 const restrictedAppRegistryMaximumBytes = 5 * 1024 * 1024;
+const restrictedAppStagingTemporaryDirectoryPattern = /^\.(?:staging|release)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const restrictedAppRegistryLimits = Object.freeze({
+  projects: 256,
+  runtimeInstances: 1_024,
+  installations: 2_048,
+  releases: 1_024,
+  operations: 128,
+  retainedData: 2_048,
+  adminReceipts: 1_000,
+});
+
+function assertRestrictedAppRegistryCapacity(
+  collection: keyof typeof restrictedAppRegistryLimits,
+  currentCount: number,
+  additionalCount: number,
+  label: string,
+): void {
+  const maximum = restrictedAppRegistryLimits[collection];
+  if (currentCount + additionalCount <= maximum) return;
+  throw new RestrictedAppError(
+    "INPUT_INVALID",
+    `Local App Studio has reached its ${label} limit of ${maximum}. Remove an unused item before continuing.`,
+  );
+}
 
 interface RestrictedAppProjectRegistryEntry {
   workspaceId: string;
   projectId: ProjectId;
+  presentation: AppReleasePresentation;
   createdAt: string;
+  updatedAt: string;
 }
 
-interface RestrictedAppRuntimeInstanceRegistryEntry {
-  kind: "development";
+interface RestrictedAppRuntimeInstanceRegistryBase {
   workspaceId: string;
   projectId: ProjectId;
   runtimeInstanceId: RuntimeInstanceId;
@@ -207,9 +359,48 @@ interface RestrictedAppRuntimeInstanceRegistryEntry {
   updatedAt: string;
 }
 
+type RestrictedAppRuntimeInstanceRegistryEntry =
+  | (RestrictedAppRuntimeInstanceRegistryBase & { kind: "development" })
+  | (RestrictedAppRuntimeInstanceRegistryBase & {
+      kind: "app";
+      host: "local";
+      activeReleaseDigest: Sha256Digest;
+    });
+
+interface LocalAppReleaseRegistryEntry extends LocalAppRelease {
+  sourceFeatures: Array<{
+    featureId: string;
+    featureInstallationId: FeatureInstallationId;
+    packageDigest: string;
+    artifactDigest: AppPlatformArtifactDigest;
+  }>;
+}
+
+interface LocalAppVerifiedReleaseProjection {
+  readonly projectId: ProjectId;
+  readonly displayVersion: string;
+  readonly presentation: AppReleasePresentation;
+  readonly features: readonly Readonly<{
+    featureId: string;
+    featureRevisionDigest: AppPlatformArtifactDigest;
+    declarationDigest: Sha256Digest;
+  }>[];
+}
+
+interface LocalAppAdminReceipt {
+  receiptId: string;
+  action: "release-prepared" | "release-published" | "release-deleted" | "install-prepared" | "installed"
+    | "update-prepared" | "updated" | "uninstalled" | "retained-data-purged";
+  projectId: ProjectId;
+  runtimeInstanceId: RuntimeInstanceId | null;
+  releaseDigest: Sha256Digest | null;
+  dataDisposition: "retain" | "purge" | null;
+  createdAt: string;
+}
+
 interface RestrictedAppRegistryMigration {
-  fromVersion: 2;
-  toVersion: 3;
+  fromVersion: 2 | 3;
+  toVersion: 3 | 4;
   migratedAt: string;
 }
 
@@ -269,6 +460,8 @@ interface RestrictedAppRegistryEntry {
   workspaceId: string;
   projectId: ProjectId;
   runtimeInstanceId: RuntimeInstanceId;
+  runtimeInstanceKind: "development" | "app";
+  releaseDigest: Sha256Digest | null;
   featureInstallationId: FeatureInstallationId;
   dataNamespaceId: DataNamespaceId;
   authority: Readonly<AuthorityStamp>;
@@ -296,11 +489,15 @@ export class RestrictedAppService {
   readonly #connections?: RestrictedAppConnectionStore;
   readonly #storage?: FileRestrictedAppStorage;
   readonly #oauth?: RestrictedAppOAuthPkceClient;
+  readonly #releaseStore: LocalAppReleaseStore;
   readonly #now: () => Date;
   readonly #automations: WorkspaceAutomationService;
   readonly #acceptedAutomations = new Map<string, AcceptedAutomationContext>();
+  readonly #workspaceRuntimeExclusions = new Set<string>();
   #registry: RestrictedAppRegistryFile;
   #queue: Promise<void> = Promise.resolve();
+  #releaseReconciliationPending = false;
+  #automationsStarted = false;
   #closed = false;
 
   private constructor(options: RestrictedAppServiceOptions, registry: RestrictedAppRegistryFile) {
@@ -311,6 +508,7 @@ export class RestrictedAppService {
     this.#connections = options.connections;
     this.#storage = options.storage;
     this.#oauth = options.oauth;
+    this.#releaseStore = options.releaseStore ?? new LocalAppReleaseStore(join(this.#rootPath, "releases"));
     this.#now = options.now ?? (() => new Date());
     this.#registry = registry;
     const clock: WorkspaceAutomationClock = {
@@ -332,11 +530,42 @@ export class RestrictedAppService {
 
   static async create(options: RestrictedAppServiceOptions): Promise<RestrictedAppService> {
     const rootPath = resolve(options.rootPath);
+    await mkdir(rootPath, { recursive: true });
+    await assertRestrictedAppStateRoot(rootPath);
+    await recoverRestrictedAppRegistryTemps(rootPath);
     await mkdir(join(rootPath, "staged"), { recursive: true });
+    await assertRestrictedAppStagingRoot(join(rootPath, "staged"));
     const now = options.now ?? (() => new Date());
     const loaded = await readRegistry(join(rootPath, "registry.json"), now);
     const reconciled = reconcileInterruptedAutomationRuns(loaded.registry, now().toISOString());
-    const service = new RestrictedAppService({ ...options, now }, reconciled.registry);
+    const releaseStore = options.releaseStore ?? new LocalAppReleaseStore(join(rootPath, "releases"));
+    const releaseRecovery = await releaseStore.recover();
+    const releaseReconciliation = await releaseStore.reconcile(
+      reconciled.registry.releases.map((release) => release.releaseDigest),
+      async (verifiedReleases) => {
+        const storedByDigest = new Map(verifiedReleases.map((release) => [release.releaseDigest, release]));
+        const releaseProjections = new Map<Sha256Digest, LocalAppVerifiedReleaseProjection>();
+        for (const release of reconciled.registry.releases) {
+          const stored = storedByDigest.get(release.releaseDigest);
+          if (!stored) throw new Error(`Local App Release ${release.releaseDigest} is unavailable.`);
+          const projection = assertLocalRestrictedAppReleaseProjection(stored);
+          if (projection.projectId !== release.projectId
+            || projection.displayVersion !== release.displayVersion
+            || JSON.stringify(projection.presentation) !== JSON.stringify(release.presentation)
+            || projection.features.map((feature) => feature.featureId).join("\0") !== release.featureIds.join("\0")) {
+            throw new Error(`Local App Release ${release.releaseDigest} does not match its registry metadata.`);
+          }
+          releaseProjections.set(release.releaseDigest, projection);
+        }
+        await assertReleaseBackedInstallationProjection(
+          reconciled.registry,
+          releaseProjections,
+          join(rootPath, "staged"),
+        );
+      },
+    );
+    const service = new RestrictedAppService({ ...options, releaseStore, now }, reconciled.registry);
+    service.#releaseReconciliationPending = releaseRecovery.cleanupPending || releaseReconciliation.cleanupPending;
     if (loaded.needsWrite || reconciled.needsWrite) await service.#writeRegistry(reconciled.registry);
     else service.#syncRuntimeAuthorities();
     if (options.storage) {
@@ -349,8 +578,12 @@ export class RestrictedAppService {
     }
     await service.#drainPendingCleanups();
     await service.#cleanupStaging();
-    service.#syncAllAutomations();
+    if (options.deferAutomationStart === false) service.startAutomations();
     return service;
+  }
+
+  get automationsStarted(): boolean {
+    return this.#automationsStarted;
   }
 
   async inspect(input: { workspaceId: string; workspaceRoot: string; sourcePath: string }): Promise<RestrictedAppReview> {
@@ -369,9 +602,950 @@ export class RestrictedAppService {
       .map((item) => this.#copyInstalled(item));
   }
 
+  async declareLocalAppProject(input: {
+    workspaceId: string;
+    presentation: AppReleasePresentation;
+  }): Promise<LocalAppProject> {
+    return await this.#mutate(async () => {
+      const presentation = restrictedAppInput(() => presentationValue(input.presentation, "App Project presentation"));
+      const hasProject = this.#registry.projects.some((item) => item.workspaceId === input.workspaceId);
+      const hasDevelopmentRuntime = this.#registry.runtimeInstances.some((item) => (
+        item.kind === "development" && item.workspaceId === input.workspaceId
+      ));
+      assertRestrictedAppRegistryCapacity("projects", this.#registry.projects.length, hasProject ? 0 : 1, "App Project");
+      assertRestrictedAppRegistryCapacity(
+        "runtimeInstances",
+        this.#registry.runtimeInstances.length,
+        hasDevelopmentRuntime ? 0 : 1,
+        "Runtime Instance",
+      );
+      const timestamp = this.#now().toISOString();
+      const context = developmentContext(this.#registry, input.workspaceId, timestamp);
+      const project: RestrictedAppProjectRegistryEntry = {
+        ...context.project,
+        presentation,
+        updatedAt: timestamp,
+      };
+      await this.#writeRegistry({
+        ...this.#registry,
+        projects: context.projects.map((item) => item.projectId === project.projectId ? project : item),
+        runtimeInstances: context.runtimeInstances,
+      });
+      return structuredClone(project);
+    });
+  }
+
+  async localAppStudio(workspaceId: string): Promise<LocalAppStudioSnapshot> {
+    this.#assertOpen();
+    await this.#queue.catch(() => undefined);
+    const project = this.#registry.projects.find((item) => item.workspaceId === workspaceId) ?? null;
+    if (!project) {
+      return { project: null, previews: [], releases: [], instances: [], operations: [], retainedData: [] };
+    }
+    const releases = this.#registry.releases
+      .filter((item) => item.projectId === project.projectId)
+      .sort((left, right) => right.preparedAt.localeCompare(left.preparedAt))
+      .map(copyLocalAppRelease);
+    const releaseByDigest = new Map(releases.map((item) => [item.releaseDigest, item]));
+    const instances = this.#registry.runtimeInstances
+      .filter((item): item is Extract<RestrictedAppRuntimeInstanceRegistryEntry, { kind: "app" }> => (
+        item.kind === "app" && item.projectId === project.projectId
+      ))
+      .map((runtime): LocalAppInstance => {
+        const release = releaseByDigest.get(runtime.activeReleaseDigest);
+        if (!release) throw new Error("Local App Instance Release metadata is unavailable.");
+        const features = this.#registry.installations.filter((item) => item.runtimeInstanceId === runtime.runtimeInstanceId);
+        return {
+          runtimeInstanceId: runtime.runtimeInstanceId,
+          projectId: runtime.projectId,
+          workspaceId: runtime.workspaceId,
+          releaseDigest: runtime.activeReleaseDigest,
+          displayVersion: release.displayVersion,
+          presentation: structuredClone(release.presentation),
+          featureIds: features.map((item) => item.manifest.id).sort(),
+          installedAt: features.map((item) => item.installedAt).sort()[0] ?? runtime.createdAt,
+          updatedAt: runtime.updatedAt,
+        };
+      })
+      .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+    return structuredClone({
+      project,
+      previews: this.#registry.installations
+        .filter((item) => item.projectId === project.projectId && item.runtimeInstanceKind === "development")
+        .sort((left, right) => left.manifest.title.localeCompare(right.manifest.title))
+        .map((item) => this.#copyInstalled(item)),
+      releases,
+      instances,
+      operations: this.#registry.operations.filter((item) => item.projectId === project.projectId),
+      retainedData: this.#registry.retainedData.filter((item) => item.projectId === project.projectId),
+    });
+  }
+
+  async workspaceRemovalMutationWorkspaceIds(workspaceId: string): Promise<string[]> {
+    this.#assertOpen();
+    await this.#queue.catch(() => undefined);
+    const workspaceIds = new Set([workspaceId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const project of this.#registry.projects) {
+        const projectTouchesSelection = workspaceIds.has(project.workspaceId)
+          || this.#registry.runtimeInstances.some((runtime) => (
+            runtime.kind === "app" && runtime.projectId === project.projectId && workspaceIds.has(runtime.workspaceId)
+          ))
+          || this.#registry.operations.some((operation) => (
+            operation.projectId === project.projectId && workspaceIds.has(operation.targetWorkspaceId)
+          ));
+        if (!projectTouchesSelection) continue;
+        const related = [
+          project.workspaceId,
+          ...this.#registry.runtimeInstances
+            .filter((runtime) => runtime.kind === "app" && runtime.projectId === project.projectId)
+            .map((runtime) => runtime.workspaceId),
+          ...this.#registry.operations
+            .filter((operation) => operation.projectId === project.projectId)
+            .map((operation) => operation.targetWorkspaceId),
+        ];
+        for (const id of related) {
+          if (workspaceIds.has(id)) continue;
+          workspaceIds.add(id);
+          changed = true;
+        }
+      }
+    }
+    return [...workspaceIds].sort();
+  }
+
+  async workspaceRemovalImpact(workspaceId: string): Promise<LocalAppWorkspaceRemovalImpact> {
+    this.#assertOpen();
+    await this.#queue.catch(() => undefined);
+    const sourceProject = this.#registry.projects.find((project) => project.workspaceId === workspaceId);
+    return {
+      activeSourceInstanceCount: sourceProject
+        ? this.#registry.runtimeInstances.filter((runtime) => runtime.kind === "app" && runtime.projectId === sourceProject.projectId).length
+        : 0,
+      activeTargetInstanceCount: this.#registry.runtimeInstances.filter((runtime) => (
+        runtime.kind === "app" && runtime.workspaceId === workspaceId
+      )).length,
+      retainedDataCount: sourceProject
+        ? this.#registry.retainedData.filter((retained) => retained.projectId === sourceProject.projectId).length
+        : 0,
+      incomingPreparedOperationCount: this.#registry.operations.filter((operation) => {
+        if (operation.targetWorkspaceId !== workspaceId) return false;
+        const project = this.#registry.projects.find((item) => item.projectId === operation.projectId);
+        return Boolean(project && project.workspaceId !== workspaceId);
+      }).length,
+    };
+  }
+
+  async prepareLocalAppRelease(input: {
+    workspaceId: string;
+    displayVersion: string;
+  }): Promise<LocalAppRelease> {
+    return await this.#mutate(async () => {
+      await assertRestrictedAppStagingRoot(this.#stagingPath);
+      const project = this.#registry.projects.find((item) => item.workspaceId === input.workspaceId);
+      if (!project) throw new RestrictedAppError("INPUT_INVALID", "Create an App Project before preparing a Release.");
+      const displayVersion = restrictedAppInput(() => nonempty(input.displayVersion, "App Release display version", 128));
+      const entries = this.#registry.installations
+        .filter((item) => item.projectId === project.projectId && item.runtimeInstanceKind === "development")
+        .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+      if (entries.length === 0) {
+        throw new RestrictedAppError("INPUT_INVALID", "Install at least one reviewed local preview before preparing a Release.");
+      }
+      assertLocalAppReleasePreparationBounds(entries);
+      const sourceFeatures: LocalAppReleaseRegistryEntry["sourceFeatures"] = entries.map((entry) => ({
+        featureId: entry.manifest.id,
+        featureInstallationId: entry.featureInstallationId,
+        packageDigest: entry.digest,
+        artifactDigest: entry.artifactDigest,
+      }));
+      const sameVersion = this.#registry.releases.find((item) => item.projectId === project.projectId
+        && item.displayVersion === displayVersion);
+      if (sameVersion) {
+        if (JSON.stringify(sameVersion.sourceFeatures) !== JSON.stringify(sourceFeatures)
+          || JSON.stringify(sameVersion.presentation) !== JSON.stringify(project.presentation)) {
+          throw new RestrictedAppError("REVISION_CHANGED", "This Release version already names different reviewed content. Choose a new version.");
+        }
+        await this.#releaseStore.read(sameVersion.releaseDigest);
+        return copyLocalAppRelease(sameVersion);
+      }
+      assertRestrictedAppRegistryCapacity("releases", this.#registry.releases.length, 1, "Release");
+      const features: AppReleaseFeatureInput[] = [];
+      for (const entry of entries) {
+        const snapshot = await snapshotRestrictedAppPackage(stageReceiptFromEntry(entry, this.#digestRoot(entry.digest)));
+        features.push({
+          featureId: entry.manifest.id,
+          featureRevision: {
+            mediaType: "application/vnd.workspace.restricted-app-package+bundle",
+            entries: [...snapshot.files].map(([path, bytes]) => ({ path, bytes })),
+          },
+          declaration: {
+            mediaType: "application/vnd.workspace.restricted-app-manifest+json",
+            value: entry.manifest,
+          },
+          dataSchema: null,
+          migrations: [],
+        });
+      }
+      const timestamp = this.#now().toISOString();
+      const envelope = assembleAppRelease({
+        projectId: project.projectId,
+        presentation: project.presentation,
+        displayVersion,
+        runtimeApi: { name: "workspace-restricted-app-bridge", compatibleRange: "2.x" },
+        features,
+        dependencyInventory: {
+          mediaType: "application/vnd.workspace.restricted-app-dependencies+json",
+          value: {
+            formatVersion: 1,
+            packages: entries.map((entry) => ({
+              featureId: entry.manifest.id,
+              packageName: entry.packageName,
+              packageVersion: entry.version,
+              packageDigest: entry.digest,
+              artifactDigest: entry.artifactDigest,
+            })),
+          },
+        },
+        buildProvenance: {
+          mediaType: "application/vnd.workspace.local-app-build-provenance+json",
+          value: {
+            formatVersion: 1,
+            builder: "workspace-local-app-studio",
+            input: "reviewed-development-instance",
+          },
+        },
+        inspectionEvidence: {
+          mediaType: "application/vnd.workspace.restricted-app-inspection+json",
+          value: {
+            formatVersion: 1,
+            policy: "agent-app-v2",
+            execution: "not-run",
+            featureArtifactDigests: entries.map((entry) => entry.artifactDigest),
+          },
+        },
+        createdAt: timestamp,
+      });
+      try {
+        await this.#releaseStore.put(envelope);
+      } catch (error) {
+        if (error instanceof LocalAppReleaseStoreError && error.code === "RELEASE_STORE_LIMIT_EXCEEDED") {
+          throw new RestrictedAppError("INPUT_INVALID", error.message);
+        }
+        throw error;
+      }
+      const record: LocalAppReleaseRegistryEntry = {
+        projectId: project.projectId,
+        sourceWorkspaceId: project.workspaceId,
+        releaseDigest: envelope.releaseDigest,
+        displayVersion: envelope.manifest.displayVersion,
+        presentation: structuredClone(envelope.manifest.presentation),
+        featureIds: envelope.manifest.features.map((feature) => feature.featureId),
+        state: "prepared",
+        preparedAt: timestamp,
+        publishedAt: null,
+        sourceFeatures,
+      };
+      try {
+        await this.#writeRegistry({
+          ...this.#registry,
+          releases: [...this.#registry.releases, record],
+          adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+            action: "release-prepared",
+            projectId: project.projectId,
+            runtimeInstanceId: null,
+            releaseDigest: record.releaseDigest,
+            createdAt: timestamp,
+          }),
+        });
+      } catch (error) {
+        await this.#reconcileReleaseStore();
+        throw error;
+      }
+      return copyLocalAppRelease(record);
+    });
+  }
+
+  async publishLocalAppRelease(input: {
+    workspaceId: string;
+    releaseDigest: string;
+  }): Promise<LocalAppRelease> {
+    return await this.#mutate(async () => {
+      const digest = releaseDigestValue(input.releaseDigest);
+      const release = this.#registry.releases.find((item) => item.releaseDigest === digest);
+      if (!release || release.sourceWorkspaceId !== input.workspaceId) {
+        throw new RestrictedAppError("INPUT_INVALID", "The prepared Release does not belong to this App Project.");
+      }
+      if (release.state === "published") return copyLocalAppRelease(release);
+      await this.#releaseStore.read(digest);
+      const project = this.#registry.projects.find((item) => item.projectId === release.projectId);
+      if (!project || JSON.stringify(project.presentation) !== JSON.stringify(release.presentation)) {
+        throw new RestrictedAppError(
+          "REVISION_CHANGED",
+          "The App Project presentation changed after this Release was prepared. Prepare and review a new Release.",
+        );
+      }
+      const current = this.#registry.installations
+        .filter((item) => item.projectId === release.projectId && item.runtimeInstanceKind === "development")
+        .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+      const stamps = current.map((entry) => ({
+        featureId: entry.manifest.id,
+        featureInstallationId: entry.featureInstallationId,
+        packageDigest: entry.digest,
+        artifactDigest: entry.artifactDigest,
+      }));
+      if (JSON.stringify(stamps) !== JSON.stringify(release.sourceFeatures)) {
+        throw new RestrictedAppError("REVISION_CHANGED", "The local preview changed after this Release was prepared. Prepare and review a new Release.");
+      }
+      const timestamp = this.#now().toISOString();
+      const published: LocalAppReleaseRegistryEntry = { ...release, state: "published", publishedAt: timestamp };
+      await this.#writeRegistry({
+        ...this.#registry,
+        releases: this.#registry.releases.map((item) => item === release ? published : item),
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "release-published",
+          projectId: release.projectId,
+          runtimeInstanceId: null,
+          releaseDigest: release.releaseDigest,
+          createdAt: timestamp,
+        }),
+      });
+      return copyLocalAppRelease(published);
+    });
+  }
+
+  async deleteLocalAppRelease(input: {
+    workspaceId: string;
+    releaseDigest: string;
+  }): Promise<LocalAppReleaseDeletionResult> {
+    return await this.#mutate(async () => {
+      const digest = releaseDigestValue(input.releaseDigest);
+      const release = this.#registry.releases.find((item) => (
+        item.releaseDigest === digest && item.sourceWorkspaceId === input.workspaceId
+      ));
+      if (!release) {
+        return { deleted: false, cleanupPending: this.#releaseReconciliationPending };
+      }
+
+      const blockers: string[] = [];
+      if (this.#registry.runtimeInstances.some((runtime) => (
+        runtime.kind === "app" && runtime.activeReleaseDigest === digest
+      ))) {
+        blockers.push("Uninstall every App Instance using it first.");
+      }
+      if (this.#registry.operations.some((operation) => (
+        operation.releaseDigest === digest
+        || (operation.kind === "update" && operation.plan.fromReleaseDigest === digest)
+      ))) {
+        blockers.push("Cancel every prepared install, update, or rollback using it first.");
+      }
+      if (this.#registry.retainedData.some((retained) => retained.releaseDigest === digest)) {
+        blockers.push("Purge the retained App data that records it first.");
+      }
+      if (blockers.length > 0) {
+        throw new RestrictedAppError(
+          "INPUT_INVALID",
+          `This Release is still required. ${blockers.join(" ")}`,
+        );
+      }
+
+      const timestamp = this.#now().toISOString();
+      await this.#writeRegistry({
+        ...this.#registry,
+        releases: this.#registry.releases.filter((item) => item !== release),
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "release-deleted",
+          projectId: release.projectId,
+          runtimeInstanceId: null,
+          releaseDigest: release.releaseDigest,
+          createdAt: timestamp,
+        }),
+      });
+      const reconciled = await this.#reconcileReleaseStore();
+      return { deleted: true, cleanupPending: !reconciled };
+    });
+  }
+
+  async prepareLocalAppInstall(input: {
+    sourceWorkspaceId: string;
+    targetWorkspaceId: string;
+    releaseDigest: string;
+  }): Promise<LocalAppInstallPlan> {
+    return await this.#mutate(async () => {
+      const sourceWorkspaceId = restrictedAppInput(() => nonempty(input.sourceWorkspaceId, "App Project source Space id", 200));
+      const targetWorkspaceId = restrictedAppInput(() => nonempty(input.targetWorkspaceId, "App install target Space id", 200));
+      const digest = releaseDigestValue(input.releaseDigest);
+      const release = this.#publishedRelease(sourceWorkspaceId, digest);
+      const envelope = await this.#releaseStore.read(digest);
+      assertLocalRestrictedAppRelease(envelope);
+      const existingRuntime = this.#registry.runtimeInstances.find((item): item is Extract<
+        RestrictedAppRuntimeInstanceRegistryEntry,
+        { kind: "app" }
+      > => item.kind === "app" && item.projectId === release.projectId && item.workspaceId === targetWorkspaceId);
+      if (existingRuntime) {
+        throw new RestrictedAppError(
+          "INPUT_INVALID",
+          existingRuntime.activeReleaseDigest === digest
+            ? "This Release is already installed in that Space."
+            : "This App is already installed in that Space. Prepare an update instead.",
+        );
+      }
+      const conflict = envelope.manifest.features.find((feature) => this.#registry.installations.some((item) => (
+        item.workspaceId === targetWorkspaceId && item.manifest.id === feature.featureId
+      )));
+      if (conflict) {
+        throw new RestrictedAppError(
+          "INPUT_INVALID",
+          `The target Space already contains the ${conflict.featureId} Feature. Choose another Space or remove the conflicting preview first.`,
+        );
+      }
+      const pending = this.#registry.operations.find((item): item is LocalAppInstallPlan => item.kind === "install"
+        && item.projectId === release.projectId && item.targetWorkspaceId === targetWorkspaceId);
+      if (pending) {
+        if (pending.releaseDigest !== digest) {
+          throw new RestrictedAppError("INPUT_INVALID", "A different install is already prepared for this App and Space.");
+        }
+        return structuredClone(pending);
+      }
+      assertRestrictedAppRegistryCapacity("operations", this.#registry.operations.length, 1, "prepared operation");
+      const timestamp = this.#now().toISOString();
+      const operation: LocalAppInstallPlan = {
+        operationId: `operation_${randomUUID()}`,
+        kind: "install",
+        projectId: release.projectId,
+        targetWorkspaceId,
+        releaseDigest: digest,
+        runtimeInstanceId: createRuntimeInstanceId(),
+        features: envelope.manifest.features.map((feature) => ({
+          featureId: feature.featureId,
+          featureInstallationId: createFeatureInstallationId(),
+          dataNamespaceId: createDataNamespaceId(),
+        })),
+        preparedAt: timestamp,
+      };
+      await this.#writeRegistry({
+        ...this.#registry,
+        operations: [...this.#registry.operations, operation],
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "install-prepared",
+          projectId: release.projectId,
+          runtimeInstanceId: operation.runtimeInstanceId,
+          releaseDigest: digest,
+          createdAt: timestamp,
+        }),
+      });
+      return structuredClone(operation);
+    });
+  }
+
+  async activateLocalAppInstall(operationId: string): Promise<{
+    instance: LocalAppInstance;
+    apps: RestrictedAppInstalled[];
+  }> {
+    return await this.#mutate(async () => {
+      const id = restrictedAppInput(() => localAppOperationId(operationId));
+      const operation = this.#registry.operations.find((item): item is LocalAppInstallPlan => (
+        item.kind === "install" && item.operationId === id
+      ));
+      if (!operation) throw new RestrictedAppError("INPUT_INVALID", "The prepared App install is no longer available.");
+      const release = this.#registry.releases.find((item) => item.releaseDigest === operation.releaseDigest
+        && item.projectId === operation.projectId && item.state === "published");
+      if (!release) throw new RestrictedAppError("REVISION_CHANGED", "The published Release is no longer available.");
+      assertRestrictedAppRegistryCapacity("runtimeInstances", this.#registry.runtimeInstances.length, 1, "Runtime Instance");
+      assertRestrictedAppRegistryCapacity(
+        "installations",
+        this.#registry.installations.length,
+        release.featureIds.length,
+        "Feature Installation",
+      );
+      const envelope = await this.#releaseStore.read(operation.releaseDigest);
+      const packages = await this.#stageLocalReleasePackages(envelope);
+      const conflict = packages.find(({ receipt }) => this.#registry.installations.some((item) => (
+        item.workspaceId === operation.targetWorkspaceId && item.manifest.id === receipt.manifest.id
+      )));
+      if (conflict) throw new RestrictedAppError("REVISION_CHANGED", `The target Space now contains the ${conflict.receipt.manifest.id} Feature.`);
+      if (this.#registry.runtimeInstances.some((item) => item.runtimeInstanceId === operation.runtimeInstanceId)) {
+        throw new RestrictedAppError("REVISION_CHANGED", "The prepared Runtime Instance id is no longer available.");
+      }
+      const timestamp = this.#now().toISOString();
+      const runtime: RestrictedAppRuntimeInstanceRegistryEntry = {
+        kind: "app",
+        host: "local",
+        workspaceId: operation.targetWorkspaceId,
+        projectId: operation.projectId,
+        runtimeInstanceId: operation.runtimeInstanceId,
+        runtimeInstanceGeneration: createAuthorityGeneration(),
+        activeReleaseDigest: operation.releaseDigest,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const allocations = new Map(operation.features.map((feature) => [feature.featureId, feature]));
+      const apps: RestrictedAppRegistryEntry[] = packages.map(({ feature, receipt }) => {
+        const allocation = allocations.get(feature.featureId);
+        if (!allocation) throw new Error(`Prepared App install is missing an allocation for ${feature.featureId}.`);
+        return {
+          workspaceId: operation.targetWorkspaceId,
+          projectId: operation.projectId,
+          runtimeInstanceId: operation.runtimeInstanceId,
+          runtimeInstanceKind: "app",
+          releaseDigest: operation.releaseDigest,
+          featureInstallationId: allocation.featureInstallationId,
+          dataNamespaceId: allocation.dataNamespaceId,
+          authority: authorityForContext(this.#registry, runtime),
+          packageName: receipt.packageName,
+          version: receipt.version,
+          digest: receipt.digest,
+          artifactDigest: receipt.artifactDigest,
+          manifest: structuredClone(receipt.manifest),
+          networkGrants: [],
+          fileGrants: [],
+          notificationGrants: [],
+          automations: receipt.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })),
+          automationRuns: [],
+          fileCount: receipt.fileCount,
+          totalBytes: receipt.totalBytes,
+          installedAt: timestamp,
+          updatedAt: timestamp,
+        };
+      });
+      await this.#writeRegistry({
+        ...this.#registry,
+        runtimeInstances: [...this.#registry.runtimeInstances, runtime],
+        installations: [...this.#registry.installations, ...apps],
+        operations: this.#registry.operations.filter((item) => item !== operation),
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "installed",
+          projectId: operation.projectId,
+          runtimeInstanceId: operation.runtimeInstanceId,
+          releaseDigest: operation.releaseDigest,
+          createdAt: timestamp,
+        }),
+      });
+      for (const app of apps) this.#syncAppAutomations(app);
+      return {
+        instance: localAppInstanceFrom(runtime, release, apps),
+        apps: apps.map((app) => this.#copyInstalled(app)),
+      };
+    });
+  }
+
+  async prepareLocalAppUpdate(input: {
+    sourceWorkspaceId: string;
+    runtimeInstanceId: string;
+    releaseDigest: string;
+    continuityPolicy?: LocalAppUpdateContinuityPolicy;
+  }): Promise<LocalAppUpdatePlan> {
+    return await this.#mutate(async () => {
+      const runtimeInstanceId = restrictedAppInput(() => parseRuntimeInstanceId(input.runtimeInstanceId));
+      const runtime = this.#registry.runtimeInstances.find((item): item is Extract<
+        RestrictedAppRuntimeInstanceRegistryEntry,
+        { kind: "app" }
+      > => item.kind === "app" && item.runtimeInstanceId === runtimeInstanceId);
+      if (!runtime) throw new RestrictedAppError("INPUT_INVALID", "The local App Instance is no longer installed.");
+      const targetDigest = releaseDigestValue(input.releaseDigest);
+      const targetRelease = this.#publishedRelease(input.sourceWorkspaceId, targetDigest);
+      if (targetRelease.projectId !== runtime.projectId) {
+        throw new RestrictedAppError("INPUT_INVALID", "The target Release belongs to a different App Project.");
+      }
+      if (runtime.activeReleaseDigest === targetDigest) {
+        throw new RestrictedAppError("INPUT_INVALID", "That Release is already active in this Space.");
+      }
+      const continuityPolicy = input.continuityPolicy ?? "eligible";
+      if (continuityPolicy !== "eligible" && continuityPolicy !== "reset") {
+        throw new RestrictedAppError("INPUT_INVALID", "App update continuity must be eligible or reset.");
+      }
+      const pending = this.#registry.operations.find((item): item is LocalAppUpdatePlan => (
+        item.kind === "update" && item.runtimeInstanceId === runtime.runtimeInstanceId
+      ));
+      if (pending) {
+        if (pending.releaseDigest !== targetDigest) {
+          throw new RestrictedAppError("INPUT_INVALID", "A different update is already prepared for this App Instance.");
+        }
+        if (pending.continuityPolicy !== continuityPolicy) {
+          throw new RestrictedAppError(
+            "INPUT_INVALID",
+            "This update is already prepared with a different access policy. Cancel it before preparing another policy.",
+          );
+        }
+        return structuredClone(pending);
+      }
+      assertRestrictedAppRegistryCapacity("operations", this.#registry.operations.length, 1, "prepared operation");
+      const operationId = `operation_${randomUUID()}`;
+      const currentEntries = this.#registry.installations.filter((item) => item.runtimeInstanceId === runtime.runtimeInstanceId);
+      const targetEnvelope = assertLocalRestrictedAppRelease(await this.#releaseStore.read(targetDigest));
+      const conflict = targetEnvelope.manifest.features.find((feature) => this.#registry.installations.some((item) => (
+        item.workspaceId === runtime.workspaceId
+        && item.runtimeInstanceId !== runtime.runtimeInstanceId
+        && item.manifest.id === feature.featureId
+      )));
+      if (conflict) {
+        throw new RestrictedAppError(
+          "INPUT_INVALID",
+          `The target Space already contains the ${conflict.featureId} Feature outside this App Instance. Remove that conflicting preview or App first.`,
+        );
+      }
+      const currentIds = new Set(currentEntries.map((entry) => entry.manifest.id));
+      const allocations = targetEnvelope.manifest.features
+        .filter((feature) => !currentIds.has(feature.featureId))
+        .map((feature) => ({
+          featureId: feature.featureId,
+          featureInstallationId: createFeatureInstallationId(),
+          dataNamespaceId: createDataNamespaceId(),
+        }));
+      const plan = await this.#buildLocalAppUpdatePlan(runtime, targetEnvelope, continuityPolicy, operationId, allocations);
+      const timestamp = this.#now().toISOString();
+      const operation: LocalAppUpdatePlan = {
+        operationId,
+        kind: "update",
+        projectId: runtime.projectId,
+        targetWorkspaceId: runtime.workspaceId,
+        releaseDigest: targetDigest,
+        runtimeInstanceId: runtime.runtimeInstanceId,
+        continuityPolicy,
+        plan,
+        preparedAt: timestamp,
+      };
+      await this.#writeRegistry({
+        ...this.#registry,
+        operations: [...this.#registry.operations, operation],
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "update-prepared",
+          projectId: runtime.projectId,
+          runtimeInstanceId: runtime.runtimeInstanceId,
+          releaseDigest: targetDigest,
+          createdAt: timestamp,
+        }),
+      });
+      return structuredClone(operation);
+    });
+  }
+
+  async activateLocalAppUpdate(operationId: string): Promise<{
+    instance: LocalAppInstance;
+    apps: RestrictedAppInstalled[];
+  }> {
+    return await this.#mutate(async () => {
+      const id = restrictedAppInput(() => localAppOperationId(operationId));
+      const operation = this.#registry.operations.find((item): item is LocalAppUpdatePlan => (
+        item.kind === "update" && item.operationId === id
+      ));
+      if (!operation) throw new RestrictedAppError("INPUT_INVALID", "The prepared App update is no longer available.");
+      const runtime = this.#registry.runtimeInstances.find((item): item is Extract<
+        RestrictedAppRuntimeInstanceRegistryEntry,
+        { kind: "app" }
+      > => item.kind === "app" && item.runtimeInstanceId === operation.runtimeInstanceId);
+      if (!runtime || runtime.activeReleaseDigest !== operation.plan.fromReleaseDigest) {
+        throw new RestrictedAppError("REVISION_CHANGED", "The App Instance changed after this update was prepared.");
+      }
+      const targetRelease = this.#registry.releases.find((item) => item.releaseDigest === operation.releaseDigest
+        && item.projectId === operation.projectId && item.state === "published");
+      if (!targetRelease) throw new RestrictedAppError("REVISION_CHANGED", "The target Release is no longer published.");
+      const targetEnvelope = assertLocalRestrictedAppRelease(await this.#releaseStore.read(operation.releaseDigest));
+      const addedAllocations = operation.plan.transitions
+        .filter((transition) => transition.action === "add")
+        .map((transition) => ({
+          featureId: transition.featureId,
+          featureInstallationId: transition.featureInstallationId,
+          dataNamespaceId: transition.dataNamespaceId,
+        }));
+      const recomputed = await this.#buildLocalAppUpdatePlan(
+        runtime,
+        targetEnvelope,
+        operation.continuityPolicy,
+        operation.operationId,
+        addedAllocations,
+      );
+      if (recomputed.planDigest !== operation.plan.planDigest || JSON.stringify(recomputed) !== JSON.stringify(operation.plan)) {
+        throw new RestrictedAppError("REVISION_CHANGED", "The App update plan no longer matches current durable state.");
+      }
+      if (!recomputed.canCommit) {
+        throw new RestrictedAppError("INPUT_INVALID", recomputed.blockedReasons.join(" ") || "This App update cannot be activated safely.");
+      }
+      const currentFeatureCount = this.#registry.installations.filter((item) => (
+        item.runtimeInstanceId === runtime.runtimeInstanceId
+      )).length;
+      const nextFeatureCount = recomputed.transitions.filter((transition) => transition.action !== "remove").length;
+      const retainedDataAdditions = recomputed.transitions.filter((transition) => transition.action === "remove").length;
+      assertRestrictedAppRegistryCapacity(
+        "installations",
+        this.#registry.installations.length - currentFeatureCount,
+        nextFeatureCount,
+        "Feature Installation",
+      );
+      assertRestrictedAppRegistryCapacity(
+        "retainedData",
+        this.#registry.retainedData.length,
+        retainedDataAdditions,
+        "retained-data record",
+      );
+      const packages = await this.#stageLocalReleasePackages(targetEnvelope);
+      const conflict = packages.find(({ feature }) => this.#registry.installations.some((item) => (
+        item.workspaceId === runtime.workspaceId
+        && item.runtimeInstanceId !== runtime.runtimeInstanceId
+        && item.manifest.id === feature.featureId
+      )));
+      if (conflict) {
+        throw new RestrictedAppError(
+          "REVISION_CHANGED",
+          `The target Space now contains the ${conflict.feature.featureId} Feature outside this App Instance.`,
+        );
+      }
+      const packagesByFeature = new Map(packages.map((item) => [item.feature.featureId, item]));
+      const current = this.#registry.installations.filter((item) => item.runtimeInstanceId === runtime.runtimeInstanceId);
+      await Promise.all(current.map((app) => this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest)));
+      // Connection reset is a revocation boundary, so remove the predecessor
+      // credentials before committing the successor authority. Deferring this
+      // cleanup is unsafe for exact-revision resets because the old and new
+      // Feature identities intentionally match. A failure here leaves the
+      // reviewed operation intact and the predecessor installation active,
+      // but without the credentials the person explicitly chose to revoke.
+      for (const transition of recomputed.transitions) {
+        if (transition.action !== "remove" && !transition.resets.includes("connections")) continue;
+        const existing = current.find((item) => item.manifest.id === transition.featureId);
+        if (!existing) throw new Error(`App update connection reset is missing Feature ${transition.featureId}.`);
+        // Invalidate OAuth's per-binding generation before deleting the shared
+        // credential scope. An in-flight refresh or browser callback must not
+        // recreate the exact binding after an explicit reset.
+        await this.#invalidateOAuthApp(existing);
+        if (this.#connections) {
+          await this.#connections.deleteFeature(connectionFeatureScope(existing, this.#registry.localIdentity));
+        }
+      }
+      const timestamp = this.#now().toISOString();
+      const nextRuntime: Extract<RestrictedAppRuntimeInstanceRegistryEntry, { kind: "app" }> = {
+        ...runtime,
+        runtimeInstanceGeneration: createAuthorityGeneration(),
+        activeReleaseDigest: operation.releaseDigest,
+        updatedAt: timestamp,
+      };
+      const nextApps: RestrictedAppRegistryEntry[] = [];
+      const retainedData = [...this.#registry.retainedData];
+      const pendingCleanups = [...this.#registry.pendingCleanups];
+      for (const transition of recomputed.transitions) {
+        const existing = current.find((item) => item.manifest.id === transition.featureId);
+        if (transition.action === "remove") {
+          if (!existing) throw new Error(`App update removal is missing Feature ${transition.featureId}.`);
+          retainedData.push(retainedDataForEntry(existing, operation.plan.fromReleaseDigest, timestamp));
+          pendingCleanups.push(pendingPackageCleanupForEntry(existing, timestamp));
+          continue;
+        }
+        const target = packagesByFeature.get(transition.featureId);
+        if (!target) throw new Error(`App update target is missing Feature ${transition.featureId}.`);
+        if (!existing) {
+          nextApps.push({
+            workspaceId: runtime.workspaceId,
+            projectId: runtime.projectId,
+            runtimeInstanceId: runtime.runtimeInstanceId,
+            runtimeInstanceKind: "app",
+            releaseDigest: operation.releaseDigest,
+            featureInstallationId: transition.featureInstallationId,
+            dataNamespaceId: transition.dataNamespaceId,
+            authority: authorityForContext(this.#registry, nextRuntime),
+            packageName: target.receipt.packageName,
+            version: target.receipt.version,
+            digest: target.receipt.digest,
+            artifactDigest: target.receipt.artifactDigest,
+            manifest: structuredClone(target.receipt.manifest),
+            networkGrants: [],
+            fileGrants: [],
+            notificationGrants: [],
+            automations: target.receipt.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })),
+            automationRuns: [],
+            fileCount: target.receipt.fileCount,
+            totalBytes: target.receipt.totalBytes,
+            installedAt: timestamp,
+            updatedAt: timestamp,
+          });
+          continue;
+        }
+        const exactContinuity = transition.resets.length === 0 && transition.action === "keep";
+        let authority = existing.authority;
+        if (transition.featureFenceFields.length > 0) {
+          authority = advanceAuthorityStamp(authority, transition.featureFenceFields);
+        }
+        authority = parseAuthorityStamp({ ...authority, runtimeInstanceGeneration: nextRuntime.runtimeInstanceGeneration });
+        if (!exactContinuity) {
+          pendingCleanups.push(pendingPackageCleanupForEntry(existing, timestamp));
+        } else if (existing.digest !== target.receipt.digest) {
+          pendingCleanups.push({
+            cleanupId: `cleanup_${randomUUID()}`,
+            connectionScope: null,
+            storageOwner: null,
+            packageDigest: existing.digest,
+            createdAt: timestamp,
+          });
+        }
+        nextApps.push({
+          ...existing,
+          releaseDigest: operation.releaseDigest,
+          authority,
+          packageName: target.receipt.packageName,
+          version: target.receipt.version,
+          digest: target.receipt.digest,
+          artifactDigest: target.receipt.artifactDigest,
+          manifest: structuredClone(target.receipt.manifest),
+          networkGrants: exactContinuity ? existing.networkGrants : [],
+          fileGrants: exactContinuity ? existing.fileGrants : [],
+          notificationGrants: exactContinuity ? existing.notificationGrants : [],
+          automations: exactContinuity
+            ? existing.automations
+            : target.receipt.manifest.automations.map((automation) => ({ id: automation.id, enabled: false })),
+          automationRuns: exactContinuity ? existing.automationRuns : [],
+          fileCount: target.receipt.fileCount,
+          totalBytes: target.receipt.totalBytes,
+          updatedAt: timestamp,
+        });
+      }
+      const otherApps = this.#registry.installations.filter((item) => item.runtimeInstanceId !== runtime.runtimeInstanceId);
+      await this.#writeRegistry({
+        ...this.#registry,
+        runtimeInstances: this.#registry.runtimeInstances.map((item) => item === runtime ? nextRuntime : item),
+        installations: [...otherApps, ...nextApps],
+        operations: this.#registry.operations.filter((item) => item !== operation),
+        retainedData,
+        pendingCleanups,
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "updated",
+          projectId: runtime.projectId,
+          runtimeInstanceId: runtime.runtimeInstanceId,
+          releaseDigest: operation.releaseDigest,
+          createdAt: timestamp,
+        }),
+      });
+      for (const app of current) this.#unregisterAppAutomations(app);
+      for (const app of nextApps) this.#syncAppAutomations(app);
+      await this.#drainPendingCleanups();
+      return {
+        instance: localAppInstanceFrom(nextRuntime, targetRelease, nextApps),
+        apps: nextApps.map((app) => this.#copyInstalled(app)),
+      };
+    });
+  }
+
+  async cancelLocalAppOperation(operationId: string): Promise<boolean> {
+    return await this.#mutate(async () => {
+      const id = restrictedAppInput(() => localAppOperationId(operationId));
+      const operation = this.#registry.operations.find((item) => item.operationId === id);
+      if (!operation) return false;
+      await this.#writeRegistry({
+        ...this.#registry,
+        operations: this.#registry.operations.filter((item) => item !== operation),
+      });
+      return true;
+    });
+  }
+
+  async uninstallLocalApp(input: {
+    runtimeInstanceId: string;
+    dataDisposition: "retain" | "purge";
+  }): Promise<{ removed: boolean; retainedData: LocalAppRetainedData[]; cleanupPending: boolean }> {
+    return await this.#mutate(async () => {
+      const runtimeInstanceId = restrictedAppInput(() => parseRuntimeInstanceId(input.runtimeInstanceId));
+      if (input.dataDisposition !== "retain" && input.dataDisposition !== "purge") {
+        throw new RestrictedAppError("INPUT_INVALID", "Choose whether to retain or purge this App's local data.");
+      }
+      const runtime = this.#registry.runtimeInstances.find((item): item is Extract<
+        RestrictedAppRuntimeInstanceRegistryEntry,
+        { kind: "app" }
+      > => item.kind === "app" && item.runtimeInstanceId === runtimeInstanceId);
+      if (!runtime) return { removed: false, retainedData: [], cleanupPending: this.#registry.pendingCleanups.length > 0 };
+      const apps = this.#registry.installations.filter((item) => item.runtimeInstanceId === runtimeInstanceId);
+      if (input.dataDisposition === "retain") {
+        assertRestrictedAppRegistryCapacity(
+          "retainedData",
+          this.#registry.retainedData.length,
+          apps.length,
+          "retained-data record",
+        );
+      }
+      await Promise.all(apps.map((app) => this.#runtimeHost?.stop(app.workspaceId, app.manifest.id, app.digest)));
+      await Promise.all(apps.map((app) => this.#invalidateOAuthApp(app)));
+      const timestamp = this.#now().toISOString();
+      const previouslyRetained = this.#registry.retainedData.filter((item) => item.runtimeInstanceId === runtimeInstanceId);
+      const retained = input.dataDisposition === "retain"
+        ? apps.map((app) => retainedDataForEntry(app, runtime.activeReleaseDigest, timestamp))
+        : [];
+      const retainedData = input.dataDisposition === "purge"
+        ? this.#registry.retainedData.filter((item) => item.runtimeInstanceId !== runtimeInstanceId)
+        : [...this.#registry.retainedData, ...retained];
+      await this.#writeRegistry({
+        ...this.#registry,
+        runtimeInstances: this.#registry.runtimeInstances.filter((item) => item !== runtime),
+        installations: this.#registry.installations.filter((item) => item.runtimeInstanceId !== runtimeInstanceId),
+        operations: this.#registry.operations.filter((item) => item.runtimeInstanceId !== runtimeInstanceId),
+        retainedData,
+        pendingCleanups: [
+          ...this.#registry.pendingCleanups,
+          ...apps.map((app) => pendingCleanupForEntry(
+            app,
+            this.#registry.localIdentity,
+            input.dataDisposition === "purge",
+            timestamp,
+          )),
+          ...(input.dataDisposition === "purge"
+            ? previouslyRetained.map((item) => pendingCleanupForRetainedData(item, this.#registry.localIdentity, timestamp))
+            : []),
+        ],
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "uninstalled",
+          projectId: runtime.projectId,
+          runtimeInstanceId: runtime.runtimeInstanceId,
+          releaseDigest: runtime.activeReleaseDigest,
+          dataDisposition: input.dataDisposition,
+          createdAt: timestamp,
+        }),
+      });
+      for (const app of apps) this.#unregisterAppAutomations(app);
+      await this.#drainPendingCleanups();
+      return {
+        removed: true,
+        retainedData: structuredClone(retained),
+        cleanupPending: this.#registry.pendingCleanups.length > 0,
+      };
+    });
+  }
+
+  async purgeLocalAppRetainedData(retainedDataId: string): Promise<{ purged: boolean; cleanupPending: boolean }> {
+    return await this.#mutate(async () => {
+      const id = restrictedAppInput(() => nonempty(retainedDataId, "Local App retained data id", 64));
+      const retained = this.#registry.retainedData.find((item) => item.retainedDataId === id);
+      if (!retained) return { purged: false, cleanupPending: this.#registry.pendingCleanups.length > 0 };
+      const timestamp = this.#now().toISOString();
+      const cleanup: RestrictedAppPendingCleanup = {
+        cleanupId: `cleanup_${randomUUID()}`,
+        connectionScope: null,
+        storageOwner: {
+          ownerClass: "instance",
+          tenantId: this.#registry.localIdentity.tenantId,
+          runtimeInstanceId: retained.runtimeInstanceId,
+          featureInstallationId: retained.featureInstallationId,
+          dataNamespaceId: retained.dataNamespaceId,
+        },
+        packageDigest: null,
+        createdAt: timestamp,
+      };
+      await this.#writeRegistry({
+        ...this.#registry,
+        retainedData: this.#registry.retainedData.filter((item) => item !== retained),
+        pendingCleanups: [...this.#registry.pendingCleanups, cleanup],
+        adminReceipts: appendAdminReceipt(this.#registry.adminReceipts, {
+          action: "retained-data-purged",
+          projectId: retained.projectId,
+          runtimeInstanceId: retained.runtimeInstanceId,
+          releaseDigest: retained.releaseDigest,
+          createdAt: timestamp,
+        }),
+      });
+      await this.#drainPendingCleanups();
+      return { purged: true, cleanupPending: this.#registry.pendingCleanups.length > 0 };
+    });
+  }
+
   async runtimeDescriptor(workspaceId: string, appId: string, expectedDigest: string): Promise<RestrictedAppRuntimeDescriptor> {
     this.#assertOpen();
     await this.#queue.catch(() => undefined);
+    await assertRestrictedAppStagingRoot(this.#stagingPath);
     const app = this.#installed(workspaceId, appId, expectedDigest);
     return { ...app, stagedRoot: this.#digestRoot(app.digest) };
   }
@@ -388,6 +1562,9 @@ export class RestrictedAppService {
       const inspection = await inspectRestrictedAppPackage(sourceRoot);
       if (inspection.digest !== expectedDigest) throw new RestrictedAppError("REVISION_CHANGED", "The package changed after review. Review the new revision before installing it.");
       const existing = this.#registry.installations.find((item) => item.workspaceId === input.workspaceId && item.manifest.id === inspection.manifest.id);
+      if (existing?.runtimeInstanceKind === "app") {
+        throw new RestrictedAppError("INPUT_INVALID", "An installed Release already contributes this Feature in the Space. Choose another Space or uninstall it first.");
+      }
       if (existing?.digest === inspection.digest) {
         try {
           await stageRestrictedAppPackage(sourceRoot, this.#stagingPath, expectedDigest);
@@ -399,6 +1576,23 @@ export class RestrictedAppService {
       if (existing && existing.packageName !== inspection.packageName) {
         throw new RestrictedAppError("INPUT_INVALID", "A different package already owns this restricted app id in the Space.");
       }
+      const hasProject = this.#registry.projects.some((item) => item.workspaceId === input.workspaceId);
+      const hasDevelopmentRuntime = this.#registry.runtimeInstances.some((item) => (
+        item.kind === "development" && item.workspaceId === input.workspaceId
+      ));
+      assertRestrictedAppRegistryCapacity("projects", this.#registry.projects.length, hasProject ? 0 : 1, "App Project");
+      assertRestrictedAppRegistryCapacity(
+        "runtimeInstances",
+        this.#registry.runtimeInstances.length,
+        hasDevelopmentRuntime ? 0 : 1,
+        "Runtime Instance",
+      );
+      assertRestrictedAppRegistryCapacity(
+        "installations",
+        this.#registry.installations.length - (existing ? 1 : 0),
+        1,
+        "Feature Installation",
+      );
       let staged: Awaited<ReturnType<typeof stageRestrictedAppPackage>>;
       try {
         staged = await stageRestrictedAppPackage(sourceRoot, this.#stagingPath, expectedDigest);
@@ -411,11 +1605,22 @@ export class RestrictedAppService {
         await this.#invalidateOAuthApp(existing);
       }
       const timestamp = this.#now().toISOString();
+      const hadProject = hasProject;
       const context = developmentContext(this.#registry, input.workspaceId, timestamp);
+      const project = hadProject ? context.project : {
+        ...context.project,
+        presentation: presentationFromManifest(staged.manifest),
+        updatedAt: timestamp,
+      };
+      const projects = hadProject
+        ? context.projects
+        : context.projects.map((item) => item === context.project ? project : item);
       const entry: RestrictedAppRegistryEntry = {
         workspaceId: input.workspaceId,
-        projectId: context.project.projectId,
+        projectId: project.projectId,
         runtimeInstanceId: context.runtimeInstance.runtimeInstanceId,
+        runtimeInstanceKind: "development",
+        releaseDigest: null,
         featureInstallationId: existing?.featureInstallationId ?? createFeatureInstallationId(),
         dataNamespaceId: existing?.dataNamespaceId ?? createDataNamespaceId(),
         authority: existing
@@ -448,7 +1653,7 @@ export class RestrictedAppService {
         : this.#registry.pendingCleanups;
       await this.#writeRegistry({
         ...this.#registry,
-        projects: context.projects,
+        projects,
         runtimeInstances: context.runtimeInstances,
         installations: next,
         pendingCleanups,
@@ -467,6 +1672,9 @@ export class RestrictedAppService {
       const appId = appIdValue(input.appId);
       const existing = this.#registry.installations.find((item) => item.workspaceId === input.workspaceId && item.manifest.id === appId);
       if (!existing) return false;
+      if (existing.runtimeInstanceKind === "app") {
+        throw new RestrictedAppError("INPUT_INVALID", "Installed Releases must be uninstalled from App Studio with an explicit data choice.");
+      }
       if (input.expectedDigest !== undefined && digestValue(input.expectedDigest) !== existing.digest) {
         throw new RestrictedAppError("REVISION_CHANGED", "The installed app revision changed. Refresh before removing it.");
       }
@@ -489,23 +1697,50 @@ export class RestrictedAppService {
 
   async removeWorkspace(workspaceId: string): Promise<void> {
     await this.#mutate(async () => {
-      const removed = this.#registry.installations.filter((item) => item.workspaceId === workspaceId);
+      const attachedInstance = this.#registry.runtimeInstances.find((item) => item.kind === "app" && item.workspaceId === workspaceId);
+      const sourceProject = this.#registry.projects.find((item) => item.workspaceId === workspaceId);
+      const publishedInstance = sourceProject && this.#registry.runtimeInstances.find((item) => item.kind === "app"
+        && item.projectId === sourceProject.projectId);
+      if (attachedInstance || publishedInstance) {
+        throw new RestrictedAppError("INPUT_INVALID", "Uninstall release-backed Apps from this Space before removing it.");
+      }
+      if (sourceProject && this.#registry.retainedData.some((item) => item.projectId === sourceProject.projectId)) {
+        throw new RestrictedAppError(
+          "INPUT_INVALID",
+          "Purge this App Project's retained local data in App Studio before removing its source Space.",
+        );
+      }
+      const removed = this.#registry.installations.filter((item) => item.workspaceId === workspaceId
+        && item.runtimeInstanceKind === "development");
       const hasContext = this.#registry.projects.some((item) => item.workspaceId === workspaceId)
-        || this.#registry.runtimeInstances.some((item) => item.workspaceId === workspaceId);
+        || this.#registry.runtimeInstances.some((item) => item.kind === "development" && item.workspaceId === workspaceId)
+        || this.#registry.operations.some((item) => item.targetWorkspaceId === workspaceId);
       if (!removed.length && !hasContext) return;
       await Promise.all(removed.map((app) => this.#runtimeHost?.stop(workspaceId, app.manifest.id, app.digest)));
       await Promise.all(removed.map((app) => this.#invalidateOAuthApp(app)));
       const timestamp = this.#now().toISOString();
+      const project = sourceProject;
       await this.#writeRegistry({
         ...this.#registry,
         projects: this.#registry.projects.filter((item) => item.workspaceId !== workspaceId),
-        runtimeInstances: this.#registry.runtimeInstances.filter((item) => item.workspaceId !== workspaceId),
-        installations: this.#registry.installations.filter((item) => item.workspaceId !== workspaceId),
+        runtimeInstances: this.#registry.runtimeInstances.filter((item) => !(item.kind === "development" && item.workspaceId === workspaceId)),
+        installations: this.#registry.installations.filter((item) => !(item.workspaceId === workspaceId && item.runtimeInstanceKind === "development")),
+        releases: project
+          ? this.#registry.releases.filter((item) => item.projectId !== project.projectId)
+          : this.#registry.releases,
+        operations: this.#registry.operations.filter((item) => item.targetWorkspaceId !== workspaceId
+          && (!project || item.projectId !== project.projectId)),
+        adminReceipts: project
+          ? this.#registry.adminReceipts.filter((item) => item.projectId !== project.projectId)
+          : this.#registry.adminReceipts,
         pendingCleanups: [
           ...this.#registry.pendingCleanups,
           ...removed.map((app) => pendingCleanupForEntry(app, this.#registry.localIdentity, true, timestamp)),
         ],
       });
+      if (project) {
+        await this.#reconcileReleaseStore();
+      }
       for (const app of removed) this.#unregisterAppAutomations(app);
       await this.#drainPendingCleanups();
     });
@@ -691,6 +1926,9 @@ export class RestrictedAppService {
     const app = this.#installed(input.workspaceId, input.appId, input.expectedDigest);
     const declaration = automationDeclaration(app.manifest, input.automationId);
     this.#assertAutomationRuntime();
+    if (!this.#automationsStarted || this.#workspaceRuntimeExclusions.has(app.workspaceId)) {
+      throw new RestrictedAppError("APP_UNAVAILABLE", "Automations are not active for this Space.");
+    }
     const entry = this.#registry.installations.find((item) => item.runtimeInstanceId === app.runtimeInstanceId
       && item.featureInstallationId === app.featureInstallationId)!;
     const key = automationKey(entry, declaration.id);
@@ -720,6 +1958,54 @@ export class RestrictedAppService {
       .slice(-50)
       .reverse()
       .map(({ packageDigest: _packageDigest, ...run }) => structuredClone(run));
+  }
+
+  /**
+   * Starts persisted jobs after higher-level lifecycle recovery. Exclusions are
+   * persistent until the removal coordinator explicitly releases a completed
+   * removal, so repeated startup calls cannot reactivate a pending Space.
+   */
+  startAutomations(excludedWorkspaceIds: readonly string[] = []): void {
+    this.#assertOpen();
+    if (!Array.isArray(excludedWorkspaceIds)) {
+      throw new RestrictedAppError("INPUT_INVALID", "Automation startup exclusions must be an array of Space ids.");
+    }
+    const parsedWorkspaceIds = excludedWorkspaceIds.map((value) => (
+      restrictedAppInput(() => nonempty(value, "Automation startup Space id", 200))
+    ));
+    const newlyExcluded = new Set<string>();
+    for (const workspaceId of parsedWorkspaceIds) {
+      if (!this.#workspaceRuntimeExclusions.has(workspaceId)) newlyExcluded.add(workspaceId);
+      this.#workspaceRuntimeExclusions.add(workspaceId);
+    }
+    for (const app of this.#registry.installations) {
+      if (newlyExcluded.has(app.workspaceId)) this.#unregisterAppAutomations(app);
+    }
+    if (parsedWorkspaceIds.length > 0) this.#syncRuntimeAuthorities();
+    if (this.#automationsStarted) return;
+    this.#automationsStarted = true;
+    this.#syncAllAutomations();
+  }
+
+  /** Fences every runtime effect and scheduled launch after a durable Space-removal intent. */
+  fenceWorkspaceRemoval(workspaceId: string): void {
+    this.#assertOpen();
+    const parsedWorkspaceId = restrictedAppInput(() => nonempty(workspaceId, "Space id", 200));
+    if (!this.#workspaceRuntimeExclusions.has(parsedWorkspaceId)) {
+      this.#workspaceRuntimeExclusions.add(parsedWorkspaceId);
+      for (const app of this.#registry.installations) {
+        if (app.workspaceId === parsedWorkspaceId) this.#unregisterAppAutomations(app);
+      }
+    }
+    this.#syncRuntimeAuthorities();
+  }
+
+  /** Releases an in-process fence only after the durable removal fully commits. */
+  releaseWorkspaceRemovalFence(workspaceId: string): void {
+    this.#assertOpen();
+    const parsedWorkspaceId = restrictedAppInput(() => nonempty(workspaceId, "Space id", 200));
+    if (!this.#workspaceRuntimeExclusions.delete(parsedWorkspaceId)) return;
+    this.#syncRuntimeAuthorities();
   }
 
   suspendAutomations(): void {
@@ -767,7 +2053,9 @@ export class RestrictedAppService {
   }
 
   #copyInstalled(entry: RestrictedAppRegistryEntry): RestrictedAppInstalled {
-    const installed = copyInstalled(entry, this.#registry.localIdentity);
+    const sourceWorkspaceId = this.#registry.projects.find((item) => item.projectId === entry.projectId)?.workspaceId;
+    if (!sourceWorkspaceId) throw new Error("Restricted app Project source Space is unavailable.");
+    const installed = copyInstalled(entry, this.#registry.localIdentity, sourceWorkspaceId);
     installed.automations = installed.automations.map((state) => {
       const nextRunAt = this.#automations.nextScheduledAt(automationKey(entry, state.id));
       return { ...state, ...(nextRunAt ? { nextRunAt } : {}) };
@@ -904,10 +2192,12 @@ export class RestrictedAppService {
   }
 
   #syncAppAutomations(app: RestrictedAppRegistryEntry): void {
+    if (!this.#automationsStarted || this.#workspaceRuntimeExclusions.has(app.workspaceId)) return;
     for (const declaration of app.manifest.automations) this.#syncAutomation(app, declaration);
   }
 
   #syncAutomation(app: RestrictedAppRegistryEntry, declaration: RestrictedAppAutomationDeclaration): void {
+    if (!this.#automationsStarted || this.#workspaceRuntimeExclusions.has(app.workspaceId)) return;
     const state = app.automations.find((item) => item.id === declaration.id);
     if (!state) throw new Error(`Restricted app automation state is missing for ${declaration.id}.`);
     const definition = {
@@ -947,6 +2237,9 @@ export class RestrictedAppService {
         && item.featureInstallationId === featureInstallationId);
       if (!entry || entry.digest !== digest) {
         throw new RestrictedAppError("REVISION_CHANGED", "The automation Feature revision changed before it could start.");
+      }
+      if (this.#workspaceRuntimeExclusions.has(entry.workspaceId)) {
+        throw new RestrictedAppError("APP_UNAVAILABLE", "Automations are not active for this Space.");
       }
       const current = this.#copyInstalled(entry);
       const declaration = automationDeclaration(current.manifest, automationId);
@@ -1011,6 +2304,9 @@ export class RestrictedAppService {
         "\0".repeat(workspaceAutomationMaxErrorLength),
       ).registry);
       await this.#writeRegistry(next);
+      if (this.#workspaceRuntimeExclusions.has(current.workspaceId)) {
+        throw new RestrictedAppError("APP_UNAVAILABLE", "Automations are not active for this Space.");
+      }
       this.#acceptedAutomations.set(context.runId, accepted);
       execution = this.#runtimeHost!.runAutomation!(scoped, {
         runId: context.runId,
@@ -1133,6 +2429,102 @@ export class RestrictedAppService {
     }
   }
 
+  async #buildLocalAppUpdatePlan(
+    runtime: Extract<RestrictedAppRuntimeInstanceRegistryEntry, { kind: "app" }>,
+    target: AppReleaseEnvelope,
+    continuityPolicy: LocalAppUpdateContinuityPolicy,
+    operationId: string,
+    addedFeatureAllocations: Array<{
+      featureId: string;
+      featureInstallationId: FeatureInstallationId;
+      dataNamespaceId: DataNamespaceId;
+    }>,
+  ): Promise<LocalAppInstanceUpdatePlan> {
+    const activeRelease = assertLocalRestrictedAppRelease(await this.#releaseStore.read(runtime.activeReleaseDigest));
+    const activeById = new Map(activeRelease.manifest.features.map((feature) => [feature.featureId, feature]));
+    const entries = this.#registry.installations
+      .filter((item) => item.runtimeInstanceId === runtime.runtimeInstanceId)
+      .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+    if (entries.length !== activeById.size || entries.some((entry) => !activeById.has(entry.manifest.id))) {
+      throw new Error("Local App Instance Feature state does not match its active Release.");
+    }
+    const features = [];
+    for (const entry of entries) {
+      const released = activeById.get(entry.manifest.id)!;
+      const connections: string[] = [];
+      if (this.#connections) {
+        for (const destination of entry.manifest.permissions.network) {
+          if (destination.auth.some((item) => item.kind === "none")) continue;
+          if (await this.#connections.get(connectionBinding(entry, this.#registry.localIdentity, destination))) {
+            connections.push(destination.id);
+          }
+        }
+      }
+      features.push({
+        featureId: entry.manifest.id,
+        featureInstallationId: entry.featureInstallationId,
+        dataNamespaceId: entry.dataNamespaceId,
+        featureRevisionDigest: entry.artifactDigest,
+        declarationDigest: released.declaration.digest,
+        dataSchema: null,
+        grants: [
+          ...entry.networkGrants.map((id) => `network:${id}`),
+          ...entry.fileGrants.map((grant) => `file:${grant.declarationId}`),
+          ...entry.notificationGrants.map((id) => `notification:${id}`),
+        ].sort(),
+        connections: connections.sort(),
+        enabledJobs: entry.automations.filter((automation) => automation.enabled).map((automation) => automation.id).sort(),
+      });
+    }
+    return planLocalAppInstanceUpdate({
+      operationId,
+      current: {
+        runtimeInstanceId: runtime.runtimeInstanceId,
+        projectId: runtime.projectId,
+        activeRelease,
+        features,
+      },
+      target,
+      supportedRuntimeApi: { name: "workspace-restricted-app-bridge", majorVersion: 2 },
+      continuityPolicy,
+      addedFeatureAllocations,
+    });
+  }
+
+  #publishedRelease(sourceWorkspaceId: string, releaseDigest: Sha256Digest): LocalAppReleaseRegistryEntry {
+    const release = this.#registry.releases.find((item) => item.releaseDigest === releaseDigest
+      && item.sourceWorkspaceId === sourceWorkspaceId && item.state === "published");
+    if (!release) throw new RestrictedAppError("INPUT_INVALID", "Choose a published Release from this App Project.");
+    return release;
+  }
+
+  async #stageLocalReleasePackages(envelopeValue: unknown) {
+    const envelope = assertLocalRestrictedAppRelease(envelopeValue);
+    const packages = [];
+    for (const feature of envelope.manifest.features) {
+      const artifact = envelope.closure.artifacts.find((item) => item.digest === feature.featureRevision.digest);
+      const declaration = envelope.closure.records.find((item) => item.digest === feature.declaration.digest);
+      if (!artifact || !declaration) throw new Error(`App Release closure is incomplete for ${feature.featureId}.`);
+      const declaredManifest = parseRestrictedAppManifest(declaration.value);
+      if (declaredManifest.id !== feature.featureId) {
+        throw new Error(`App Release Feature ${feature.featureId} does not match its restricted-app declaration.`);
+      }
+      const receipt = await stageRestrictedAppReleaseArtifact(
+        artifact.entries,
+        feature.featureRevision.digest,
+        this.#stagingPath,
+      );
+      if (receipt.manifest.id !== feature.featureId
+        || receipt.artifactDigest !== feature.featureRevision.digest
+        || String(computeDeclarationDigest(receipt.manifest)) !== String(feature.declaration.digest)
+        || JSON.stringify(receipt.manifest) !== JSON.stringify(declaredManifest)) {
+        throw new Error(`Staged App Release Feature ${feature.featureId} does not match its immutable declaration.`);
+      }
+      packages.push({ feature, receipt });
+    }
+    return packages;
+  }
+
   async #mutate<T>(operation: () => Promise<T>): Promise<T> {
     this.#assertOpen();
     let resolveResult!: (value: T) => void;
@@ -1143,6 +2535,7 @@ export class RestrictedAppService {
     });
     const queued = this.#queue.catch(() => undefined).then(async () => {
       try {
+        if (this.#releaseReconciliationPending) await this.#reconcileReleaseStore();
         await this.#drainPendingCleanups();
         resolveResult(await operation());
       } catch (error) {
@@ -1154,30 +2547,66 @@ export class RestrictedAppService {
     return await result;
   }
 
+  async #reconcileReleaseStore(): Promise<boolean> {
+    try {
+      const recovery = await this.#releaseStore.recover();
+      const result = await this.#releaseStore.reconcile(
+        this.#registry.releases.map((release) => release.releaseDigest),
+      );
+      this.#releaseReconciliationPending = recovery.cleanupPending || result.cleanupPending;
+      return !this.#releaseReconciliationPending;
+    } catch {
+      this.#releaseReconciliationPending = true;
+      return false;
+    }
+  }
+
   async #writeRegistry(next: RestrictedAppRegistryFile): Promise<void> {
     await mkdir(this.#rootPath, { recursive: true });
     const temporary = `${this.#registryPath}.${randomUUID()}.tmp`;
-    const source = serializeRegistryFile(next);
-    await writeFile(temporary, source, { encoding: "utf8", flag: "wx" });
+    const projected: unknown = JSON.parse(serializeRegistryFile(next));
+    if (!projected || typeof projected !== "object" || Array.isArray(projected)) {
+      throw new Error("Restricted app registry projection must be an object.");
+    }
+    const validated = registryFileV4(projected as Record<string, unknown>);
+    const source = serializeRegistryFile(validated);
+    const handle = await open(temporary, "wx", 0o600);
     try {
+      await handle.writeFile(source, "utf8");
+      await handle.sync();
+      await handle.close();
       await rename(temporary, this.#registryPath);
     } catch (error) {
+      await handle.close().catch(() => undefined);
       await rm(temporary, { force: true });
       throw error;
     }
-    this.#registry = next;
+    // Atomic replacement is the commit point. From here on, memory and runtime
+    // authority must never fall back to the predecessor registry, even when a
+    // filesystem cannot confirm the parent-directory flush.
+    this.#registry = validated;
     this.#syncRuntimeAuthorities();
+    try {
+      await syncRestrictedAppDirectory(this.#rootPath);
+    } catch {
+      process.emitWarning(
+        "Restricted app registry committed, but its parent-directory durability flush could not be confirmed.",
+        { code: "WORKSPACE_RESTRICTED_APP_REGISTRY_DIRSYNC" },
+      );
+    }
   }
 
   #syncRuntimeAuthorities(): void {
-    this.#runtimeHost?.syncAuthority?.(this.#registry.installations.map((item) => ({
+    this.#runtimeHost?.syncAuthority?.(this.#registry.installations
+      .filter((item) => !this.#workspaceRuntimeExclusions.has(item.workspaceId))
+      .map((item) => ({
       workspaceId: item.workspaceId,
       appId: item.manifest.id,
       digest: item.digest,
       runtimeInstanceId: item.runtimeInstanceId,
       featureInstallationId: item.featureInstallationId,
       authority: item.authority,
-    })));
+      })));
   }
 
   async #drainPendingCleanups(): Promise<void> {
@@ -1219,20 +2648,25 @@ export class RestrictedAppService {
   }
 
   async #cleanupStaging(): Promise<void> {
+    await assertRestrictedAppStagingRoot(this.#stagingPath);
     const referenced = new Set(this.#registry.installations.map((item) => item.digest));
     for (const entry of await readdir(this.#stagingPath, { withFileTypes: true })) {
       if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
-      if (/^\.staging-[0-9a-f-]{36}$/i.test(entry.name) || (/^[0-9a-f]{64}$/.test(entry.name) && !referenced.has(entry.name))) {
-        await rm(join(this.#stagingPath, entry.name), { recursive: true, force: true });
+      if (restrictedAppStagingTemporaryDirectoryPattern.test(entry.name)
+        || (/^[0-9a-f]{64}$/.test(entry.name) && !referenced.has(entry.name))) {
+        await removeOwnedRestrictedAppStagingDirectory(this.#stagingPath, entry.name);
       }
     }
   }
 
   async #garbageCollectDigest(digest: string): Promise<void> {
     if (this.#registry.installations.some((item) => item.digest === digest)) return;
+    await assertRestrictedAppStagingRoot(this.#stagingPath);
     const root = this.#digestRoot(digest);
     const info = await lstat(root).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
-    if (info && !info.isSymbolicLink() && info.isDirectory()) await rm(root, { recursive: true, force: true });
+    if (info && !info.isSymbolicLink() && info.isDirectory()) {
+      await removeOwnedRestrictedAppStagingDirectory(this.#stagingPath, digest);
+    }
   }
 
   #digestRoot(digest: string): string {
@@ -1245,6 +2679,30 @@ export class RestrictedAppService {
   #assertOpen(): void {
     if (this.#closed) throw new RestrictedAppError("APP_UNAVAILABLE", "The restricted app service is closed.");
   }
+}
+
+async function removeOwnedRestrictedAppStagingDirectory(stagingRoot: string, ownedName: string): Promise<void> {
+  const root = resolve(stagingRoot);
+  const ownedRoot = resolve(root, ownedName);
+  if ((!restrictedAppStagingTemporaryDirectoryPattern.test(ownedName) && !/^[0-9a-f]{64}$/.test(ownedName))
+    || dirname(ownedRoot) !== root || relative(root, ownedRoot) !== ownedName) {
+    throw new Error("Restricted app staging cleanup path is invalid.");
+  }
+  await assertRestrictedAppStagingRoot(root);
+  const rootInfo = await lstat(ownedRoot).catch((error: NodeJS.ErrnoException) => (
+    error.code === "ENOENT" ? null : Promise.reject(error)
+  ));
+  if (!rootInfo || rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) return;
+  // Discovery is deliberately limited to direct children with exact owned
+  // names. Node's recursive rm removes a link entry rather than traversing a
+  // directory symlink, avoiding a path-walking lstat/readdir race here.
+  await assertRestrictedAppStagingRoot(root);
+  if (dirname(resolve(root, ownedName)) !== root || relative(root, resolve(root, ownedName)) !== ownedName) {
+    throw new Error("Restricted app staging cleanup path changed before removal.");
+  }
+  await rm(ownedRoot, { recursive: true, force: false, maxRetries: 0 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
 }
 
 async function readRegistry(
@@ -1264,7 +2722,13 @@ async function readRegistry(
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Restricted app registry must be an object.");
   const record = value as Record<string, unknown>;
-  if (record.schemaVersion === 3) return { registry: registryFileV3(record), needsWrite: false };
+  if (record.schemaVersion === 4) return { registry: registryFileV4(record), needsWrite: false };
+  if (record.schemaVersion === 3) {
+    return {
+      registry: migrateRegistryV3(record, now().toISOString()),
+      needsWrite: true,
+    };
+  }
   if (record.schemaVersion === 2) {
     return {
       registry: await migrateRegistryV2(record, dirname(path), now().toISOString()),
@@ -1274,9 +2738,52 @@ async function readRegistry(
   throw new Error("Restricted app registry version is unsupported.");
 }
 
+async function syncRestrictedAppDirectory(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "EISDIR" && code !== "EPERM" && code !== "ENOTSUP") throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function assertRestrictedAppStagingRoot(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error("Restricted app staging root must be a regular directory, not a link.");
+  }
+}
+
+async function assertRestrictedAppStateRoot(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error("Restricted app state root must be a regular directory, not a link.");
+  }
+}
+
+async function recoverRestrictedAppRegistryTemps(rootPath: string): Promise<void> {
+  const temporaryPattern = /^registry\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i;
+  let changed = false;
+  for (const entry of await readdir(rootPath, { withFileTypes: true })) {
+    if (!temporaryPattern.test(entry.name)) continue;
+    const path = join(rootPath, entry.name);
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new Error("Restricted app registry temporary state is unsafe.");
+    }
+    await unlink(path);
+    changed = true;
+  }
+  if (changed) await syncRestrictedAppDirectory(rootPath);
+}
+
 function freshRegistry(): RestrictedAppRegistryFile {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     localIdentity: {
       tenantId: createTenantId(),
       principalId: createPrincipalId(),
@@ -1287,6 +2794,10 @@ function freshRegistry(): RestrictedAppRegistryFile {
     runtimeInstances: [],
     installations: [],
     migrations: [],
+    releases: [],
+    operations: [],
+    retainedData: [],
+    adminReceipts: [],
     pendingCleanups: [],
     acceptedAutomationRuns: [],
     historicalAutomationRuns: [],
@@ -1370,11 +2881,12 @@ function serializeRegistryFile(registry: RestrictedAppRegistryFile): string {
   return source;
 }
 
-function registryFileV3(record: Record<string, unknown>): RestrictedAppRegistryFile {
+function registryFileV4(record: Record<string, unknown>): RestrictedAppRegistryFile {
   exactObjectKeys(record, [
     "schemaVersion", "localIdentity", "projects", "runtimeInstances", "installations", "migrations", "pendingCleanups",
-    "acceptedAutomationRuns", "historicalAutomationRuns",
+    "releases", "operations", "retainedData", "adminReceipts", "acceptedAutomationRuns", "historicalAutomationRuns",
   ], "Restricted app registry");
+  if (record.schemaVersion !== 4) throw new Error("Restricted app registry schema version must be 4.");
   const local = objectValue(record.localIdentity, "Restricted app local identity");
   exactObjectKeys(local, ["tenantId", "principalId", "servicePrincipalId", "principalGeneration"], "Restricted app local identity");
   const localIdentity = {
@@ -1387,6 +2899,10 @@ function registryFileV3(record: Record<string, unknown>): RestrictedAppRegistryF
   const runtimeInstances = arrayValue(record.runtimeInstances, "Restricted app Runtime Instances").map(runtimeInstanceRegistryEntry);
   const installations = arrayValue(record.installations, "Restricted app Feature Installations").map(registryEntry);
   const migrations = arrayValue(record.migrations, "Restricted app registry migrations").map(registryMigrationEntry);
+  const releases = arrayValue(record.releases, "Local App Releases").map(localAppReleaseRegistryEntry);
+  const operations = arrayValue(record.operations, "Local App operations").map(localAppOperationValue);
+  const retainedData = arrayValue(record.retainedData, "Local App retained data").map(localAppRetainedDataValue);
+  const adminReceipts = arrayValue(record.adminReceipts, "Local App admin receipts").map(localAppAdminReceiptValue);
   const pendingCleanups = arrayValue(record.pendingCleanups, "Restricted app pending cleanups").map(pendingCleanupEntry);
   const acceptedAutomationRuns = arrayValue(record.acceptedAutomationRuns, "Restricted app accepted automation receipts")
     .map(acceptedAutomationRunReceiptValue);
@@ -1395,14 +2911,38 @@ function registryFileV3(record: Record<string, unknown>): RestrictedAppRegistryF
   if (acceptedAutomationRuns.length > 1_000 || historicalAutomationRuns.length > 1_000) {
     throw new Error("Restricted app automation receipt ledger exceeds its retention bound.");
   }
+  if (projects.length > restrictedAppRegistryLimits.projects
+    || runtimeInstances.length > restrictedAppRegistryLimits.runtimeInstances
+    || installations.length > restrictedAppRegistryLimits.installations
+    || releases.length > restrictedAppRegistryLimits.releases
+    || operations.length > restrictedAppRegistryLimits.operations
+    || retainedData.length > restrictedAppRegistryLimits.retainedData
+    || adminReceipts.length > restrictedAppRegistryLimits.adminReceipts) {
+    throw new Error("Local App registry exceeds a lifecycle collection bound.");
+  }
 
   assertUnique(projects.map((item) => item.workspaceId), "Restricted app registry contains duplicate Space projects.");
   assertUnique(projects.map((item) => item.projectId), "Restricted app registry contains duplicate project ids.");
-  assertUnique(runtimeInstances.map((item) => item.workspaceId), "Restricted app registry contains duplicate Space Runtime Instances.");
+  assertUnique(
+    runtimeInstances.filter((item) => item.kind === "development").map((item) => item.workspaceId),
+    "Restricted app registry contains duplicate Space Development Instances.",
+  );
+  assertUnique(
+    runtimeInstances.filter((item) => item.kind === "app").map((item) => `${item.projectId}:${item.workspaceId}`),
+    "Local App registry contains duplicate Project App Instances in one Space.",
+  );
   assertUnique(runtimeInstances.map((item) => item.runtimeInstanceId), "Restricted app registry contains duplicate Runtime Instance ids.");
   assertUnique(installations.map((item) => `${item.workspaceId}:${item.manifest.id}`), "Restricted app registry contains duplicate Space Feature ids.");
   assertUnique(installations.map((item) => item.featureInstallationId), "Restricted app registry contains duplicate Feature Installation ids.");
   assertUnique(installations.map((item) => item.dataNamespaceId), "Restricted app registry contains duplicate data namespace ids.");
+  assertUnique(releases.map((item) => item.releaseDigest), "Local App registry contains duplicate Release digests.");
+  assertUnique(operations.map((item) => item.operationId), "Local App registry contains duplicate operation ids.");
+  assertUnique(retainedData.map((item) => item.retainedDataId), "Local App registry contains duplicate retained data ids.");
+  assertUnique(
+    [...installations.map((item) => item.dataNamespaceId), ...retainedData.map((item) => item.dataNamespaceId)],
+    "Local App registry contains a data namespace that is both active and retained.",
+  );
+  assertUnique(adminReceipts.map((item) => item.receiptId), "Local App registry contains duplicate admin receipt ids.");
   assertUnique(pendingCleanups.map((item) => item.cleanupId), "Restricted app registry contains duplicate pending cleanup ids.");
   assertUnique(acceptedAutomationRuns.map((item) => item.runId), "Restricted app registry contains duplicate accepted automation run ids.");
   assertUnique(historicalAutomationRuns.map((item) => item.runId), "Restricted app registry contains duplicate historical automation run ids.");
@@ -1411,16 +2951,57 @@ function registryFileV3(record: Record<string, unknown>): RestrictedAppRegistryF
   }
 
   for (const runtime of runtimeInstances) {
-    const project = projects.find((item) => item.workspaceId === runtime.workspaceId);
-    if (!project || project.projectId !== runtime.projectId) {
+    const project = projects.find((item) => item.projectId === runtime.projectId);
+    if (!project || (runtime.kind === "development" && project.workspaceId !== runtime.workspaceId)) {
       throw new Error("Restricted app Runtime Instance does not match its App Project.");
+    }
+    if (runtime.kind === "app" && !releases.some((release) => release.projectId === runtime.projectId
+      && release.releaseDigest === runtime.activeReleaseDigest && release.state === "published")) {
+      throw new Error("Local App Instance does not reference a published Release in its Project lineage.");
+    }
+  }
+  for (const release of releases) {
+    const project = projects.find((item) => item.projectId === release.projectId);
+    if (!project || project.workspaceId !== release.sourceWorkspaceId) {
+      throw new Error("Local App Release does not match its source Project.");
+    }
+  }
+  for (const operation of operations) {
+    const release = releases.find((item) => item.releaseDigest === operation.releaseDigest);
+    if (!release || release.projectId !== operation.projectId || release.state !== "published") {
+      throw new Error("Local App operation does not reference a published Release in its Project lineage.");
+    }
+    const runtime = runtimeInstances.find((item) => item.runtimeInstanceId === operation.runtimeInstanceId);
+    if ((operation.kind === "install" && runtime)
+      || (operation.kind === "update" && (!runtime || runtime.kind !== "app" || runtime.workspaceId !== operation.targetWorkspaceId))) {
+      throw new Error("Local App operation does not match its Runtime Instance lifecycle state.");
+    }
+    if (operation.kind === "update") {
+      const fromRelease = releases.find((item) => item.releaseDigest === operation.plan.fromReleaseDigest);
+      if (!fromRelease || fromRelease.projectId !== operation.projectId || fromRelease.state !== "published"
+        || runtime?.kind !== "app" || runtime.activeReleaseDigest !== operation.plan.fromReleaseDigest) {
+        throw new Error("Local App update operation does not reference its exact active source Release.");
+      }
+    }
+  }
+  for (const retained of retainedData) {
+    const project = projects.find((item) => item.projectId === retained.projectId);
+    const release = releases.find((item) => item.releaseDigest === retained.releaseDigest);
+    const runtime = runtimeInstances.find((item) => item.runtimeInstanceId === retained.runtimeInstanceId);
+    if (!project || !release || release.projectId !== retained.projectId || release.state !== "published"
+      || !release.featureIds.includes(retained.featureId)
+      || (runtime !== undefined && (runtime.kind !== "app" || runtime.projectId !== retained.projectId))) {
+      throw new Error("Local App retained data does not reference a published Release in its Project lineage.");
     }
   }
   for (const installation of installations) {
-    const project = projects.find((item) => item.workspaceId === installation.workspaceId);
-    const runtime = runtimeInstances.find((item) => item.workspaceId === installation.workspaceId);
+    const project = projects.find((item) => item.projectId === installation.projectId);
+    const runtime = runtimeInstances.find((item) => item.runtimeInstanceId === installation.runtimeInstanceId);
     if (!project || !runtime || installation.projectId !== project.projectId
-      || installation.runtimeInstanceId !== runtime.runtimeInstanceId
+      || installation.projectId !== runtime.projectId
+      || installation.workspaceId !== runtime.workspaceId
+      || installation.runtimeInstanceKind !== runtime.kind
+      || (runtime.kind === "development" ? installation.releaseDigest !== null : installation.releaseDigest !== runtime.activeReleaseDigest)
       || installation.authority.runtimeInstanceGeneration !== runtime.runtimeInstanceGeneration
       || installation.authority.principalGeneration !== localIdentity.principalGeneration) {
       throw new Error("Restricted app Feature Installation does not match its host-owned context or authority.");
@@ -1443,17 +3024,175 @@ function registryFileV3(record: Record<string, unknown>): RestrictedAppRegistryF
       }
     }
   }
+  for (const cleanup of pendingCleanups) {
+    if (!cleanup.connectionScope && !cleanup.storageOwner && !cleanup.packageDigest) {
+      throw new Error("Restricted app pending cleanup has no owned cleanup target.");
+    }
+    if (cleanup.connectionScope) {
+      if (cleanup.connectionScope.tenantId !== localIdentity.tenantId) {
+        throw new Error("Restricted app pending connection cleanup belongs to another Tenant.");
+      }
+      const stillActive = installations.some((installation) => (
+        installation.runtimeInstanceId === cleanup.connectionScope!.runtimeInstanceId
+        && installation.manifest.id === cleanup.connectionScope!.featureId
+        && installation.featureInstallationId === cleanup.connectionScope!.featureInstallationId
+        && installation.artifactDigest === cleanup.connectionScope!.featureRevisionDigest
+      ));
+      if (stillActive) {
+        throw new Error("Restricted app pending connection cleanup still belongs to an active Feature Installation.");
+      }
+    }
+    if (cleanup.storageOwner) {
+      if (cleanup.storageOwner.tenantId !== localIdentity.tenantId) {
+        throw new Error("Restricted app pending storage cleanup belongs to another Tenant.");
+      }
+      const stillActive = installations.some((installation) => (
+        installation.runtimeInstanceId === cleanup.storageOwner!.runtimeInstanceId
+        && installation.featureInstallationId === cleanup.storageOwner!.featureInstallationId
+        && installation.dataNamespaceId === cleanup.storageOwner!.dataNamespaceId
+      ));
+      const stillRetained = retainedData.some((retained) => (
+        retained.runtimeInstanceId === cleanup.storageOwner!.runtimeInstanceId
+        && retained.featureInstallationId === cleanup.storageOwner!.featureInstallationId
+        && retained.dataNamespaceId === cleanup.storageOwner!.dataNamespaceId
+      ));
+      if (stillActive || stillRetained) {
+        throw new Error("Restricted app pending storage cleanup still belongs to active or retained App data.");
+      }
+    }
+  }
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     localIdentity,
     projects,
     runtimeInstances,
     installations,
     migrations,
+    releases,
+    operations,
+    retainedData,
+    adminReceipts,
     pendingCleanups,
     acceptedAutomationRuns,
     historicalAutomationRuns,
   };
+}
+
+async function assertReleaseBackedInstallationProjection(
+  registry: RestrictedAppRegistryFile,
+  releases: ReadonlyMap<Sha256Digest, LocalAppVerifiedReleaseProjection>,
+  stagingPath: string,
+): Promise<void> {
+  for (const runtime of registry.runtimeInstances) {
+    if (runtime.kind !== "app") continue;
+    const release = releases.get(runtime.activeReleaseDigest);
+    if (!release || release.projectId !== runtime.projectId) {
+      throw new Error("Local App Instance does not have its exact active Release closure.");
+    }
+    const installed = registry.installations
+      .filter((item) => item.runtimeInstanceId === runtime.runtimeInstanceId)
+      .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+    const features = [...release.features]
+      .sort((left, right) => left.featureId.localeCompare(right.featureId));
+    if (installed.length !== features.length) {
+      throw new Error("Local App Instance Feature Installations do not exactly project its active Release.");
+    }
+    for (let index = 0; index < features.length; index += 1) {
+      const feature = features[index]!;
+      const installation = installed[index]!;
+      if (installation.projectId !== runtime.projectId
+        || installation.runtimeInstanceKind !== "app"
+        || installation.releaseDigest !== runtime.activeReleaseDigest
+        || installation.manifest.id !== feature.featureId
+        || installation.artifactDigest !== feature.featureRevisionDigest
+        || String(computeDeclarationDigest(installation.manifest)) !== String(feature.declarationDigest)) {
+        throw new Error(`Local App Feature ${feature.featureId} does not exactly project its active Release.`);
+      }
+      await snapshotRestrictedAppPackage(stageReceiptFromEntry(
+        installation,
+        join(stagingPath, installation.digest),
+      ));
+    }
+  }
+}
+
+export function assertLocalAppReleasePreparationBounds(
+  entries: readonly Readonly<{ totalBytes: number }>[],
+): void {
+  if (entries.length > appReleaseDefaultLimits.features) {
+    throw new RestrictedAppError(
+      "INPUT_INVALID",
+      `An App Release can contain at most ${appReleaseDefaultLimits.features} Features. Remove previews before preparing it.`,
+    );
+  }
+  let artifactBytes = 0;
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.totalBytes) || entry.totalBytes < 0) {
+      throw new RestrictedAppError("INPUT_INVALID", "A local preview has an invalid staged-byte count.");
+    }
+    if (entry.totalBytes > appReleaseDefaultLimits.closureBytes - artifactBytes) {
+      throw new RestrictedAppError(
+        "INPUT_INVALID",
+        `The reviewed previews exceed the ${appReleaseDefaultLimits.closureBytes}-byte Release closure limit.`,
+      );
+    }
+    artifactBytes += entry.totalBytes;
+  }
+}
+
+function migrateRegistryV3(record: Record<string, unknown>, migratedAt: string): RestrictedAppRegistryFile {
+  exactObjectKeys(record, [
+    "schemaVersion", "localIdentity", "projects", "runtimeInstances", "installations", "migrations", "pendingCleanups",
+    "acceptedAutomationRuns", "historicalAutomationRuns",
+  ], "Restricted app registry v3");
+  if (record.schemaVersion !== 3) throw new Error("Restricted app registry schema version must be 3.");
+  const local = objectValue(record.localIdentity, "Restricted app local identity");
+  exactObjectKeys(local, ["tenantId", "principalId", "servicePrincipalId", "principalGeneration"], "Restricted app local identity");
+  const localIdentity = {
+    tenantId: parseTenantId(local.tenantId),
+    principalId: parsePrincipalId(local.principalId),
+    servicePrincipalId: parsePrincipalId(local.servicePrincipalId),
+    principalGeneration: parseAuthorityGeneration(local.principalGeneration, "Restricted app local Principal generation"),
+  };
+  const legacyProjects = arrayValue(record.projects, "Restricted app v3 projects").map(projectRegistryEntryV3);
+  const runtimeInstances = arrayValue(record.runtimeInstances, "Restricted app v3 Runtime Instances")
+    .map(runtimeInstanceRegistryEntryV3);
+  const installations = arrayValue(record.installations, "Restricted app v3 Feature Installations")
+    .map(registryEntryV3);
+  const projects = legacyProjects.map((project) => {
+    const feature = installations
+      .filter((item) => item.workspaceId === project.workspaceId)
+      .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id))[0];
+    return {
+      ...project,
+      presentation: feature ? presentationFromManifest(feature.manifest) : {
+        title: "Untitled App",
+        description: null,
+        icon: null,
+      },
+      updatedAt: migratedAt,
+    };
+  });
+  return registryFileV4({
+    schemaVersion: 4,
+    localIdentity,
+    projects,
+    runtimeInstances,
+    installations,
+    migrations: [
+      ...arrayValue(record.migrations, "Restricted app registry migrations").map(registryMigrationEntryV3),
+      { fromVersion: 3, toVersion: 4, migratedAt },
+    ],
+    releases: [],
+    operations: [],
+    retainedData: [],
+    adminReceipts: [],
+    pendingCleanups: arrayValue(record.pendingCleanups, "Restricted app pending cleanups").map(pendingCleanupEntry),
+    acceptedAutomationRuns: arrayValue(record.acceptedAutomationRuns, "Restricted app accepted automation receipts")
+      .map(acceptedAutomationRunReceiptValue),
+    historicalAutomationRuns: arrayValue(record.historicalAutomationRuns, "Restricted app historical automation receipts")
+      .map(historicalAutomationRunReceiptValue),
+  });
 }
 
 async function migrateRegistryV2(
@@ -1491,34 +3230,66 @@ async function migrateRegistryV2(
       ...entry,
       projectId: context.project.projectId,
       runtimeInstanceId: context.runtimeInstance.runtimeInstanceId,
+      runtimeInstanceKind: "development",
+      releaseDigest: null,
       featureInstallationId: createFeatureInstallationId(),
       dataNamespaceId: createDataNamespaceId(),
       authority: authorityForContext(next, context.runtimeInstance),
       artifactDigest: inspection.artifactDigest,
     });
   }
-  return registryFileV3({
+  return registryFileV4({
     ...next,
     installations,
-    migrations: [{ fromVersion: 2, toVersion: 3, migratedAt }],
+    migrations: [
+      { fromVersion: 2, toVersion: 3, migratedAt },
+      { fromVersion: 3, toVersion: 4, migratedAt },
+    ],
   });
 }
 
 type CommonRegistryEntry = Omit<RestrictedAppRegistryEntry,
-  "projectId" | "runtimeInstanceId" | "featureInstallationId" | "dataNamespaceId" | "authority" | "artifactDigest">;
+  "projectId" | "runtimeInstanceId" | "runtimeInstanceKind" | "releaseDigest"
+  | "featureInstallationId" | "dataNamespaceId" | "authority" | "artifactDigest">;
 
 function registryEntry(value: unknown, index: number): RestrictedAppRegistryEntry {
   const item = objectValue(value, `Restricted app registry entry ${index + 1}`);
   exactObjectKeys(item, [
-    "workspaceId", "projectId", "runtimeInstanceId", "featureInstallationId", "dataNamespaceId", "authority",
+    "workspaceId", "projectId", "runtimeInstanceId", "runtimeInstanceKind", "releaseDigest",
+    "featureInstallationId", "dataNamespaceId", "authority",
     "packageName", "version", "digest", "artifactDigest", "manifest", "networkGrants", "fileGrants",
     "notificationGrants", "automations", "automationRuns", "fileCount", "totalBytes", "installedAt", "updatedAt",
   ], "Restricted app registry entry");
-  const common = commonRegistryEntry(value, index, "v3");
+  const common = commonRegistryEntry(value, index, "v4");
+  if (item.runtimeInstanceKind !== "development" && item.runtimeInstanceKind !== "app") {
+    throw new Error("Restricted app registry Runtime Instance kind is invalid.");
+  }
   return {
     ...common,
     projectId: parseProjectId(item.projectId),
     runtimeInstanceId: parseRuntimeInstanceId(item.runtimeInstanceId),
+    runtimeInstanceKind: item.runtimeInstanceKind,
+    releaseDigest: item.releaseDigest === null ? null : parseSha256Digest(item.releaseDigest, "Restricted app Release digest"),
+    featureInstallationId: parseFeatureInstallationId(item.featureInstallationId),
+    dataNamespaceId: parseDataNamespaceId(item.dataNamespaceId),
+    authority: parseAuthorityStamp(item.authority),
+    artifactDigest: parseAppPlatformArtifactDigest(item.artifactDigest),
+  };
+}
+
+function registryEntryV3(value: unknown, index: number): RestrictedAppRegistryEntry {
+  const item = objectValue(value, `Restricted app registry v3 entry ${index + 1}`);
+  exactObjectKeys(item, [
+    "workspaceId", "projectId", "runtimeInstanceId", "featureInstallationId", "dataNamespaceId", "authority",
+    "packageName", "version", "digest", "artifactDigest", "manifest", "networkGrants", "fileGrants",
+    "notificationGrants", "automations", "automationRuns", "fileCount", "totalBytes", "installedAt", "updatedAt",
+  ], "Restricted app registry v3 entry");
+  return {
+    ...commonRegistryEntry(value, index, "v3"),
+    projectId: parseProjectId(item.projectId),
+    runtimeInstanceId: parseRuntimeInstanceId(item.runtimeInstanceId),
+    runtimeInstanceKind: "development",
+    releaseDigest: null,
     featureInstallationId: parseFeatureInstallationId(item.featureInstallationId),
     dataNamespaceId: parseDataNamespaceId(item.dataNamespaceId),
     authority: parseAuthorityStamp(item.authority),
@@ -1535,7 +3306,7 @@ function legacyRegistryEntry(value: unknown, index: number): CommonRegistryEntry
   return commonRegistryEntry(value, index, "v2");
 }
 
-function commonRegistryEntry(value: unknown, index: number, sourceVersion: "v2" | "v3"): CommonRegistryEntry {
+function commonRegistryEntry(value: unknown, index: number, sourceVersion: "v2" | "v3" | "v4"): CommonRegistryEntry {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Restricted app registry entry ${index + 1} is invalid.`);
   const item = value as Partial<RestrictedAppRegistryEntry>;
   const manifest = parseRestrictedAppManifest(item.manifest);
@@ -1575,7 +3346,7 @@ function commonRegistryEntry(value: unknown, index: number, sourceVersion: "v2" 
     run,
     declarations,
     digest,
-    sourceVersion,
+    sourceVersion === "v4" ? "v3" : sourceVersion,
   ));
   if (new Set(automationRuns.map((run) => run.runId)).size !== automationRuns.length) {
     throw new Error("Restricted app automation run history contains duplicate run ids.");
@@ -1600,7 +3371,19 @@ function commonRegistryEntry(value: unknown, index: number, sourceVersion: "v2" 
 
 function projectRegistryEntry(value: unknown, index: number): RestrictedAppProjectRegistryEntry {
   const item = objectValue(value, `Restricted app project ${index + 1}`);
-  exactObjectKeys(item, ["workspaceId", "projectId", "createdAt"], "Restricted app project");
+  exactObjectKeys(item, ["workspaceId", "projectId", "presentation", "createdAt", "updatedAt"], "Restricted app project");
+  return {
+    workspaceId: nonempty(item.workspaceId, "Restricted app project Space id", 200),
+    projectId: parseProjectId(item.projectId),
+    presentation: presentationValue(item.presentation, "Restricted app project presentation"),
+    createdAt: isoDate(item.createdAt, "Restricted app project creation time"),
+    updatedAt: isoDate(item.updatedAt, "Restricted app project update time"),
+  };
+}
+
+function projectRegistryEntryV3(value: unknown, index: number): Omit<RestrictedAppProjectRegistryEntry, "presentation" | "updatedAt"> {
+  const item = objectValue(value, `Restricted app v3 project ${index + 1}`);
+  exactObjectKeys(item, ["workspaceId", "projectId", "createdAt"], "Restricted app v3 project");
   return {
     workspaceId: nonempty(item.workspaceId, "Restricted app project Space id", 200),
     projectId: parseProjectId(item.projectId),
@@ -1610,8 +3393,31 @@ function projectRegistryEntry(value: unknown, index: number): RestrictedAppProje
 
 function runtimeInstanceRegistryEntry(value: unknown, index: number): RestrictedAppRuntimeInstanceRegistryEntry {
   const item = objectValue(value, `Restricted app Runtime Instance ${index + 1}`);
-  exactObjectKeys(item, ["kind", "workspaceId", "projectId", "runtimeInstanceId", "runtimeInstanceGeneration", "createdAt", "updatedAt"], "Restricted app Runtime Instance");
-  if (item.kind !== "development") throw new Error("Local restricted app Runtime Instance kind must be development.");
+  const commonKeys = ["kind", "workspaceId", "projectId", "runtimeInstanceId", "runtimeInstanceGeneration", "createdAt", "updatedAt"];
+  exactObjectKeys(item, item.kind === "app" ? [...commonKeys, "host", "activeReleaseDigest"] : commonKeys, "Restricted app Runtime Instance");
+  if (item.kind !== "development" && item.kind !== "app") throw new Error("Local restricted app Runtime Instance kind is invalid.");
+  const common: RestrictedAppRuntimeInstanceRegistryBase = {
+    workspaceId: nonempty(item.workspaceId, "Restricted app Runtime Instance Space id", 200),
+    projectId: parseProjectId(item.projectId),
+    runtimeInstanceId: parseRuntimeInstanceId(item.runtimeInstanceId),
+    runtimeInstanceGeneration: parseAuthorityGeneration(item.runtimeInstanceGeneration, "Restricted app Runtime Instance generation"),
+    createdAt: isoDate(item.createdAt, "Restricted app Runtime Instance creation time"),
+    updatedAt: isoDate(item.updatedAt, "Restricted app Runtime Instance update time"),
+  };
+  if (item.kind === "development") return { kind: "development", ...common };
+  if (item.host !== "local") throw new Error("Local App Instance host must be local.");
+  return {
+    kind: "app",
+    ...common,
+    host: "local",
+    activeReleaseDigest: parseSha256Digest(item.activeReleaseDigest, "Local App active Release digest"),
+  };
+}
+
+function runtimeInstanceRegistryEntryV3(value: unknown, index: number): RestrictedAppRuntimeInstanceRegistryEntry {
+  const item = objectValue(value, `Restricted app v3 Runtime Instance ${index + 1}`);
+  exactObjectKeys(item, ["kind", "workspaceId", "projectId", "runtimeInstanceId", "runtimeInstanceGeneration", "createdAt", "updatedAt"], "Restricted app v3 Runtime Instance");
+  if (item.kind !== "development") throw new Error("Restricted app v3 Runtime Instance kind must be development.");
   return {
     kind: "development",
     workspaceId: nonempty(item.workspaceId, "Restricted app Runtime Instance Space id", 200),
@@ -1626,8 +3432,173 @@ function runtimeInstanceRegistryEntry(value: unknown, index: number): Restricted
 function registryMigrationEntry(value: unknown, index: number): RestrictedAppRegistryMigration {
   const item = objectValue(value, `Restricted app registry migration ${index + 1}`);
   exactObjectKeys(item, ["fromVersion", "toVersion", "migratedAt"], "Restricted app registry migration");
-  if (item.fromVersion !== 2 || item.toVersion !== 3) throw new Error("Restricted app registry migration is unsupported.");
-  return { fromVersion: 2, toVersion: 3, migratedAt: isoDate(item.migratedAt, "Restricted app registry migration time") };
+  if (!((item.fromVersion === 2 && item.toVersion === 3) || (item.fromVersion === 3 && item.toVersion === 4))) {
+    throw new Error("Restricted app registry migration is unsupported.");
+  }
+  return {
+    fromVersion: item.fromVersion,
+    toVersion: item.toVersion,
+    migratedAt: isoDate(item.migratedAt, "Restricted app registry migration time"),
+  };
+}
+
+function registryMigrationEntryV3(value: unknown, index: number): RestrictedAppRegistryMigration {
+  const migration = registryMigrationEntry(value, index);
+  if (migration.fromVersion !== 2 || migration.toVersion !== 3) {
+    throw new Error("Restricted app v3 registry contains an unsupported migration.");
+  }
+  return migration;
+}
+
+function localAppReleaseRegistryEntry(value: unknown, index: number): LocalAppReleaseRegistryEntry {
+  const item = objectValue(value, `Local App Release ${index + 1}`);
+  exactObjectKeys(item, [
+    "projectId", "sourceWorkspaceId", "releaseDigest", "displayVersion", "presentation", "featureIds",
+    "state", "preparedAt", "publishedAt", "sourceFeatures",
+  ], "Local App Release");
+  const featureIds = stringIdArray(item.featureIds, "Local App Release Feature ids");
+  const sourceFeatures = arrayValue(item.sourceFeatures, "Local App Release source Features").map((value, sourceIndex) => {
+    const source = objectValue(value, `Local App Release source Feature ${sourceIndex + 1}`);
+    exactObjectKeys(source, ["featureId", "featureInstallationId", "packageDigest", "artifactDigest"], "Local App Release source Feature");
+    return {
+      featureId: appIdValue(source.featureId),
+      featureInstallationId: parseFeatureInstallationId(source.featureInstallationId),
+      packageDigest: digestValue(source.packageDigest),
+      artifactDigest: parseAppPlatformArtifactDigest(source.artifactDigest),
+    };
+  });
+  assertUnique(sourceFeatures.map((feature) => feature.featureId), "Local App Release source Feature ids must be unique.");
+  if (sourceFeatures.length !== featureIds.length
+    || sourceFeatures.some((feature, featureIndex) => feature.featureId !== featureIds[featureIndex])) {
+    throw new Error("Local App Release source Features must exactly match its canonical Feature ids.");
+  }
+  if (item.state !== "prepared" && item.state !== "published") throw new Error("Local App Release state is invalid.");
+  const publishedAt = item.publishedAt === null ? null : isoDate(item.publishedAt, "Local App Release publication time");
+  if ((item.state === "prepared") !== (publishedAt === null)) {
+    throw new Error("Local App Release state and publication time disagree.");
+  }
+  return {
+    projectId: parseProjectId(item.projectId),
+    sourceWorkspaceId: nonempty(item.sourceWorkspaceId, "Local App Release source Space id", 200),
+    releaseDigest: parseSha256Digest(item.releaseDigest, "Local App Release digest"),
+    displayVersion: nonempty(item.displayVersion, "Local App Release display version", 128),
+    presentation: presentationValue(item.presentation, "Local App Release presentation"),
+    featureIds,
+    state: item.state,
+    preparedAt: isoDate(item.preparedAt, "Local App Release preparation time"),
+    publishedAt,
+    sourceFeatures,
+  };
+}
+
+function localAppOperationValue(value: unknown, index: number): LocalAppOperation {
+  const item = objectValue(value, `Local App operation ${index + 1}`);
+  if (item.kind === "install") {
+    exactObjectKeys(item, [
+      "operationId", "kind", "projectId", "targetWorkspaceId", "releaseDigest", "runtimeInstanceId", "features", "preparedAt",
+    ], "Local App install operation");
+    const features = arrayValue(item.features, "Local App install operation Features").map((value, featureIndex) => {
+      const feature = objectValue(value, `Local App install operation Feature ${featureIndex + 1}`);
+      exactObjectKeys(feature, ["featureId", "featureInstallationId", "dataNamespaceId"], "Local App install operation Feature");
+      return {
+        featureId: appIdValue(feature.featureId),
+        featureInstallationId: parseFeatureInstallationId(feature.featureInstallationId),
+        dataNamespaceId: parseDataNamespaceId(feature.dataNamespaceId),
+      };
+    });
+    assertUnique(features.map((feature) => feature.featureId), "Local App install operation Feature ids must be unique.");
+    return {
+      operationId: localAppOperationId(item.operationId),
+      kind: "install",
+      projectId: parseProjectId(item.projectId),
+      targetWorkspaceId: nonempty(item.targetWorkspaceId, "Local App target Space id", 200),
+      releaseDigest: parseSha256Digest(item.releaseDigest, "Local App operation Release digest"),
+      runtimeInstanceId: parseRuntimeInstanceId(item.runtimeInstanceId),
+      features,
+      preparedAt: isoDate(item.preparedAt, "Local App operation preparation time"),
+    };
+  }
+  if (item.kind === "update") {
+    exactObjectKeys(item, [
+      "operationId", "kind", "projectId", "targetWorkspaceId", "releaseDigest", "runtimeInstanceId",
+      "continuityPolicy", "plan", "preparedAt",
+    ], "Local App update operation");
+    const operationId = localAppOperationId(item.operationId);
+    const projectId = parseProjectId(item.projectId);
+    const releaseDigest = parseSha256Digest(item.releaseDigest, "Local App operation Release digest");
+    const runtimeInstanceId = parseRuntimeInstanceId(item.runtimeInstanceId);
+    if (item.continuityPolicy !== "eligible" && item.continuityPolicy !== "reset") {
+      throw new Error("Local App update continuity policy is invalid.");
+    }
+    const plan = objectValue(item.plan, "Local App stored update plan") as unknown as LocalAppInstanceUpdatePlan;
+    if (parseSha256Digest(plan.planDigest, "Local App update plan digest") !== plan.planDigest
+      || localAppOperationId(plan.operationId) !== operationId
+      || parseProjectId(plan.projectId) !== projectId
+      || parseRuntimeInstanceId(plan.runtimeInstanceId) !== runtimeInstanceId
+      || parseSha256Digest(plan.toReleaseDigest, "Local App update target Release digest") !== releaseDigest
+      || !Array.isArray(plan.transitions) || !Array.isArray(plan.blockedReasons) || !Array.isArray(plan.activation)) {
+      throw new Error("Local App stored update plan does not match its operation envelope.");
+    }
+    return {
+      operationId,
+      kind: "update",
+      projectId,
+      targetWorkspaceId: nonempty(item.targetWorkspaceId, "Local App target Space id", 200),
+      releaseDigest,
+      runtimeInstanceId,
+      continuityPolicy: item.continuityPolicy,
+      plan: structuredClone(plan),
+      preparedAt: isoDate(item.preparedAt, "Local App operation preparation time"),
+    };
+  }
+  throw new Error("Local App operation kind is invalid.");
+}
+
+function localAppRetainedDataValue(value: unknown, index: number): LocalAppRetainedData {
+  const item = objectValue(value, `Local App retained data ${index + 1}`);
+  exactObjectKeys(item, [
+    "retainedDataId", "projectId", "runtimeInstanceId", "featureId", "featureInstallationId",
+    "dataNamespaceId", "releaseDigest", "removedAt",
+  ], "Local App retained data");
+  const retainedDataId = nonempty(item.retainedDataId, "Local App retained data id", 64);
+  if (!/^retained_[0-9a-f-]{36}$/i.test(retainedDataId)) throw new Error("Local App retained data id is invalid.");
+  return {
+    retainedDataId,
+    projectId: parseProjectId(item.projectId),
+    runtimeInstanceId: parseRuntimeInstanceId(item.runtimeInstanceId),
+    featureId: appIdValue(item.featureId),
+    featureInstallationId: parseFeatureInstallationId(item.featureInstallationId),
+    dataNamespaceId: parseDataNamespaceId(item.dataNamespaceId),
+    releaseDigest: parseSha256Digest(item.releaseDigest, "Local App retained data Release digest"),
+    removedAt: isoDate(item.removedAt, "Local App retained data removal time"),
+  };
+}
+
+function localAppAdminReceiptValue(value: unknown, index: number): LocalAppAdminReceipt {
+  const item = objectValue(value, `Local App admin receipt ${index + 1}`);
+  exactObjectKeys(item, ["receiptId", "action", "projectId", "runtimeInstanceId", "releaseDigest", "dataDisposition", "createdAt"], "Local App admin receipt");
+  const receiptId = nonempty(item.receiptId, "Local App admin receipt id", 64);
+  if (!/^admin_[0-9a-f-]{36}$/i.test(receiptId)) throw new Error("Local App admin receipt id is invalid.");
+  const actions = new Set<LocalAppAdminReceipt["action"]>([
+    "release-prepared", "release-published", "release-deleted", "install-prepared", "installed", "update-prepared", "updated", "uninstalled", "retained-data-purged",
+  ]);
+  if (!actions.has(item.action as LocalAppAdminReceipt["action"])) throw new Error("Local App admin receipt action is invalid.");
+  const action = item.action as LocalAppAdminReceipt["action"];
+  const dataDisposition = item.dataDisposition === "retain" || item.dataDisposition === "purge"
+    ? item.dataDisposition
+    : item.dataDisposition === null ? null : undefined;
+  if (dataDisposition === undefined || (action === "uninstalled") !== (dataDisposition !== null)) {
+    throw new Error("Local App admin receipt data disposition does not match its action.");
+  }
+  return {
+    receiptId,
+    action,
+    projectId: parseProjectId(item.projectId),
+    runtimeInstanceId: item.runtimeInstanceId === null ? null : parseRuntimeInstanceId(item.runtimeInstanceId),
+    releaseDigest: item.releaseDigest === null ? null : parseSha256Digest(item.releaseDigest, "Local App admin receipt Release digest"),
+    dataDisposition,
+    createdAt: isoDate(item.createdAt, "Local App admin receipt creation time"),
+  };
 }
 
 function pendingCleanupEntry(value: unknown, index: number): RestrictedAppPendingCleanup {
@@ -1689,9 +3660,15 @@ function developmentContext(
   const project = registry.projects.find((item) => item.workspaceId === workspaceId) ?? {
     workspaceId,
     projectId: createProjectId(),
+    presentation: {
+      title: "Untitled App",
+      description: null,
+      icon: null,
+    },
     createdAt: timestamp,
+    updatedAt: timestamp,
   };
-  const existingRuntime = registry.runtimeInstances.find((item) => item.workspaceId === workspaceId);
+  const existingRuntime = registry.runtimeInstances.find((item) => item.kind === "development" && item.workspaceId === workspaceId);
   if (existingRuntime && existingRuntime.projectId !== project.projectId) {
     throw new Error("Restricted app Development Instance does not match its App Project.");
   }
@@ -1782,17 +3759,76 @@ function reviewFromInspection(inspection: Awaited<ReturnType<typeof inspectRestr
   };
 }
 
+function assertLocalRestrictedAppRelease(value: unknown): AppReleaseEnvelope {
+  const release = verifyAppRelease(value);
+  if (release.manifest.runtimeApi.name !== "workspace-restricted-app-bridge"
+    || release.manifest.runtimeApi.compatibleRange !== "2.x") {
+    throw new RestrictedAppError("INPUT_INVALID", "This Release does not target the local restricted App runtime.");
+  }
+  for (const feature of release.manifest.features) {
+    if (feature.featureRevision.mediaType !== "application/vnd.workspace.restricted-app-package+bundle"
+      || feature.declaration.mediaType !== "application/vnd.workspace.restricted-app-manifest+json"
+      || feature.dataSchema !== null || feature.migrations.length !== 0) {
+      throw new RestrictedAppError(
+        "INPUT_INVALID",
+        `Feature ${feature.featureId} uses a Release capability that the local restricted App runtime does not support.`,
+      );
+    }
+  }
+  return release;
+}
+
+function assertLocalRestrictedAppReleaseProjection(
+  release: LocalAppReleaseStoreVerifiedProjection,
+): LocalAppVerifiedReleaseProjection {
+  if (release.runtimeApi.name !== "workspace-restricted-app-bridge"
+    || release.runtimeApi.compatibleRange !== "2.x") {
+    throw new RestrictedAppError("INPUT_INVALID", "This Release does not target the local restricted App runtime.");
+  }
+  for (const feature of release.features) {
+    if (feature.featureRevisionMediaType !== "application/vnd.workspace.restricted-app-package+bundle"
+      || feature.declarationMediaType !== "application/vnd.workspace.restricted-app-manifest+json"
+      || feature.hasDataSchema || feature.migrationCount !== 0) {
+      throw new RestrictedAppError(
+        "INPUT_INVALID",
+        `Feature ${feature.featureId} uses a Release capability that the local restricted App runtime does not support.`,
+      );
+    }
+  }
+  return {
+    projectId: release.projectId,
+    displayVersion: release.displayVersion,
+    presentation: structuredClone(release.presentation),
+    features: release.features.map((feature) => ({
+      featureId: feature.featureId,
+      featureRevisionDigest: parseAppPlatformArtifactDigest(feature.featureRevisionDigest),
+      declarationDigest: parseSha256Digest(feature.declarationDigest, "Local App Release declaration digest"),
+    })),
+  };
+}
+
+function releaseDigestValue(value: unknown): Sha256Digest {
+  try {
+    return parseSha256Digest(value, "App Release digest");
+  } catch (error) {
+    throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
+  }
+}
+
 function copyInstalled(
   item: RestrictedAppRegistryEntry,
   localIdentity: RestrictedAppRegistryFile["localIdentity"],
+  sourceWorkspaceId: string,
 ): RestrictedAppInstalled {
   return structuredClone({
     workspaceId: item.workspaceId,
+    sourceWorkspaceId,
     projectId: item.projectId,
     tenantId: localIdentity.tenantId,
     principalId: localIdentity.principalId,
     runtimeInstanceId: item.runtimeInstanceId,
-    runtimeInstanceKind: "development" as const,
+    runtimeInstanceKind: item.runtimeInstanceKind,
+    releaseDigest: item.releaseDigest,
     featureInstallationId: item.featureInstallationId,
     dataNamespaceId: item.dataNamespaceId,
     authority: item.authority,
@@ -1810,6 +3846,56 @@ function copyInstalled(
     installedAt: item.installedAt,
     updatedAt: item.updatedAt,
   });
+}
+
+function copyLocalAppRelease(item: LocalAppReleaseRegistryEntry): LocalAppRelease {
+  const { sourceFeatures: _sourceFeatures, ...release } = item;
+  return structuredClone(release);
+}
+
+function localAppInstanceFrom(
+  runtime: Extract<RestrictedAppRuntimeInstanceRegistryEntry, { kind: "app" }>,
+  release: LocalAppReleaseRegistryEntry,
+  apps: readonly RestrictedAppRegistryEntry[],
+): LocalAppInstance {
+  return structuredClone({
+    runtimeInstanceId: runtime.runtimeInstanceId,
+    projectId: runtime.projectId,
+    workspaceId: runtime.workspaceId,
+    releaseDigest: runtime.activeReleaseDigest,
+    displayVersion: release.displayVersion,
+    presentation: release.presentation,
+    featureIds: apps.map((item) => item.manifest.id).sort(),
+    installedAt: apps.map((item) => item.installedAt).sort()[0] ?? runtime.createdAt,
+    updatedAt: runtime.updatedAt,
+  });
+}
+
+function stageReceiptFromEntry(item: RestrictedAppRegistryEntry, stagedRoot: string) {
+  return {
+    id: item.manifest.id,
+    packageName: item.packageName,
+    version: item.version,
+    digest: item.digest,
+    artifactDigest: item.artifactDigest,
+    stagedRoot,
+    fileCount: item.fileCount,
+    totalBytes: item.totalBytes,
+    manifest: structuredClone(item.manifest),
+  };
+}
+
+function appendAdminReceipt(
+  receipts: readonly LocalAppAdminReceipt[],
+  input: Omit<LocalAppAdminReceipt, "receiptId" | "dataDisposition"> & {
+    dataDisposition?: LocalAppAdminReceipt["dataDisposition"];
+  },
+): LocalAppAdminReceipt[] {
+  return [...receipts, {
+    receiptId: `admin_${randomUUID()}`,
+    ...input,
+    dataDisposition: input.dataDisposition ?? null,
+  }].slice(-restrictedAppRegistryLimits.adminReceipts);
 }
 
 function connectionFeatureScope(
@@ -1867,6 +3953,50 @@ function pendingCleanupForEntry(
   };
 }
 
+function pendingPackageCleanupForEntry(
+  item: Pick<RestrictedAppRegistryEntry, "digest">,
+  createdAt: string,
+): RestrictedAppPendingCleanup {
+  return {
+    cleanupId: `cleanup_${randomUUID()}`,
+    connectionScope: null,
+    storageOwner: null,
+    packageDigest: item.digest,
+    createdAt,
+  };
+}
+
+function pendingCleanupForRetainedData(
+  item: LocalAppRetainedData,
+  localIdentity: RestrictedAppRegistryFile["localIdentity"],
+  createdAt: string,
+): RestrictedAppPendingCleanup {
+  return {
+    cleanupId: `cleanup_${randomUUID()}`,
+    connectionScope: null,
+    storageOwner: storageOwnerFromEntry(item, localIdentity),
+    packageDigest: null,
+    createdAt,
+  };
+}
+
+function retainedDataForEntry(
+  item: RestrictedAppRegistryEntry,
+  releaseDigest: Sha256Digest,
+  removedAt: string,
+): LocalAppRetainedData {
+  return {
+    retainedDataId: `retained_${randomUUID()}`,
+    projectId: item.projectId,
+    runtimeInstanceId: item.runtimeInstanceId,
+    featureId: item.manifest.id,
+    featureInstallationId: item.featureInstallationId,
+    dataNamespaceId: item.dataNamespaceId,
+    releaseDigest,
+    removedAt,
+  };
+}
+
 function digestValue(value: unknown): string {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) throw new RestrictedAppError("INPUT_INVALID", "Restricted app digest is invalid.");
   return value;
@@ -1877,9 +4007,60 @@ function appIdValue(value: unknown): string {
   return value;
 }
 
+function localAppOperationId(value: unknown): string {
+  const id = nonempty(value, "Local App operation id", 64);
+  if (!/^operation_[0-9a-f-]{36}$/i.test(id)) throw new Error("Local App operation id is invalid.");
+  return id;
+}
+
+function stringIdArray(value: unknown, label: string): string[] {
+  const result = arrayValue(value, label).map((item) => appIdValue(item));
+  assertUnique(result, `${label} must be unique.`);
+  const sorted = [...result].sort((left, right) => left.localeCompare(right));
+  if (sorted.some((item, index) => item !== result[index])) throw new Error(`${label} must be canonically sorted.`);
+  return result;
+}
+
+function presentationFromManifest(manifest: RestrictedAppManifest): AppReleasePresentation {
+  return {
+    title: manifest.title,
+    description: manifest.description ?? null,
+    icon: manifest.ui.icon ?? null,
+  };
+}
+
+function presentationValue(value: unknown, label: string): AppReleasePresentation {
+  const item = objectValue(value, label);
+  exactObjectKeys(item, ["title", "description", "icon"], label);
+  const title = nonempty(item.title, `${label} title`, 80);
+  const description = item.description === null ? null : nonempty(item.description, `${label} description`, 280);
+  let icon: string | null = null;
+  if (item.icon !== null) {
+    icon = nonempty(item.icon, `${label} icon`, 64);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(icon)) throw new Error(`${label} icon is invalid.`);
+  }
+  return { title, description, icon };
+}
+
 function nonempty(value: unknown, label: string, maximum: number): string {
-  if (typeof value !== "string" || !value.trim() || value.length > maximum) throw new Error(`${label} is invalid.`);
+  if (typeof value !== "string" || !value.trim() || value.length > maximum || hasLoneSurrogate(value)) {
+    throw new Error(`${label} is invalid.`);
+  }
   return value;
+}
+
+function hasLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number {
@@ -1894,6 +4075,15 @@ function isoDate(value: unknown, label: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown error");
+}
+
+function restrictedAppInput<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof RestrictedAppError) throw error;
+    throw new RestrictedAppError("INPUT_INVALID", errorMessage(error));
+  }
 }
 
 function restrictedAppFileGrantValue(value: unknown, manifest: RestrictedAppManifest): RestrictedAppFileGrant {

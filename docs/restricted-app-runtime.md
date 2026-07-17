@@ -5,10 +5,11 @@ These apps can render arbitrary reviewed web UI in the left navigator and open
 normal persistent tabs in the work area. They are intentionally separate from
 native Pi Extensions.
 
-For the accepted evolution from current Space apps to App Projects, Features,
-Releases, and Runtime Instances, see [App platform foundation](app-platform-foundation.md).
-The new local identity and authority foundation does not change the version-2
-package and bridge contract described here.
+The version-2 package is now the reviewed Feature format for two distinct local
+runtime kinds: a source-bound **Local preview** in a Development Instance and a
+release-backed **Installed Release** in an App Instance. App Studio owns the
+Project/Release/Instance lifecycle; the package and bridge contract described
+here is unchanged. See [App platform foundation](app-platform-foundation.md).
 
 For the exact package format, manifest template, bridge methods, worker
 exports, denial handling, and hands-on workflow, use the canonical
@@ -76,7 +77,8 @@ digest used by the App-platform release contract. Installation requires the
 exact reviewed bytes. The local registry owns one App Project and Development
 Instance per participating Space, with a distinct Feature Installation and Data
 Namespace per app. Source edits after installation do not change the installed
-revision.
+revision. This direct preview is a Development preview, not a published Release
+or release-backed App Instance.
 
 ```text
 connected-inbox/
@@ -211,8 +213,14 @@ Tenant and Data Namespace and self-describing its Runtime Instance and Feature
 Installation owner. The default limits are 5 MiB, 512 keys, 128 KiB per value,
 and bounded atomic transactions with revision checks. The schema-1 Space/app
 store is adopted exactly once after the host durably establishes those new
-identities. Data survives renderer replacement and reviewed updates, is never
-placed in the Space, and is deleted when the Feature or Space is removed.
+identities. Data survives renderer replacement and reviewed updates and is never
+placed in the Space. Removing a Development preview purges its namespace.
+Uninstalling a release-backed App Instance instead requires an explicit
+retain-or-purge choice: retained data loses all live Feature authority and can
+be purged later from App Studio. Removing either a source or target Space is
+blocked while an active App Instance still depends on it. A retain choice also
+keeps the source Space registered until its Project's retained data is purged;
+the former target is no longer required.
 
 Active visible UI may subscribe to bounded `storage.onChanged` invalidation
 hints. The host coalesces keys, caps the list (falling back to `reset: true`),
@@ -243,18 +251,73 @@ worker, permission, storage, file, tab, automation, and OAuth declaration
 contract, so app generation does not depend on a source checkout or hidden
 Workspace-only skill.
 
-Human approval installs the receipt's exact revision with network, file, and
-notification access off and every automation disabled. Source changes require
-a new review.
+Human approval adds the receipt's exact revision as a Local preview in the
+source Space's Development Instance, with network, file, and notification
+access off and every automation disabled. Source changes require a new review.
 **Capabilities → Installed → Apps in this Space** manages destination, file,
 and notification grants, connections, each automation's schedule and run
 history, local data, and removal; advanced
-local install remains a recovery/developer path. A reviewed update preserves
+local preview remains a recovery/developer path. A reviewed update preserves
 the Feature Installation and Data Namespace but advances the Feature, grant,
 connection, and job authority domains; network, file, and notification grants,
 connections, and every automation reset. Prior receipts remain immutable
 predecessor lineage and are not presented as current-revision runs. Removing or
 updating an app stops its UI views and worker before changing staged bytes.
+
+App Studio is a separate Space-bound work tab for moving reviewed previews into
+the local release-backed lane. The shipped lifecycle is:
+
+1. Declare or edit one App Project's machine-local title, description, and icon.
+   The Project record stays in Workspace application data; no portable Project
+   file is written into the Space.
+2. Prepare an immutable `workspace-app-release` format-version-2 envelope from
+   every current preview. The digest covers App presentation, exact Feature
+   artifacts and declarations, dependency inventory, provenance, and inspection
+   evidence. The verified canonical envelope is stored durably by digest.
+3. Separately publish the prepared Release. Publication revalidates the source
+   Feature stamps and only marks the Release eligible for local installation; it
+   does not upload, host, sign, list, or grant anything.
+4. Prepare installation into one chosen registered Space, then activate the
+   persisted operation. Activation re-verifies and stages the closure before a
+   single registry commit creates a new App Runtime Instance, Feature
+   Installation ids, and Data Namespace ids. Preview state never transfers and
+   every external power starts off.
+5. Prepare an update or rollback to another published Release, review the
+   deterministic per-Feature continuity/reset plan, then activate it. The host
+   recomputes the durable plan and verifies the active Release before fencing
+   the old runtime and committing the new pointer. Exact unchanged content may
+   retain eligible authority; changed content keeps the Feature/Data lineage but
+   resets grants, connections, jobs, and current-revision run state.
+6. Uninstall the whole App Instance with an explicit data disposition. Purge
+   queues namespace deletion; retain detaches the namespace from all execution
+   and exposes a later explicit purge action. Project source and separately
+   selected ordinary Space files are never deleted.
+7. Delete an individual Release only after it is unused. The host refuses while
+   an active App Instance, either side of a prepared install/update/rollback, or
+   retained-data lineage still references it. Registry deletion commits before
+   safe object pruning, and interrupted pruning is retried.
+
+The current local host admits at most one App Instance for a `(projectId,
+target Space)` pair and rejects installation when any preview or App in the
+target already owns one of the Release's Feature ids. It also rejects Release
+Features with a data schema or migrations; migration execution and retained-data
+adoption are future management operations. Install and update preparations
+survive restart until activated or cancelled.
+
+The canonical Release store has a four-GiB aggregate byte quota in addition to
+per-envelope and object-count bounds. A new put measures owned regular-file
+bytes before it creates the digest directory; retrying an already verified
+digest stays idempotent even at the quota. Startup verifies every closed object
+once, passes compact verified projections into registry and staged-package
+validation before pruning orphans, and rechecks filesystem snapshots around the
+deletion boundary. Directory enumeration stops at the declared object bounds.
+After validation, a transient physical lock on an orphan is recorded as pending
+cleanup and retried without blocking startup; referenced, canonical, path, and
+snapshot failures still fail closed.
+
+Persisted automations are inert when the service is constructed. The owning
+Local API starts them exactly once, after durable Space-removal recovery, and
+keeps every still-pending Space excluded for that service lifetime.
 
 Authority is rechecked at effect time, including immediately before an external
 fetch and before atomic storage or Space-file commits. Persistent connections
@@ -285,11 +348,19 @@ acceptance preflights enough space for every currently accepted run to become a
 worst-case terminal receipt, so a successful admission cannot create a result
 that the persistence format has no room to record.
 
-Update, removal, and Space-removal registry transitions durably record every
+Update, removal, and permitted Space-removal registry transitions durably record every
 required credential, storage, and staged-package cleanup before making the old
 authority unreachable. Cleanup is idempotent and retried at startup and before
 later mutations. A cleanup failure therefore cannot reactivate an installation
 or make an already-committed authority change appear to have failed.
+
+Removing a source Space is blocked while its Project has any active local App
+Instance or retained data; removing a target Space is blocked only while an App
+Instance is attached there. Workspace requires the whole App Instance to be
+uninstalled first so a Space-removal shortcut cannot silently choose a data
+disposition. After explicit purge, source removal clears the machine-local App
+Project and Release lineage. Target removal cancels unactivated operations
+prepared for that Space.
 
 The restricted app itself appears directly in the contributed rail. Selecting
 it mounts its navigator; the app decides which persistent work tabs to open.
@@ -305,7 +376,9 @@ The main gaps are:
 - host-owned remote subscriptions and arbitrary push adapters (static reviewed
   automation notifications are available);
 - a Space-service registry that can verify process ownership and lifecycle,
-  replacing raw loopback-port grants for managed project services; and
+  replacing raw loopback-port grants for managed project services;
+- reviewed schema/migration execution, retained-data adoption and export, and a
+  portable Project import/collision model; and
 - finer resource controls for long-running or memory-heavy web apps.
 
 A verified Space-service target is deliberately not exposed yet. An honest

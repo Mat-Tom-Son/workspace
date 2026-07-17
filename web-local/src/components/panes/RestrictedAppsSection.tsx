@@ -56,6 +56,7 @@ export function RestrictedAppsSection({
   loading,
   fixtureMode = false,
   onBuildApp,
+  onOpenAppStudio,
   onUpsertApp,
   onRemoveApp,
   onError,
@@ -65,6 +66,7 @@ export function RestrictedAppsSection({
   loading: boolean;
   fixtureMode?: boolean;
   onBuildApp: () => void;
+  onOpenAppStudio: (workspaceId?: string) => void;
   onUpsertApp: (app: RestrictedAppInstalled) => void;
   onRemoveApp: (appId: string) => void;
   onError: (message: string | null) => void;
@@ -117,7 +119,7 @@ export function RestrictedAppsSection({
       setReview(null);
       setSourcePath("");
       setSelectedAppId(app.manifest.id);
-      showToast({ text: `${app.manifest.title} installed with network, file, notification, and scheduled execution off.`, tone: "success" });
+      showToast({ text: `${app.manifest.title} preview added with network, file, notification, and scheduled execution off.`, tone: "success" });
     } catch (caught) {
       if (workspaceIdRef.current === workspaceId) onError(errorText(caught));
     } finally {
@@ -127,9 +129,9 @@ export function RestrictedAppsSection({
 
   async function remove(app: RestrictedAppInstalled) {
     const confirmed = await requestConfirm({
-      title: `Remove ${app.manifest.title}?`,
-      body: "Workspace will stop the sandboxed app and remove its installed snapshot, saved credentials, grants, schedules, and local app data. Files in the Space are left unchanged.",
-      confirmLabel: "Remove app",
+      title: `Remove ${app.manifest.title} preview?`,
+      body: "Workspace will stop this Development preview and remove its reviewed snapshot, saved credentials, grants, schedules, and local preview data. Files in the Space are left unchanged.",
+      confirmLabel: "Remove preview",
       tone: "danger",
     });
     if (!confirmed || workspaceIdRef.current !== app.workspaceId) return;
@@ -139,7 +141,7 @@ export function RestrictedAppsSection({
       if (workspaceIdRef.current !== app.workspaceId) return;
       onRemoveApp(app.manifest.id);
       setSelectedAppId(null);
-      showToast({ text: `${app.manifest.title} removed.`, tone: "success" });
+      showToast({ text: `${app.manifest.title} preview removed.`, tone: "success" });
     } catch (caught) {
       if (workspaceIdRef.current === app.workspaceId) onError(errorText(caught));
     } finally {
@@ -154,18 +156,18 @@ export function RestrictedAppsSection({
           <span className="professional-icon-tile" aria-hidden="true"><ShieldCheckmark20Regular /></span>
           <div><h3 id="restricted-apps-title">Apps in this Space</h3><p>Apps the Assistant creates can add an interactive navigator, persistent work tabs, and connected actions. Each runs in Workspace’s restricted browser; you decide what it may connect to.</p></div>
         </div>
-        {apps.length ? <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={onBuildApp}><Add16Regular />Build with Assistant</button> : null}
+        <div className="restricted-apps-heading-actions"><button className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={() => onOpenAppStudio(workspace.id)}>Open App Studio</button>{apps.length ? <button className="professional-button professional-button-primary" type="button" disabled={busy} onClick={onBuildApp}><Add16Regular />Build with Assistant</button> : null}</div>
       </div>
-      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Installing gives an app bounded local storage, but no network, Space-file, notification, or scheduled execution. You approve those powers separately.</p>
+      <p className="restricted-apps-note"><Info20Regular aria-hidden="true" />Adding a local preview gives it bounded local storage, but no network, Space-file, notification, or scheduled execution. You approve those powers separately.</p>
       {loading && !apps.length ? <div className="restricted-apps-loading"><ArrowSync16Regular className="spin" />Loading sandboxed apps</div> : null}
       {apps.length ? (
         <div className="restricted-app-list">
           {apps.map((app) => (
-            <article className="restricted-app-card" key={`${app.manifest.id}:${app.digest}`}>
+            <article className="restricted-app-card" key={app.featureInstallationId}>
               <div className="restricted-app-card-copy">
-                <div className="restricted-app-card-title"><strong>{app.manifest.title}</strong><span>Extension · Sandboxed app</span></div>
+                <div className="restricted-app-card-title"><strong>{app.manifest.title}</strong><span>{app.runtimeInstanceKind === "development" ? "Local preview" : "Installed App Feature"}</span></div>
                 <p>{app.manifest.description || "A Space-bound app running in Workspace's restricted browser runtime."}</p>
-                <div className="restricted-app-card-meta"><span>This Space</span><span>{app.packageName} {app.version}</span><span>Interactive app UI</span></div>
+                <div className="restricted-app-card-meta"><span>{app.runtimeInstanceKind === "development" ? "Previewing in this Space" : "Installed in this Space · Data on this device"}</span><span>{app.packageName} {app.version}</span><span>Restricted app UI</span></div>
                 <small>{app.manifest.tools.length} {app.manifest.tools.length === 1 ? "action" : "actions"} · {app.networkGrants.length}/{app.manifest.permissions.network.length} network · {app.fileGrants.length}/{app.manifest.permissions.files.length} files · {app.notificationGrants.length}/{app.manifest.permissions.notifications.length} notifications{app.manifest.automations.length ? ` · ${app.automations.filter((automation) => automation.enabled).length}/${app.manifest.automations.length} automations on` : ""}</small>
               </div>
               <div className="restricted-app-card-actions"><span className="professional-status-badge enabled">Restricted runtime</span><button className="professional-button professional-button-secondary" type="button" onClick={() => setSelectedAppId(app.manifest.id)}>{app.manifest.permissions.network.length || app.manifest.permissions.files.length || app.manifest.permissions.notifications.length || app.manifest.automations.length ? "Manage access" : "Manage"}</button></div>
@@ -173,11 +175,11 @@ export function RestrictedAppsSection({
           ))}
         </div>
       ) : !loading ? <div className="restricted-app-empty"><strong>Build something for this Space</strong><span>Ask the Assistant for an inbox, dashboard, tracker, or connection. It will create the package here and bring the exact revision back for review.</span><button className="professional-button professional-button-primary" type="button" onClick={onBuildApp}><Add16Regular />Build with Assistant</button></div> : null}
-      <details className="restricted-app-advanced"><summary>Advanced local install</summary><p>Review a restricted app package folder that already exists in this Space.</p><button className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={() => setSourceOpen(true)}>Install local package…</button></details>
+      <details className="restricted-app-advanced"><summary>Advanced local preview</summary><p>Review a restricted app package folder that already exists in this Space.</p><button className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={() => setSourceOpen(true)}>Add local preview…</button></details>
 
       {sourceOpen ? <RestrictedAppSourceDialog sourcePath={sourcePath} busy={busy} onSourcePathChange={setSourcePath} onSubmit={inspect} onClose={() => { if (!busy) setSourceOpen(false); }} /> : null}
       {review ? <RestrictedAppReviewDialog review={review.value} sourcePath={review.sourcePath} updating={apps.some((app) => app.manifest.id === review.value.manifest.id)} busy={busy} onInstall={() => void install()} onClose={() => { if (!busy) setReview(null); }} /> : null}
-      {selectedApp ? <RestrictedAppDetailsDialog app={selectedApp} busy={busy} fixtureMode={fixtureMode} onAppChanged={onUpsertApp} onRemove={() => void remove(selectedApp)} onError={onError} onClose={() => { if (!busy) setSelectedAppId(null); }} /> : null}
+      {selectedApp ? <RestrictedAppDetailsDialog app={selectedApp} busy={busy} fixtureMode={fixtureMode} onAppChanged={onUpsertApp} onRemove={() => void remove(selectedApp)} onOpenAppStudio={() => { setSelectedAppId(null); onOpenAppStudio(selectedApp.sourceWorkspaceId); }} onError={onError} onClose={() => { if (!busy) setSelectedAppId(null); }} /> : null}
     </section>
   );
 }
@@ -193,11 +195,11 @@ function RestrictedAppSourceDialog({ sourcePath, busy, onSourcePathChange, onSub
   const dialogRef = useModalDialog({ onClose, blocked: busy, initialFocusRef: inputRef });
   return <div className="modal-backdrop capability-dialog-backdrop" role="presentation" onMouseDown={onClose}>
     <section ref={dialogRef} tabIndex={-1} className="capability-dialog restricted-app-source-dialog" role="dialog" aria-modal="true" aria-labelledby="restricted-app-source-title" onMouseDown={(event) => event.stopPropagation()}>
-      <div className="modal-title"><div><h2 id="restricted-app-source-title">Install local app package</h2><p>Enter a package folder that already exists inside this Space.</p></div><button className="minimal-icon-button" type="button" disabled={busy} onClick={onClose} aria-label="Close local app install"><Dismiss20Regular /></button></div>
+      <div className="modal-title"><div><h2 id="restricted-app-source-title">Add local preview package</h2><p>Enter a package folder that already exists inside this Space.</p></div><button className="minimal-icon-button" type="button" disabled={busy} onClick={onClose} aria-label="Close local preview setup"><Dismiss20Regular /></button></div>
       <form onSubmit={onSubmit}>
         <div className="capability-dialog-body restricted-app-source-body">
           <label><strong>Package path</strong><span>Enter a path relative to the root of this Space. Workspace inspects it without running package code.</span><input ref={inputRef} value={sourcePath} onChange={(event) => onSourcePathChange(event.target.value)} placeholder="apps/connected-inbox" aria-label="Space-relative app package folder" autoComplete="off" spellCheck={false} /></label>
-          <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Fixed to This Space</strong><p>Sandboxed apps are installed for this Space only. Their receipts, permissions, and credentials stay machine-local.</p></div></aside>
+          <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Fixed to This Space</strong><p>Sandboxed previews belong to this Space's Development Instance. Their receipts, permissions, and credentials stay machine-local.</p></div></aside>
         </div>
         <div className="capability-dialog-footer"><button className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="professional-button professional-button-primary" type="submit" disabled={busy || !sourcePath.trim()}>{busy ? <ArrowSync16Regular className="spin" /> : null}Review app</button></div>
       </form>
@@ -224,11 +226,11 @@ export function RestrictedAppReviewDialog({ review, sourcePath, updating, busy, 
       <div className="capability-dialog-body">
         <ReviewDeclarations review={review} />
         <details className="restricted-app-package-details"><summary>Package details</summary><dl className="capability-review-facts"><div><dt>Source</dt><dd>{sourcePath}</dd></div><div><dt>Package</dt><dd>{review.packageName} {review.version}</dd></div><div><dt>Files</dt><dd>{review.fileCount} · {formatBytes(review.totalBytes)}</dd></div><div><dt>Browser entry</dt><dd>{review.manifest.runtime.entry}</dd></div><div><dt>Reviewed revision</dt><dd><code>{shortDigest(review.digest)}</code></dd></div></dl></details>
-        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Installing grants no network destinations, Space files, notifications, or scheduled execution; you approve those later in app details.</p></div></aside>
-        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the installed revision</strong><p>The updated app starts with network, file, notification, and automation permissions off and must have its access approved again.</p></div></aside> : null}
-        {installDisabled && !busy ? <p className="restricted-app-install-wait">Finish the current Assistant turn before installing this reviewed revision.</p> : null}
+        <aside className="capability-code-warning"><ShieldCheckmark20Regular aria-hidden="true" /><div><strong>Browser code runs in a restricted renderer</strong><p>It has no direct Node, filesystem, process, or network access. Adding the preview grants no network destinations, Space files, notifications, or scheduled execution; you approve those later in app details.</p></div></aside>
+        {updating ? <aside className="capability-code-warning danger"><Info20Regular aria-hidden="true" /><div><strong>This replaces the current preview</strong><p>The updated preview starts with network, file, notification, and automation permissions off and must have its access approved again.</p></div></aside> : null}
+        {installDisabled && !busy ? <p className="restricted-app-install-wait">Finish the current Assistant turn before adding this reviewed preview.</p> : null}
       </div>
-      <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onClose}>{closeLabel}</button><button className="professional-button professional-button-primary" type="button" disabled={busy || installDisabled} onClick={onInstall}>{busy ? <ArrowSync16Regular className="spin" /> : null}{installLabel ?? (updating ? "Review update" : "Install, then review access")}</button></div>
+      <div className="capability-dialog-footer"><button ref={cancelRef} className="professional-button professional-button-secondary" type="button" disabled={busy} onClick={onClose}>{closeLabel}</button><button className="professional-button professional-button-primary" type="button" disabled={busy || installDisabled} onClick={onInstall}>{busy ? <ArrowSync16Regular className="spin" /> : null}{installLabel ?? (updating ? "Update preview" : "Add preview, then review access")}</button></div>
     </section>
   </div>;
 }
@@ -241,12 +243,13 @@ function ReviewDeclarations({ review }: { review: RestrictedAppReview }) {
   </div>;
 }
 
-function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRemove, onError, onClose }: {
+function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRemove, onOpenAppStudio, onError, onClose }: {
   app: RestrictedAppInstalled;
   busy: boolean;
   fixtureMode: boolean;
   onAppChanged: (app: RestrictedAppInstalled) => void;
   onRemove: () => void;
+  onOpenAppStudio: () => void;
   onError: (message: string | null) => void;
   onClose: () => void;
 }) {
@@ -448,7 +451,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
 
   return <div className="modal-backdrop capability-dialog-backdrop" role="presentation" onMouseDown={onClose}>
     <section ref={dialogRef} tabIndex={-1} className="capability-dialog restricted-app-details-dialog" role="dialog" aria-modal="true" aria-labelledby="restricted-app-details-title" onMouseDown={(event) => event.stopPropagation()}>
-      <div className="modal-title"><div><h2 id="restricted-app-details-title">{app.manifest.title}</h2><p>App · This Space · Restricted runtime</p></div><button className="minimal-icon-button" type="button" disabled={busy || Boolean(actionBusy)} onClick={onClose} aria-label="Close app details"><Dismiss20Regular /></button></div>
+      <div className="modal-title"><div><h2 id="restricted-app-details-title">{app.manifest.title}</h2><p>{app.runtimeInstanceKind === "development" ? "Local preview" : "Feature in installed App"} · This Space · Restricted runtime</p></div><button className="minimal-icon-button" type="button" disabled={busy || Boolean(actionBusy)} onClick={onClose} aria-label="Close app details"><Dismiss20Regular /></button></div>
       <div className="capability-dialog-body">
         <p className="capability-details-summary">{app.manifest.description}</p>
         <section className="restricted-app-connections" aria-labelledby="restricted-app-connections-title">
@@ -514,7 +517,7 @@ function RestrictedAppDetailsDialog({ app, busy, fixtureMode, onAppChanged, onRe
         </section>
         <section className="restricted-app-lifecycle"><div><h3>Local app data</h3><p>{storageUsage ? `${formatBytes(storageUsage.usageBytes)} of ${formatBytes(storageUsage.quotaBytes)} · ${storageUsage.keyCount} of ${storageUsage.keyLimit} keys` : "Checking usage…"} · Machine-local and preserved across app updates</p></div><button className="professional-button professional-button-secondary" type="button" disabled={Boolean(actionBusy) || !storageUsage?.keyCount} onClick={() => void clearStorage()}>{actionBusy === "storage" ? <ArrowSync16Regular className="spin" /> : null}Clear data</button></section>
         <details className="restricted-app-package-details"><summary>Package & runtime</summary><dl className="capability-review-facts"><div><dt>Package</dt><dd>{app.packageName} {app.version}</dd></div><div><dt>Installed revision</dt><dd><code>{shortDigest(app.digest)}</code></dd></div><div><dt>Runtime</dt><dd>Sandboxed web app</dd></div><div><dt>UI entry</dt><dd>{app.manifest.runtime.entry}</dd></div><div><dt>Worker</dt><dd>{app.manifest.runtime.worker ?? "None"}</dd></div></dl></details>
-        <section className="restricted-app-lifecycle"><div><h3>Lifecycle</h3><p>Installed {formatTimestamp(app.installedAt)} · Updated {formatTimestamp(app.updatedAt)}</p></div><button className="professional-button professional-button-danger" type="button" disabled={busy || Boolean(actionBusy)} onClick={onRemove}><Delete16Regular />Remove app</button></section>
+        <section className="restricted-app-lifecycle"><div><h3>Lifecycle</h3><p>{app.runtimeInstanceKind === "development" ? "Preview" : "App Feature"} added {formatTimestamp(app.installedAt)} · Updated {formatTimestamp(app.updatedAt)}</p></div>{app.runtimeInstanceKind === "app" ? <button className="professional-button professional-button-secondary" type="button" disabled={busy || Boolean(actionBusy)} onClick={onOpenAppStudio}>Open App Studio</button> : <button className="professional-button professional-button-danger" type="button" disabled={busy || Boolean(actionBusy)} onClick={onRemove}><Delete16Regular />Remove preview</button>}</section>
       </div>
       <div className="capability-dialog-footer restricted-app-details-footer"><button className="professional-button professional-button-primary" type="button" disabled={busy || Boolean(actionBusy)} onClick={onClose}>Done</button></div>
     </section>
@@ -814,11 +817,13 @@ function fixtureInstalled(workspaceId: string, review: RestrictedAppReview): Res
   return {
     ...review,
     workspaceId,
+    sourceWorkspaceId: workspaceId,
     projectId: `project_${suffix}`,
     tenantId: "tenant_fixture",
     principalId: "principal_fixture-human",
     runtimeInstanceId: `runtime-instance_${suffix}`,
     runtimeInstanceKind: "development",
+    releaseDigest: null,
     featureInstallationId: `feature-installation_${suffix}`,
     dataNamespaceId: `data-namespace_${suffix}`,
     authority: fixtureAuthorityStamp(),

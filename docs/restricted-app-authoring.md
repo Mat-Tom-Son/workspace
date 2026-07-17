@@ -3,10 +3,10 @@
 This is the canonical package and bridge reference for Space apps that run in
 Workspace's restricted web runtime. Read [Restricted app runtime](restricted-app-runtime.md)
 for the security architecture, lifecycle boundaries, and remaining host gaps.
-The implemented foundation behind this surface and its accepted product model
-are documented separately in
-[App platform foundation](app-platform-foundation.md); they do not change this
-version-2 package authoring contract.
+The App Studio and release-backed runtime behind this surface are documented in
+[App platform foundation](app-platform-foundation.md). A version-2 package is a
+reviewed Feature in either a Development preview or an immutable Release; its
+authoring and bridge contract does not change between those placements.
 
 Restricted apps are not native Pi Extensions. They are prebuilt HTML, CSS, and
 JavaScript packages that Workspace inspects without evaluation, pins to an
@@ -29,16 +29,54 @@ The normal product path begins in a Chat belonging to the target Space:
 3. Workspace inspects the package without running JavaScript, computes its
    digest, and creates a review bound to the Space, Chat, source folder, and
    exact bytes.
-4. Review and install that digest in the owning Chat. Proposal does not install
-   code, grant a permission, or collect a credential.
-5. Manage the installed app under **Capabilities → Installed → Apps in this
+4. Review and add that digest in the owning Chat as a **Local preview** in
+   the Space's Development Instance. Proposal does not add a preview, grant a
+   permission, or collect a credential.
+5. Manage the preview under **Capabilities → Installed → Apps in this
    Space**. Network destinations, file targets, notification categories,
    connections, and each named automation are separate controls.
 
-**Advanced local install** in that Capabilities section is the developer and
+**Advanced local preview** in that Capabilities section is the developer and
 recovery path for a completed package already inside the current Space. It
 does not replace the Chat-bound proposal and review flow for agent-created
 apps.
+
+## From preview to an installed App
+
+Use **Open App Studio** when the reviewed preview is ready to install as an App:
+
+1. Declare or edit the App Project title, description, and icon. In 0.4 these
+   fields and `projectId` are machine-local Workspace state; do not create or
+   depend on `.workspace/app-project.json`.
+2. Prepare a Release with a display version. Workspace snapshots every reviewed
+   preview in that Development Instance, so use stable, unique Feature ids and
+   finish each package review first.
+3. Review the immutable digest and publish it as a separate local action. If any
+   preview changed since preparation, publishing fails and a new Release must be
+   prepared.
+4. Choose a registered target Space, prepare the install, then activate it. The
+   target cannot already contain a Development preview or installed App Feature
+   with the same id, and only one instance of this Project can be attached to
+   that Space.
+5. Configure the Installed Release's destinations, file roots, notifications,
+   connections, and named automations in Capabilities. None transfer from the
+   preview and all begin off.
+
+The v2 Release is a closed local artifact: it contains the prebuilt package
+bytes and declarations rather than a source-folder pointer or ambient Pi
+dependency. “Publish” does not upload, host, sign, sync, or list it. Executable
+bytes, mutable data, grants, connections, schedules, operation journals, and
+receipts stay in Workspace application data even though the App is attached to
+the chosen Space for navigation and file-grant selection.
+
+App Studio can prepare an update or rollback to any other published Release from
+the same Project. Exact unchanged Features may keep eligible authority; a
+changed Feature keeps its installation and data namespace but resets grants,
+connections, and jobs. The current local runtime rejects data schemas and
+migrations, so this package format must continue to rely on backward-compatible
+JSON storage until reviewed migration execution is implemented. Uninstall
+requires retaining or purging App data; retained namespaces are inactive and
+can only be purged later in 0.4.
 
 ## Package layout
 
@@ -468,19 +506,26 @@ connection or secret-reading bridge.
 
 ## Default-off lifecycle and denial handling
 
-Installing a reviewed digest makes its UI available but leaves network, file,
-and notification grants off, stores no connection, and leaves every automation
-disabled. Storage is available without an external-power grant. A reviewed
-update preserves the Feature's Data Namespace but resets destination grants,
-file grants, notification grants, connections, and automation state. Historical
+Adding a reviewed digest as a Development preview, or installing a published
+Release Feature, makes its UI available but leaves network, file, and
+notification grants off, stores no connection, and leaves every automation
+disabled. Storage is available without an external-power grant. A direct
+preview update preserves the Feature's Data Namespace but resets destination
+grants, file grants, notification grants, connections, and automation state. A
+Release update uses App Studio's persisted continuity plan: only an exact
+unchanged revision can be eligible to retain those powers; changed revisions
+reset them while preserving installation/data lineage. Historical
 run receipts remain predecessor audit lineage while the new revision's run view
 starts empty. New receipts bind the accepting Tenant, Runtime Instance, Feature
 Installation, canonical revision, Data Namespace, effective Principal,
 seven-domain authority, occurrence, and attempt; imported older receipts are
-explicitly `legacy-unverified`. Removal makes app storage and connections
-unreachable in the same registry transition and retries their idempotent
-physical cleanup after interruption, but never deletes Space files. Source
-edits do not change the installed bytes; propose and review a new digest.
+explicitly `legacy-unverified`. Removing a Development preview purges its app
+storage and connections. Uninstalling a release-backed App Instance removes its
+connections and makes its data unreachable in the same registry transition,
+then either retains the detached namespace or queues its physical purge as
+explicitly chosen. Cleanup is idempotent after interruption and never deletes
+Space files. Source edits do not change preview or Release bytes; propose and
+review a new digest.
 
 Bridge promises reject an `Error`; host failures expose a stable enumerable
 `error.code`. Handle denial as visible product state rather than retrying or
@@ -519,7 +564,8 @@ The Connected inbox package includes a project-service panel. To test it:
 1. Register this repository as a Space, or copy
    `examples/packages/restricted-connected-inbox` into an ordinary folder in a
    registered Space.
-2. Install that Space-relative package through **Advanced local install**.
+2. Add that Space-relative package as a Local preview through **Advanced
+   local preview**.
 3. From the repository root, start the companion process:
 
    ```powershell

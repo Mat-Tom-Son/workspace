@@ -24,6 +24,10 @@ Workspace is for general computer work. Coding is one valid use, not the organiz
 | **Capabilities** | One place to discover and manage what the Assistant can do. | It groups Skills and Extensions; it is not another runtime or package format. |
 | **Skill** | A reusable way of working that helps the Assistant approach a task. | A Skill may contain executable scripts and is not merely a document. |
 | **Extension** | An executable capability or connection available to the Assistant. | It has a stronger trust implication than a Library item. |
+| **App Project** | An optional build-and-publication identity declared for one Space. | Its 0.4 presentation and identity are machine-local application state, not another portable file or cloud ownership record. |
+| **Feature** | One stable reviewed contribution to an App Project. | A Feature id names a slot; only an exact reviewed revision identifies executable bytes. |
+| **Release** | An immutable content-addressed snapshot of reviewed Features and App presentation. | Preparing, publishing, and installing it are separate local acts; a display version is not executable identity. |
+| **App Instance** | One published Release installed into a chosen Space with its own runtime, data, grants, connections, jobs, and receipts. | It is distinct from the source-bound Development preview and does not live in or own the Space folder. |
 
 The Space switcher chooses the active root-folder entity. The stable primary navigation then follows these surface nouns:
 
@@ -48,6 +52,13 @@ Both routes should lead to the same product experience. Registration must not mo
 
 A Space may also have a personal visual identity: accent colors, a compact banner, and a Fluent icon. Those preferences help distinguish Spaces inside Workspace, but they currently remain application state on this computer. The versioned `space.json` schema can grow deliberately if portable appearance is introduced later; current code must not smuggle machine-specific state into it.
 
+The same portability rule applies to the 0.4 App Project declaration. Its
+`projectId`, source-Space binding, title, description, and icon live in Workspace
+application data. A Release captures an immutable presentation snapshot, but
+Workspace does not create `.workspace/app-project.json` or imply that copying a
+folder transfers Project ownership. Portable Project metadata, import, and
+collision handling require a later explicit design.
+
 The user should always be able to reveal a Space in the operating system, open its files with other applications, back it up normally, or synchronize it with a desktop sync tool. A Google Drive for desktop folder works because it is a local folder; that is not the same as direct Google Drive API integration.
 
 ## Context is explicit
@@ -61,7 +72,14 @@ Registering a folder is also the host authorization for its existing local Pi co
 | Attach a file to a Chat | That file is made available to the conversation. | Other Space files are not included automatically. |
 | Install a personal Skill or Extension | It becomes available through the user's Pi scope. | It is not copied into every Space. |
 | Ask the Assistant to build a Space app | The Assistant may write an ordinary restricted-app package and ask Workspace to inspect it for review. | A proposal does not execute or install code, grant network access, or store a credential. |
-| Install a reviewed Space app | The exact reviewed digest becomes available in that Space. | Network destinations, Space files, notification categories, saved connections, and every named automation remain off. |
+| Add a reviewed Space app | The exact reviewed digest becomes a Local preview in that Space's Development Instance. | It is not a Release or App Instance; network destinations, Space files, notification categories, saved connections, and every named automation remain off. |
+| Declare an App Project | Workspace records an explicit machine-local title, description, icon, Project identity, and source-Space binding. | No file is added to `.workspace/`, no account or cloud Project is created, and source is not uploaded. |
+| Prepare a Release | Workspace snapshots every current reviewed Development preview into one verified, immutable, content-addressed v2 Release and records a prepared state. | It is not yet eligible to install, and later source edits cannot alter its bytes. |
+| Publish a prepared Release | Workspace rechecks that the reviewed previews are still exact, then records a separate local publication receipt. | Nothing is uploaded, signed, listed, hosted, granted, or installed. |
+| Delete an unused Release | Workspace removes its machine-local lifecycle record, then safely prunes the unreferenced immutable object. | A Release required by an active App Instance, either side of a prepared install/update/rollback, or retained data cannot be deleted. Project source and App data are not removed. |
+| Prepare and activate an App install | Workspace durably allocates one new App Instance and its Feature/Data identities, then installs the exact published Release into the chosen registered Space. | It does not convert the Development Instance or carry preview grants, connections, jobs, or data forward. All powers start disabled. |
+| Prepare and activate an update or rollback | Workspace records a deterministic plan, rechecks it at activation, fences the old runtime, and atomically changes the active Release and authority. | A friendly version cannot override digest identity. Only exact unchanged content is eligible for continuity; schema/migration execution is not supported locally. |
+| Uninstall an App Instance | Workspace fences the whole release-backed runtime and requires an explicit retain-or-purge choice for local data. | Project source and separately selected Space files are never deleted. Retained namespaces do not remain runnable and require a later explicit purge. |
 | Allow one app destination, file root, or notification category | That exact reviewed declaration becomes usable by the installed digest. | Other declarations, saved connections, automations, and other Spaces receive no authority. |
 | Save or remove an app connection | Workspace adds or deletes one operating-system-encrypted binding for the host-derived Tenant, Runtime Instance, Feature Installation, canonical Feature Revision, declaration, target, and current Runtime Instance owner. | Destination access is not implicitly granted, and deleting the local record does not revoke the credential at its provider. Principal-owned connections remain a future portable-runtime journey, not a current local UI. |
 | Enable one app automation | Workspace may run that reviewed named job on its bounded schedule while Workspace is running. | Other jobs stay off, and this run receives only the intersection of current grants and its reviewed permission subset. |
@@ -87,7 +105,7 @@ Workspace has two deliberately different executable lanes inside the broader Ext
 | Lane | Trust and distribution | UI and authority |
 |---|---|---|
 | Native Pi Extension | Standard Pi package/resource locations; full current-user execution after Personal install or Space registration. | May add Pi tools, commands, providers, events, and a static host-rendered `surface.json` contribution. Its code owns its network and operating-system access. |
-| Restricted Space app | A complete, Space-local reviewed-web package proposed by the Assistant or selected through advanced local install. It never enters Pi's package manager or loaded catalog. | Runs reviewed UI and worker code in separate sandboxed Electron hosts. Tabs, network, storage, files, connections, notifications, and named automations exist only through narrow host contracts. |
+| Restricted Space app | A complete, Space-local reviewed-web package proposed by the Assistant or selected through advanced local preview. It never enters Pi's package manager or loaded catalog. | Runs reviewed UI and worker code in separate sandboxed Electron hosts. Tabs, network, storage, files, connections, notifications, and named automations exist only through narrow host contracts. |
 
 The model experiences either lane as a package-shaped capability, but the product must not flatten their execution boundaries. Native Pi compatibility remains the full-trust ecosystem lane; restricted apps are the flexible app canvas for generated inboxes, dashboards, extractors, project-service panels, and other Space-specific tools. See [Restricted app authoring](restricted-app-authoring.md) and [Restricted app runtime](restricted-app-runtime.md).
 
@@ -99,8 +117,8 @@ folder-backed context for general work and may never produce an App. A Space may
 instead declare one optional **App Project**: a source-and-publication role that
 defines reviewed **Features** such as the current restricted sidebar app.
 
-Publishing selected reviewed material creates an immutable **App Release**.
-Installing or hosting a Release creates a release-backed **App Instance** with
+Preparing selected reviewed material creates an immutable **App Release**;
+publishing it is a separate local decision. Installing or hosting a Release creates a release-backed **App Instance** with
 its own mutable data, grants, connections, jobs, users, and receipts. Local
 builder preview runs in a separate, release-less **Development Instance** so
 editable source never becomes running bytes implicitly. Internally both runtime
@@ -121,6 +139,13 @@ authority, and hosted web must implement the same semantic broker restrictions
 as the desktop runtime. The accepted identities, authority rules, implementation
 order, and private hosted milestone are defined in
 [App platform foundation](app-platform-foundation.md).
+
+In the shipped local path, the existing Chat-bound or advanced direct preview
+is explicitly a **Local preview** in the source Space's Development Instance.
+App Studio separately declares Project presentation, prepares, publishes, and
+deletes unused Releases, installs one into a chosen registered Space, and
+manages update, rollback, uninstall, retained data, and purge. App Studio is a Space-bound work
+tab reached from Capabilities, not a sixth top-level rail destination.
 
 ## Management layer
 
@@ -165,26 +190,47 @@ When a design is ambiguous, prefer the option that best preserves these properti
 - Provide bounded host-owned JSON storage with active-visible-view invalidation hints, History-covered Space-file grants, exact public-HTTPS or numeric-loopback requests, API-key/bearer/basic/OAuth PKCE connection adapters, and static reviewed system notifications from enabled automation runs.
 - Carry host-owned local App Project, Development Instance, Feature Installation,
   Data Namespace, canonical Feature Revision, and seven-domain authority identity
-  behind the current restricted-app UI. The first approved Space-app install
-  establishes the Space's local App Project/Development Instance scaffold;
-  removing the Space revokes it even after the last Feature was uninstalled.
+  through the restricted-app UI. The first approved Space-app preview may
+  establish the Space's machine-local App Project/Development Instance scaffold;
+  App Studio exposes its explicit presentation and lifecycle.
 - Produce portable, authority-captured receipts for new local automation runs;
   schema-2 receipts survive migration only as explicitly legacy-unverified
   lineage. Post-update and uninstall cleanup is a durable, restart-retried
   outbox, so stale secret/data bytes never regain live authority after partial
   cleanup failure.
-- Provide canonical declaration/artifact conformance, an offline immutable App
-  Release assembler/verifier, and a side-effect-free local App Instance update
-  planner with exact project/runtime/schema binding. These are implementation
-  foundations, not yet a desktop publishing or release-install UI.
+- Provide canonical declaration/artifact conformance and a durable local App
+  Studio: immutable v2 Release assembly and verification; a content-addressed
+  Release store; separate prepared and published states; persisted
+  install/update operations; release-backed App Instance
+  install/update/rollback; and explicit uninstall retain/purge plus later purge.
+- Attach each local App Instance to one chosen registered Space while keeping its
+  bytes, data, grants, connections, schedules, journals, and receipts in
+  Workspace application data. Enforce one instance per `(projectId, target
+  Space)` and reject Feature-id collisions with previews or other installed Apps
+  in that Space.
+- Preserve only exact eligible authority across a release change. A changed
+  Feature revision keeps its installation/data lineage but resets grants,
+  connections, and jobs; the current local runtime rejects schema-bearing
+  Releases and migration execution rather than applying them partially.
+- Block removal of a Project's source Space or an App Instance's target Space
+  while a release-backed instance remains active, directing the person to
+  uninstall it with an explicit data choice first. Keep the source blocked while
+  its Project owns retained data; after explicit purge, source removal clears the
+  machine-local Project/Release lineage and target removal cancels prepared
+  operations aimed at that Space.
 - Build a Windows installer and deliver updates through GitHub Releases.
 - Build, Developer ID-sign, notarize, and publish macOS arm64 app, DMG, ZIP, blockmap, and update metadata from the same source version as Windows, with a verified installed two-version updater lane.
 
 ### Next product layer
 
-- Wire the offline App Release and update contracts into a reviewed desktop
-  publishing/install surface with persisted prepare/activation transactions;
-  keep the current compatibility install lane visibly a Development Instance.
+- Add a deliberate portable App Project declaration, import/relink, and
+  collision model only if it can preserve ordinary-folder semantics without
+  treating a copied id as ownership.
+- Add reviewed schema and migration execution, retained-data adoption, and
+  bounded export before allowing a Release that needs those transitions to run
+  locally.
+- Add richer multi-Feature composition review and instance diagnostics while
+  preserving the current per-Feature authority boundary.
 - Make Space location, storage ownership, History coverage, and executable capability class easier to inspect at a glance.
 - Add Library organization controls such as rename, move, delete, reveal, and bulk operations.
 - Add per-resource enable/disable and package filtering controls without confusing availability with activation.

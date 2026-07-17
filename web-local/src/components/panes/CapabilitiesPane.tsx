@@ -103,6 +103,7 @@ export function CapabilitiesPane({
   onRestrictedAppChanged,
   onRestrictedAppRemoved,
   onBuildApp,
+  onOpenAppStudio,
 }: {
   workspace: WorkspaceSummary;
   status: AgentStatus;
@@ -115,6 +116,7 @@ export function CapabilitiesPane({
   onRestrictedAppChanged: (app: RestrictedAppInstalled) => void;
   onRestrictedAppRemoved: (appId: string) => void;
   onBuildApp: () => void;
+  onOpenAppStudio: (workspaceId?: string) => void;
 }) {
   const [catalog, setCatalog] = useState<AgentCatalog | null>(null);
   const [view, setView] = useState<CapabilityView>("installed");
@@ -403,6 +405,7 @@ export function CapabilitiesPane({
             loading={restrictedAppsLoading}
             fixtureMode={fixtureMode}
             onBuildApp={onBuildApp}
+            onOpenAppStudio={onOpenAppStudio}
             onUpsertApp={onRestrictedAppChanged}
             onRemoveApp={onRestrictedAppRemoved}
             onError={onError}

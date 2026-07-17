@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
+import { hashAppPlatformArtifact } from "../src/local/agent/app-platform-artifact.js";
 import {
   inspectRestrictedAppPackage,
   restrictedAppPackageLimits,
+  stageRestrictedAppReleaseArtifact,
   stageRestrictedAppPackage,
+  type RestrictedAppReleaseArtifactEntry,
 } from "../src/local/agent/restricted-app-package.js";
 
 test("restricted app packages are inspected and content-addressed without evaluating their code", async () => {
@@ -34,6 +37,134 @@ test("restricted app packages are inspected and content-addressed without evalua
     assert.match(stagedEntry, /throw new Error/);
     assert.notEqual((await inspectRestrictedAppPackage(source)).digest, receipt.digest);
     assert.equal((await inspectRestrictedAppPackage(receipt.stagedRoot)).digest, receipt.digest);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("restricted app package staging supports a flush-compatible atomic commit for nested bytes", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-app-durable-"));
+  const source = join(sandbox, "source");
+  const staged = join(sandbox, "staged");
+  try {
+    await writePackage(source, "export {};\n");
+    await mkdir(join(source, "assets", "nested"), { recursive: true });
+    const nestedSource = join(source, "assets", "nested", "content.txt");
+    await writeFile(nestedSource, "durable content\n", "utf8");
+    await chmod(nestedSource, 0o444);
+
+    const first = await stageRestrictedAppPackage(source, staged);
+    const second = await stageRestrictedAppPackage(source, staged, first.digest);
+
+    assert.equal(second.stagedRoot, first.stagedRoot);
+    assert.equal(await readFile(join(first.stagedRoot, "assets", "nested", "content.txt"), "utf8"), "durable content\n");
+    assert.deepEqual((await readdir(staged)).filter((name) => name.startsWith(".staging-")), []);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("verified App Release artifact entries stage through a private, content-addressed package boundary", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-release-package-"));
+  const source = join(sandbox, "source");
+  const staged = join(sandbox, "staged");
+  try {
+    await writePackage(source, "export {};\n");
+    await mkdir(staged, { recursive: true });
+    const inspection = await inspectRestrictedAppPackage(source);
+    const entries = await encodeReleaseEntries(source, inspection.files);
+
+    const receipt = await stageRestrictedAppReleaseArtifact(entries, inspection.artifactDigest, staged);
+
+    assert.equal(receipt.artifactDigest, inspection.artifactDigest);
+    assert.equal(receipt.digest, inspection.digest);
+    assert.equal(receipt.manifest.id, "connected-inbox");
+    assert.equal((await inspectRestrictedAppPackage(receipt.stagedRoot)).artifactDigest, inspection.artifactDigest);
+    assert.deepEqual((await readdir(staged)).filter((name) => name.startsWith(".release-")), []);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("App Release artifact staging rejects unsafe or noncanonical input before installation", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-release-package-invalid-"));
+  const source = join(sandbox, "source");
+  const staged = join(sandbox, "staged");
+  try {
+    await writePackage(source, "export {};\n");
+    await mkdir(staged, { recursive: true });
+    const inspection = await inspectRestrictedAppPackage(source);
+    const entries = await encodeReleaseEntries(source, inspection.files);
+    const mismatchedDigest = hashAppPlatformArtifact([{ path: "different.txt", bytes: Buffer.from("different") }]);
+
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(
+        entries.map((entry, index) => index === 0 ? { ...entry, path: "../package.json" } : entry),
+        inspection.artifactDigest,
+        staged,
+      ),
+      /portable relative package path/i,
+    );
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact([...entries, { ...entries[0]! }], inspection.artifactDigest, staged),
+      /duplicated/i,
+    );
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(
+        entries.map((entry, index) => index === 0 ? { ...entry, bytesBase64: "YR==" } : entry),
+        inspection.artifactDigest,
+        staged,
+      ),
+      /canonical RFC 4648 base64/i,
+    );
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(entries, mismatchedDigest, staged),
+      /digest does not match/i,
+    );
+
+    const colliding = [...entries, { path: "PACKAGE.JSON", bytesBase64: entries.find((entry) => entry.path === "package.json")!.bytesBase64 }];
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(colliding, digestReleaseEntries(colliding), staged),
+      /collide on portable filesystems/i,
+    );
+
+    const directoryAlias: RestrictedAppReleaseArtifactEntry[] = [
+      { path: "assets/first.js", bytesBase64: Buffer.from("first").toString("base64") },
+      { path: "ASSETS/second.js", bytesBase64: Buffer.from("second").toString("base64") },
+    ];
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(directoryAlias, digestReleaseEntries(directoryAlias), staged),
+      /collide on portable filesystems/i,
+    );
+
+    const ancestorConflict: RestrictedAppReleaseArtifactEntry[] = [
+      { path: "asset", bytesBase64: Buffer.from("file").toString("base64") },
+      { path: "asset/child.js", bytesBase64: Buffer.from("child").toString("base64") },
+    ];
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(ancestorConflict, digestReleaseEntries(ancestorConflict), staged),
+      /conflicts with a file ancestor/i,
+    );
+    assert.deepEqual(await readdir(staged), []);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("App Release artifact staging re-inspects package and declaration policy and cleans temporary bytes", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-release-package-policy-"));
+  const source = join(sandbox, "source");
+  const staged = join(sandbox, "staged");
+  try {
+    await writePackage(source, "export {};\n", { scripts: { postinstall: "node setup.js" } });
+    const files = ["agent-app.json", "app.js", "index.html", "package.json", "worker.js"];
+    const entries = await encodeReleaseEntries(source, files);
+
+    await assert.rejects(
+      stageRestrictedAppReleaseArtifact(entries, digestReleaseEntries(entries), staged),
+      /cannot declare scripts/i,
+    );
+    assert.deepEqual(await readdir(staged), []);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }
@@ -226,6 +357,20 @@ async function writePackage(root: string, appSource: string, extraPackageFields:
   await writeFile(join(root, "index.html"), "<!doctype html><script type=module src=app.js></script>", "utf8");
   await writeFile(join(root, "app.js"), "export {};\n", "utf8");
   await writeFile(join(root, "worker.js"), `${appSource}\nexport async function handleAutomation() {}\n`, "utf8");
+}
+
+async function encodeReleaseEntries(root: string, files: readonly string[]): Promise<RestrictedAppReleaseArtifactEntry[]> {
+  return Promise.all(files.map(async (path) => ({
+    path,
+    bytesBase64: (await readFile(join(root, ...path.split("/")))).toString("base64"),
+  })));
+}
+
+function digestReleaseEntries(entries: readonly RestrictedAppReleaseArtifactEntry[]) {
+  return hashAppPlatformArtifact(entries.map((entry) => ({
+    path: entry.path,
+    bytes: Buffer.from(entry.bytesBase64, "base64"),
+  })));
 }
 
 async function missing(path: string): Promise<boolean> {

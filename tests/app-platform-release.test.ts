@@ -111,6 +111,11 @@ function feature(
 function fixture(features?: Mutable<AppReleaseFeatureInput>[]): Mutable<AppReleaseAssemblyInput> {
   return {
     projectId: parseProjectId("project_release-fixture"),
+    presentation: {
+      title: "Community Desk",
+      description: "A calm home for shared garden work.",
+      icon: "sprout",
+    },
     displayVersion: "1.2.0-beta.1",
     runtimeApi: { name: "workspace-feature-broker", compatibleRange: "1.x" },
     features: features ?? [
@@ -153,7 +158,7 @@ test("release assembly has a stable closed conformance digest and canonical mult
     },
   });
 
-  assert.equal(first.releaseDigest, "sha256:3ed3120d3d747a7429e9511052846e973675c6d34c11d8d463281b13cb364c2b");
+  assert.equal(first.releaseDigest, "sha256:bed5ae427bdc4d1e68c7592bfaa7ba68efb5004d647a66ada8a0bd23f1b328dd");
   assert.equal(reordered.releaseDigest, first.releaseDigest);
   assert.deepEqual(reordered, first);
   assert.deepEqual(first.manifest.features.map((item) => item.featureId), ["connected-inbox", "garden-calendar"]);
@@ -196,6 +201,46 @@ test("offline verification rejects changed artifact bytes, canonical records, si
   const changedRoot = jsonClone(release);
   changedRoot.releaseDigest = sha256("f");
   assertReleaseError(() => verifyAppRelease(changedRoot), "RELEASE_DIGEST_MISMATCH");
+
+  const changedPresentation = jsonClone(release);
+  changedPresentation.manifest.presentation.title = "Tampered title";
+  assertReleaseError(() => verifyAppRelease(changedPresentation), "RELEASE_DIGEST_MISMATCH");
+});
+
+test("release presentation is required, exact, bounded, and Unicode-safe", () => {
+  const atLimits = fixture();
+  atLimits.presentation = {
+    title: "t".repeat(80),
+    description: "d".repeat(280),
+    icon: "i".repeat(64),
+  };
+  assert.deepEqual(assembleAppRelease(atLimits).manifest.presentation, atLimits.presentation);
+
+  for (const presentation of [
+    { title: "", description: null, icon: null },
+    { title: "t".repeat(81), description: null, icon: null },
+    { title: "unsafe\ud800", description: null, icon: null },
+    { title: "Valid", description: "", icon: null },
+    { title: "Valid", description: "d".repeat(281), icon: null },
+    { title: "Valid", description: null, icon: "Not-Stable" },
+  ]) {
+    assertReleaseError(
+      () => assembleAppRelease({ ...fixture(), presentation }),
+      "RELEASE_INVALID",
+    );
+  }
+
+  const missing = jsonClone(assembleAppRelease(fixture())) as unknown as {
+    manifest: { presentation?: unknown };
+  };
+  delete missing.manifest.presentation;
+  assertReleaseError(() => verifyAppRelease(missing), "RELEASE_INVALID");
+
+  const unknown = jsonClone(assembleAppRelease(fixture())) as unknown as {
+    manifest: { presentation: { unsupported?: boolean } };
+  };
+  unknown.manifest.presentation.unsupported = true;
+  assertReleaseError(() => verifyAppRelease(unknown), "RELEASE_INVALID");
 });
 
 test("every manifest edge resolves exactly once and every closure object is referenced", () => {

@@ -272,7 +272,10 @@ async function runSmoke() {
       occluded: false,
       theme: "dark",
     });
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+    await waitFor(
+      () => tabCommands.length === 1,
+      "the visible restricted app did not finish its startup bridge calls",
+    );
     assert.equal(hits, 0, "the visible restricted app must not reach loopback directly");
     assert.deepEqual(tabCommands.map((command) => ({ type: command.type, workspaceId: command.workspaceId, appId: command.appId, digest: command.digest, tab: command.tab })), [{
       type: "open",
@@ -292,7 +295,11 @@ async function runSmoke() {
       kind: "service",
       realm: "local",
     }));
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    await waitFor(async () => (
+      await storage.get(storageOwner, "active-storage-event") === true
+      && await storage.get(storageOwner, "reset-storage-event") === true
+      && await storage.get(storageOwner, "automation-storage-event-count") === 1
+    ), "the active app view did not receive its coalesced storage event");
     assert.equal(await storage.get(storageOwner, "active-storage-event"), true, "automation storage changes reach the active owning UI");
     assert.equal(await storage.get(storageOwner, "reset-storage-event"), true, "more than 128 coalesced keys produce a bounded reset hint");
     assert.equal(await storage.get(storageOwner, "automation-storage-event-count"), 1, "coalesced automation mutations emit once");
@@ -307,7 +314,10 @@ async function runSmoke() {
       occluded: true,
       theme: "dark",
     });
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+    await waitFor(
+      async () => await storage.get(storageOwner, "inactive-powers") !== undefined,
+      "the inactive app view did not finish its authority probe",
+    );
     assert.deepEqual(await storage.get(storageOwner, "inactive-powers"), {
       fileDenied: true,
       networkDenied: true,
@@ -341,6 +351,15 @@ async function runSmoke() {
 async function mark(message) {
   const path = process.env.WORKSPACE_RESTRICTED_SMOKE_LOG;
   if (path) await appendFile(path, `${new Date().toISOString()} ${message}\n`, "utf8");
+}
+
+async function waitFor(predicate, message, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  assert.fail(message);
 }
 
 async function writeSmokePackage(root, loopbackPort) {
@@ -413,7 +432,10 @@ export async function handleAction(action, input) {
   }
   if (action === "huge") return "x".repeat(300000);
   if (action === "cyclic") { const value = {}; value.self = value; return value; }
-  if (action === "frame") { document.body.append(document.createElement("iframe")); return null; }
+  if (action === "frame") {
+    document.body.append(document.createElement("iframe"));
+    await new Promise(() => {});
+  }
   if (action === "intrinsics") {
     JSON.stringify = () => "{}";
     TextEncoder.prototype.encode = () => new Uint8Array(0);

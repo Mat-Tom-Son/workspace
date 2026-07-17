@@ -162,6 +162,7 @@ export type WorkspaceSurfaceTab =
   | (WorkspaceSurfaceTabBase & { kind: "file"; path: string })
   | (WorkspaceSurfaceTabBase & { kind: "history"; checkpointId?: string })
   | (WorkspaceSurfaceTabBase & { kind: "appearance" })
+  | (WorkspaceSurfaceTabBase & { kind: "app-studio" })
   | (WorkspaceSurfaceTabBase & { kind: "extension"; surfaceId: string; surfaceExecution: "full-trust-pi"; viewId: string })
   | (WorkspaceSurfaceTabBase & {
     kind: "restricted-app";
@@ -422,11 +423,13 @@ export interface RestrictedAppReview {
 
 export interface RestrictedAppInstalled extends RestrictedAppReview {
   workspaceId: string;
+  sourceWorkspaceId: string;
   projectId: string;
   tenantId: string;
   principalId: string;
   runtimeInstanceId: string;
-  runtimeInstanceKind: "development";
+  runtimeInstanceKind: "development" | "app";
+  releaseDigest: string | null;
   featureInstallationId: string;
   dataNamespaceId: string;
   authority: AppPlatformAuthorityStamp;
@@ -436,6 +439,115 @@ export interface RestrictedAppInstalled extends RestrictedAppReview {
   automations: RestrictedAppAutomationState[];
   installedAt: string;
   updatedAt: string;
+}
+
+export interface LocalAppPresentation {
+  title: string;
+  description: string | null;
+  icon: string | null;
+}
+
+export interface LocalAppProject {
+  workspaceId: string;
+  projectId: string;
+  presentation: LocalAppPresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalAppRelease {
+  projectId: string;
+  sourceWorkspaceId: string;
+  releaseDigest: string;
+  displayVersion: string;
+  presentation: LocalAppPresentation;
+  featureIds: string[];
+  state: "prepared" | "published";
+  preparedAt: string;
+  publishedAt: string | null;
+}
+
+export interface LocalAppReleaseDeletionResult {
+  deleted: boolean;
+  cleanupPending: boolean;
+}
+
+export interface LocalAppInstance {
+  runtimeInstanceId: string;
+  projectId: string;
+  workspaceId: string;
+  releaseDigest: string;
+  displayVersion: string;
+  presentation: LocalAppPresentation;
+  featureIds: string[];
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface LocalAppInstallOperation {
+  operationId: string;
+  kind: "install";
+  projectId: string;
+  targetWorkspaceId: string;
+  releaseDigest: string;
+  runtimeInstanceId: string;
+  features: Array<{ featureId: string; featureInstallationId: string; dataNamespaceId: string }>;
+  preparedAt: string;
+}
+
+export interface LocalAppUpdateOperation {
+  operationId: string;
+  kind: "update";
+  projectId: string;
+  targetWorkspaceId: string;
+  releaseDigest: string;
+  runtimeInstanceId: string;
+  continuityPolicy: "eligible" | "reset";
+  plan: {
+    planDigest: string;
+    fromReleaseDigest: string;
+    toReleaseDigest: string;
+    canCommit: boolean;
+    blockedReasons: string[];
+    transitions: Array<{
+      featureId: string;
+      action: "add" | "keep" | "update" | "remove";
+      data: "create" | "retain" | "migrate" | "retain-disabled";
+      continuity: { grants: string[]; connections: string[]; enabledJobs: string[] };
+      resets: Array<"grants" | "connections" | "jobs">;
+      blockedReason?: string;
+    }>;
+  };
+  preparedAt: string;
+}
+
+export type LocalAppOperation = LocalAppInstallOperation | LocalAppUpdateOperation;
+
+export interface LocalAppRetainedData {
+  retainedDataId: string;
+  projectId: string;
+  runtimeInstanceId: string;
+  featureId: string;
+  featureInstallationId: string;
+  dataNamespaceId: string;
+  releaseDigest: string;
+  removedAt: string;
+}
+
+export interface LocalAppStudioSnapshot {
+  project: LocalAppProject | null;
+  previews: RestrictedAppInstalled[];
+  releases: LocalAppRelease[];
+  instances: LocalAppInstance[];
+  operations: LocalAppOperation[];
+  retainedData: LocalAppRetainedData[];
+}
+
+export interface LocalAppWorkspaceRemovalImpact {
+  activeSourceInstanceCount: number;
+  activeTargetInstanceCount: number;
+  retainedDataCount: number;
+  incomingPreparedOperationCount: number;
 }
 
 export interface RestrictedAppAutomationState {

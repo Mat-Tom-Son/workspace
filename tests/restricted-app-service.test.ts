@@ -16,6 +16,7 @@ import type {
 import {
   RestrictedAppService,
   type RestrictedAppInstalled,
+  type RestrictedAppRuntimeAuthority,
   type RestrictedAppRuntimeDescriptor,
   type RestrictedAppRuntimeHost,
 } from "../src/local/agent/restricted-app-service.js";
@@ -132,6 +133,56 @@ test("RestrictedAppService inspects reviewed bytes and requires the expected dig
   }
 });
 
+test("RestrictedAppService startup removes only exact owned staging crash directories", async (t) => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-staging-recovery-"));
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const staged = join(rootPath, "staged");
+  const staleStaging = ".staging-00000000-0000-4000-8000-000000000001";
+  const staleRelease = ".release-00000000-0000-4000-8000-000000000002";
+  const unsafeLookalikes = [
+    ".release-00000000-0000-1000-8000-000000000003",
+    ".release-00000000-0000-4000-7000-000000000004",
+    ".release-00000000-0000-4000-8000-000000000005-copy",
+    ".release-not-an-owned-temporary-directory",
+  ];
+  try {
+    await mkdir(join(staged, staleStaging, "nested"), { recursive: true });
+    await writeFile(join(staged, staleStaging, "nested", "bytes.txt"), "stale", "utf8");
+    await mkdir(join(staged, staleRelease, "nested"), { recursive: true });
+    await writeFile(join(staged, staleRelease, "nested", "bytes.txt"), "stale", "utf8");
+    for (const name of unsafeLookalikes) {
+      await mkdir(join(staged, name), { recursive: true });
+      await writeFile(join(staged, name, "keep.txt"), "keep", "utf8");
+    }
+    const ownedPatternFile = join(staged, ".release-00000000-0000-4000-8000-000000000006");
+    await writeFile(ownedPatternFile, "not a directory", "utf8");
+
+    const linkedTarget = join(sandbox, "linked-target");
+    const linkedLookalike = join(staged, ".release-00000000-0000-4000-8000-000000000007");
+    await mkdir(linkedTarget, { recursive: true });
+    await writeFile(join(linkedTarget, "keep.txt"), "keep", "utf8");
+    let linked = true;
+    try {
+      await symlink(linkedTarget, linkedLookalike, "junction");
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code !== "EPERM" && code !== "EACCES") throw error;
+      linked = false;
+      t.diagnostic("Linked staging lookalike assertion skipped because this host disallows directory links.");
+    }
+
+    const service = await RestrictedAppService.create({ rootPath });
+    assert.equal(existsSync(join(staged, staleStaging)), false);
+    assert.equal(existsSync(join(staged, staleRelease)), false);
+    for (const name of unsafeLookalikes) assert.equal(existsSync(join(staged, name, "keep.txt")), true);
+    assert.equal(existsSync(ownedPatternFile), true);
+    if (linked) assert.equal(existsSync(join(linkedTarget, "keep.txt")), true);
+    await service.close();
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("RestrictedAppService persists Space-scoped installs and keeps shared staged bytes until the last removal", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-persistence-"));
   const workspaceRoot = join(sandbox, "space");
@@ -139,7 +190,11 @@ test("RestrictedAppService persists Space-scoped installs and keeps shared stage
   try {
     await writePackage(join(workspaceRoot, "apps", "inbox"));
     const firstRuntime = new RecordingRuntimeHost();
-    const first = await RestrictedAppService.create({ rootPath, runtimeHost: firstRuntime });
+    const first = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: firstRuntime,
+      deferAutomationStart: false,
+    });
     const review = await first.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await first.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await first.install({ workspaceId: spaceTwo, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
@@ -180,7 +235,11 @@ test("RestrictedAppService persists Space-scoped installs and keeps shared stage
     await first.close();
 
     const secondRuntime = new RecordingRuntimeHost();
-    const reopened = await RestrictedAppService.create({ rootPath, runtimeHost: secondRuntime });
+    const reopened = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: secondRuntime,
+      deferAutomationStart: false,
+    });
     const reopenedApp = (await reopened.list(spaceOne))[0];
     assert.equal(reopenedApp?.digest, review.digest);
     assert.equal(reopenedApp?.automations.find(({ id }) => id === refreshAutomation)?.enabled, true);
@@ -211,6 +270,63 @@ test("RestrictedAppService persists Space-scoped installs and keeps shared stage
   }
 });
 
+test("deferred automation startup keeps excluded Spaces inert and starts other persisted jobs exactly once", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-deferred-automations-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  let service: RestrictedAppService | undefined;
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    service = await RestrictedAppService.create({ rootPath, runtimeHost: new RecordingRuntimeHost() });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    await service.install({ workspaceId: spaceTwo, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    for (const workspaceId of [spaceOne, spaceTwo]) {
+      await service.setAutomationEnabled({
+        workspaceId,
+        appId: "connected-inbox",
+        expectedDigest: review.digest,
+        automationId: refreshAutomation,
+        enabled: true,
+      });
+    }
+    await service.close();
+    service = undefined;
+
+    const runtime = new RecordingRuntimeHost();
+    service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime, deferAutomationStart: true });
+    assert.equal((await service.list(spaceOne))[0]?.automations[0]?.nextRunAt, undefined);
+    assert.equal((await service.list(spaceTwo))[0]?.automations[0]?.nextRunAt, undefined);
+
+    service.startAutomations([spaceOne]);
+    service.startAutomations([spaceOne]);
+
+    assert.equal((await service.list(spaceOne))[0]?.automations[0]?.nextRunAt, undefined);
+    assert.ok((await service.list(spaceTwo))[0]?.automations[0]?.nextRunAt);
+    await assert.rejects(service.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    }), (error: unknown) => error instanceof Error && "code" in error && error.code === "APP_UNAVAILABLE");
+    const run = await service.runAutomationNow({
+      workspaceId: spaceTwo,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
+    assert.equal(run.run.outcome, "success");
+    assert.equal(runtime.automationRuns.length, 1);
+
+    service.startAutomations([spaceTwo]);
+    assert.equal((await service.list(spaceTwo))[0]?.automations[0]?.nextRunAt, undefined,
+      "a later exclusion may make another Space inert but cannot reactivate an earlier exclusion");
+  } finally {
+    await service?.close().catch(() => undefined);
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("RestrictedAppService atomically migrates schema 2 into one local Project and Development Instance with durable installation authority", async () => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-platform-migration-"));
   const workspaceRoot = join(sandbox, "space");
@@ -237,6 +353,8 @@ test("RestrictedAppService atomically migrates schema 2 into one local Project a
       for (const field of [
         "projectId",
         "runtimeInstanceId",
+        "runtimeInstanceKind",
+        "releaseDigest",
         "featureInstallationId",
         "dataNamespaceId",
         "authority",
@@ -319,15 +437,22 @@ test("RestrictedAppService atomically migrates schema 2 into one local Project a
       installations: unknown[];
       migrations: Array<{ fromVersion: number; toVersion: number; migratedAt: string }>;
     };
-    assert.equal(persisted.schemaVersion, 3);
+    assert.equal(persisted.schemaVersion, 4);
     assert.equal(persisted.projects.length, 1);
     assert.equal(persisted.runtimeInstances.length, 1);
     assert.equal(persisted.installations.length, 2);
-    assert.deepEqual(persisted.migrations, [{
-      fromVersion: 2,
-      toVersion: 3,
-      migratedAt: "2026-07-15T17:00:00.000Z",
-    }]);
+    assert.deepEqual(persisted.migrations, [
+      {
+        fromVersion: 2,
+        toVersion: 3,
+        migratedAt: "2026-07-15T17:00:00.000Z",
+      },
+      {
+        fromVersion: 3,
+        toVersion: 4,
+        migratedAt: "2026-07-15T17:00:00.000Z",
+      },
+    ]);
     await migrated.close();
   } finally {
     await rm(sandbox, { recursive: true, force: true });
@@ -654,7 +779,12 @@ test("RestrictedAppService scopes automation powers, resets live authority, and 
   const runtime = new RecordingRuntimeHost();
   try {
     await writePackage(sourceRoot);
-    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime, storage });
+    const service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: runtime,
+      storage,
+      deferAutomationStart: false,
+    });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     const installed = await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     const owner = platformStorageOwner(installed);
@@ -875,7 +1005,11 @@ test("RestrictedAppService re-reads scoped notification grants when a queued aut
   let service: RestrictedAppService | undefined;
   try {
     await writePackage(join(workspaceRoot, "apps", "inbox"));
-    service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: runtime,
+      deferAutomationStart: false,
+    });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     for (const workspaceId of [spaceOne, spaceTwo, spaceThree]) {
       await service.install({ workspaceId, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
@@ -953,7 +1087,11 @@ test("RestrictedAppService reconciles a crash after durable automation acceptanc
   let service: RestrictedAppService | undefined;
   try {
     await writePackage(join(workspaceRoot, "apps", "inbox"));
-    service = await RestrictedAppService.create({ rootPath, runtimeHost: new RecordingRuntimeHost() });
+    service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: new RecordingRuntimeHost(),
+      deferAutomationStart: false,
+    });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await service.setAutomationEnabled({
@@ -1042,7 +1180,11 @@ test("RestrictedAppService persists a nonempty fallback for an empty worker fail
       async runAutomation() { throw new Error("   "); },
       async close() {},
     };
-    service = await RestrictedAppService.create({ rootPath, runtimeHost });
+    service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost,
+      deferAutomationStart: false,
+    });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await service.setAutomationEnabled({
@@ -1083,7 +1225,11 @@ test("RestrictedAppService serializes an automation launch started by stop behin
   const runtime = new StopRaceRuntimeHost();
   try {
     await writePackage(join(workspaceRoot, "apps", "inbox"));
-    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    const service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: runtime,
+      deferAutomationStart: false,
+    });
     const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
     await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
     await service.grantNotifications({ workspaceId: spaceOne, appId: "connected-inbox", expectedDigest: review.digest, permissionId: "new-mail" });
@@ -1106,6 +1252,68 @@ test("RestrictedAppService serializes an automation launch started by stop behin
     assert.deepEqual(runtime.automationRuns[0]?.app.notificationGrants, [], "the post-stop launch must re-read the committed grant state");
     assert.deepEqual(runtime.automationRuns[0]?.app.networkGrants, [], "the named job must not inherit undeclared app powers");
     assert.deepEqual(await service.listAutomationRuns(spaceOne, "connected-inbox", review.digest, refreshAutomation), [run.run]);
+    await service.close();
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("a Space-removal fence blocks an automation already accepted into the service queue", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-automation-removal-fence-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const runtime = new FenceDuringAuthoritySyncRuntimeHost();
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    const service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: runtime,
+      deferAutomationStart: false,
+    });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    await service.setAutomationEnabled({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+      enabled: true,
+    });
+
+    runtime.fenceOnNextAuthoritySync(() => service.fenceWorkspaceRemoval(spaceOne));
+    const result = await service.runAutomationNow({
+      workspaceId: spaceOne,
+      appId: "connected-inbox",
+      expectedDigest: review.digest,
+      automationId: refreshAutomation,
+    });
+
+    assert.notEqual(result.run.outcome, "success");
+    assert.equal(runtime.automationRuns, 0, "the runtime host must never receive work after the removal fence");
+    assert.deepEqual(runtime.authorities, []);
+    await service.close();
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("a Space-removal fence retries runtime authority sync after a transient host failure", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-removal-fence-retry-"));
+  const workspaceRoot = join(sandbox, "space");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const runtime = new FenceDuringAuthoritySyncRuntimeHost();
+  try {
+    await writePackage(join(workspaceRoot, "apps", "inbox"));
+    const service = await RestrictedAppService.create({ rootPath, runtimeHost: runtime });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+    assert.equal(runtime.authorities.length, 1);
+
+    runtime.failNextAuthoritySync();
+    assert.throws(() => service.fenceWorkspaceRemoval(spaceOne), /simulated authority sync failure/);
+    assert.equal(runtime.authorities.length, 1, "the injected host failure models stale authority");
+    service.fenceWorkspaceRemoval(spaceOne);
+    assert.deepEqual(runtime.authorities, [], "replaying the same fence must retry authority synchronization");
     await service.close();
   } finally {
     await rm(sandbox, { recursive: true, force: true });
@@ -1181,6 +1389,109 @@ test("RestrictedAppService uses OAuth generation invalidation so disconnect cann
     await service.close();
   } finally {
     releaseRefresh?.();
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("an exact Local App connection reset cannot be undone by an in-flight OAuth refresh", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-service-oauth-local-reset-"));
+  const workspaceRoot = join(sandbox, "source-space");
+  const packageRoot = join(workspaceRoot, "apps", "inbox");
+  const rootPath = join(sandbox, "state", "restricted-apps");
+  const connections = new MemoryConnectionStore();
+  const configuration = { issuer: "https://identity.example.com", clientId: "workspace-public-client", scopes: ["mail.read"] };
+  let refreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const started = new Promise<void>((resolvePromise) => { refreshStarted = resolvePromise; });
+  const release = new Promise<void>((resolvePromise) => { releaseRefresh = resolvePromise; });
+  const oauth = oauthClient(connections, {
+    async getJson() {
+      return {
+        status: 200,
+        body: {
+          issuer: configuration.issuer,
+          authorization_endpoint: "https://identity.example.com/authorize",
+          token_endpoint: "https://identity.example.com/token",
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        },
+      };
+    },
+    async postForm() {
+      refreshStarted();
+      await release;
+      return { status: 200, body: { access_token: "stale-successor-access", token_type: "Bearer", expires_in: 3_600 } };
+    },
+  }, new Date("2026-07-13T12:00:00.000Z"));
+  let service: RestrictedAppService | undefined;
+  try {
+    await writePackage(packageRoot, { networkAuth: [{ kind: "oauth2-pkce", ...configuration }] });
+    service = await RestrictedAppService.create({
+      rootPath,
+      runtimeHost: new RecordingRuntimeHost(),
+      connections,
+      oauth,
+    });
+    await service.declareLocalAppProject({
+      workspaceId: spaceOne,
+      presentation: { title: "Connected Inbox", description: null, icon: "mail" },
+    });
+    const review = await service.inspect({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox" });
+    await service.install({ workspaceId: spaceOne, workspaceRoot, sourcePath: "apps/inbox", expectedDigest: review.digest });
+
+    const preparedOne = await service.prepareLocalAppRelease({ workspaceId: spaceOne, displayVersion: "1.0.0" });
+    const releaseOne = await service.publishLocalAppRelease({
+      workspaceId: spaceOne,
+      releaseDigest: preparedOne.releaseDigest,
+    });
+    const install = await service.prepareLocalAppInstall({
+      sourceWorkspaceId: spaceOne,
+      targetWorkspaceId: spaceTwo,
+      releaseDigest: releaseOne.releaseDigest,
+    });
+    const installed = (await service.activateLocalAppInstall(install.operationId)).apps[0]!;
+    const binding = platformConnectionBinding(installed);
+    await connections.set(binding, {
+      kind: "oauth2-pkce",
+      issuer: configuration.issuer,
+      clientId: configuration.clientId,
+      requestedScopes: configuration.scopes,
+      grantedScopes: configuration.scopes,
+      tokenType: "Bearer",
+      accessToken: "expiring-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2026-07-13T12:00:30.000Z",
+      connectedAt: "2026-07-12T12:00:00.000Z",
+    });
+
+    const authorization = oauth.authorize(binding, configuration, new Headers());
+    await started;
+    const preparedTwo = await service.prepareLocalAppRelease({ workspaceId: spaceOne, displayVersion: "1.0.1" });
+    const releaseTwo = await service.publishLocalAppRelease({
+      workspaceId: spaceOne,
+      releaseDigest: preparedTwo.releaseDigest,
+    });
+    const update = await service.prepareLocalAppUpdate({
+      sourceWorkspaceId: spaceOne,
+      runtimeInstanceId: installed.runtimeInstanceId,
+      releaseDigest: releaseTwo.releaseDigest,
+      continuityPolicy: "reset",
+    });
+    const successor = (await service.activateLocalAppUpdate(update.operationId)).apps[0]!;
+    assert.deepEqual(platformConnectionBinding(successor), binding,
+      "this regression must exercise the exact binding reused by the successor Feature");
+    releaseRefresh();
+
+    await assert.rejects(authorization, (error: unknown) => (
+      error instanceof RestrictedAppOAuthError && error.code === "AUTH_REQUIRED"
+    ));
+    assert.equal(connections.setBindings.length, 1, "the stale refresh must not recreate the reset binding");
+    assert.equal((await service.connectionStatus(spaceTwo, "connected-inbox", successor.digest))[0]?.configured, false);
+  } finally {
+    releaseRefresh?.();
+    await service?.close().catch(() => undefined);
     await rm(sandbox, { recursive: true, force: true });
   }
 });
@@ -1531,6 +1842,37 @@ class StopRaceRuntimeHost implements RestrictedAppRuntimeHost {
     this.#onStop = undefined;
     callback?.();
   }
+  async close(): Promise<void> {}
+}
+
+class FenceDuringAuthoritySyncRuntimeHost implements RestrictedAppRuntimeHost {
+  authorities: RestrictedAppRuntimeAuthority[] = [];
+  automationRuns = 0;
+  #onNextAuthoritySync: (() => void) | undefined;
+  #failNextAuthoritySync = false;
+
+  fenceOnNextAuthoritySync(callback: () => void): void {
+    this.#onNextAuthoritySync = callback;
+  }
+
+  failNextAuthoritySync(): void {
+    this.#failNextAuthoritySync = true;
+  }
+
+  syncAuthority(authorities: readonly RestrictedAppRuntimeAuthority[]): void {
+    if (this.#failNextAuthoritySync) {
+      this.#failNextAuthoritySync = false;
+      throw new Error("simulated authority sync failure");
+    }
+    this.authorities = structuredClone(authorities);
+    const callback = this.#onNextAuthoritySync;
+    this.#onNextAuthoritySync = undefined;
+    callback?.();
+  }
+
+  async invoke(): Promise<unknown> { return {}; }
+  async runAutomation(): Promise<void> { this.automationRuns += 1; }
+  async stop(): Promise<void> {}
   async close(): Promise<void> {}
 }
 

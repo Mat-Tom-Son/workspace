@@ -16,6 +16,7 @@ import { KeyboardShortcutsModal } from "./components/modals/KeyboardShortcutsMod
 import { TextInputModal } from "./components/modals/TextInputModal";
 import { OnboardingFlow } from "./components/onboarding/OnboardingFlow";
 import { FileDetailsPane } from "./components/panes/FileDetailsPane";
+import { AppStudioPane } from "./components/panes/AppStudioPane";
 import { CapabilitiesPane } from "./components/panes/CapabilitiesPane";
 import { ExtensionSurfacePane, ExtensionSurfaceUnavailable, ExtensionSurfaceView } from "./components/panes/ExtensionSurface";
 import { RestrictedAppViewport } from "./components/panes/RestrictedAppViewport";
@@ -35,6 +36,7 @@ import { formatItemCount } from "./lib/format";
 import { readStoredJsonValue, readStoredValue, writeStoredJsonValue, writeStoredValue } from "./lib/storage";
 import { isMacOS, typographyFontForPlatform, workspaceEntryNativePath } from "./lib/platform";
 import { resolveRestrictedAppOpenRequest, restrictedAppRailMode } from "./lib/restricted-app-navigation";
+import { getLocalAppStudio, getLocalAppWorkspaceRemovalImpact } from "./lib/restricted-apps";
 import { collectLoadedFileEntries, findTreeEntry, isInsideFolder, moveTreeEntry, removeTreeEntries } from "./lib/tree";
 import { normalizeWorkspaceCustomizations } from "./lib/workspace-customization";
 import { workspaceIdentityFor, workspaceIdentityStyle } from "./lib/workspace-identity";
@@ -449,16 +451,47 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
 
   async function removeSpace(target: WorkspaceSummary) {
     if (fixture) { showToast({ text: "Space removal is disabled in the preview", tone: "info" }); return; }
-    const confirmed = await requestConfirm({ title: target.location.storage === "linked" ? `Remove ${target.name}?` : `Delete ${target.name}?`, body: removeWorkspaceConfirmText(target), confirmLabel: target.location.storage === "linked" ? "Remove Space" : "Delete Space", tone: "danger" });
+    let appStudio;
+    let appRemovalImpact;
+    try {
+      [appStudio, appRemovalImpact] = await Promise.all([
+        getLocalAppStudio(target.id),
+        getLocalAppWorkspaceRemovalImpact(target.id),
+      ]);
+    } catch (caught) {
+      onError(`Workspace could not verify ${target.name}'s App Studio state. ${errorText(caught)}`);
+      return;
+    }
+    if (appRemovalImpact.activeSourceInstanceCount || appRemovalImpact.activeTargetInstanceCount) {
+      onError(`Uninstall every release-backed App sourced by or installed in ${target.name} before removing this Space.`);
+      return;
+    }
+    if (appRemovalImpact.retainedDataCount) {
+      onError(`Purge ${target.name}'s retained App data in App Studio before removing this source Space.`);
+      return;
+    }
+    const confirmed = await requestConfirm({ title: target.location.storage === "linked" ? `Remove ${target.name}?` : `Delete ${target.name}?`, body: removeWorkspaceConfirmText(target, {
+      ...appStudio,
+      incomingPreparedOperationCount: appRemovalImpact.incomingPreparedOperationCount,
+    }), confirmLabel: target.location.storage === "linked" ? "Remove Space" : "Delete Space", tone: "danger" });
     if (!confirmed) return;
     try {
-      await api(`/api/workspaces/${target.id}`, { method: "DELETE" });
+      const removal = await api<{ cleanupPending: boolean; deleted: boolean }>(`/api/workspaces/${target.id}`, { method: "DELETE" });
       const nextCustomizations = { ...customizationsRef.current };
       delete nextCustomizations[target.id];
       persistWorkspaceCustomizations(nextCustomizations);
       tabs.removeWorkspaceSurfaceTabs(target.id);
       await onRefreshBootstrap();
-      showToast({ text: target.location.storage === "linked" ? `${target.name} removed. The folder and its files remain on your computer.` : `${target.name} and its managed folder were deleted.`, tone: "success" });
+      showToast({
+        text: removal.cleanupPending
+          ? target.location.storage === "managed" && !removal.deleted
+            ? `${target.name} was removed. Workspace will retry deleting its managed folder when it next starts.`
+            : `${target.name} was removed. Workspace will finish machine-local cleanup when it next starts.`
+          : target.location.storage === "linked"
+            ? `${target.name} removed. The folder and its files remain on your computer.`
+            : `${target.name} and its managed folder were deleted.`,
+        tone: removal.cleanupPending ? "info" : "success",
+      });
     } catch (caught) { onError(errorText(caught)); }
   }
 
@@ -791,7 +824,7 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
       {activeMode === "chats" ? <ChatsPane workspace={workspace} workspaces={workspaces} conversations={conversationGroups} customizations={customizations} activeConversationId={activeTab?.kind === "chat" ? activeTab.conversationId ?? undefined : undefined} onOpen={(target, conversation) => openChat(target, conversation)} onNew={(target) => openChat(target, null)} onRename={(target, conversation, event) => setChatRename({ workspace: target, conversation, x: event.clientX, y: event.clientY })} /> : null}
       {activeMode === "library" ? <LibraryPane workspace={workspace} fixtureTree={fixture?.library} onError={onError} /> : null}
       {activeMode === "history" ? <HistoryPane workspace={workspace} fixtureItems={fixture?.checkpoints[workspace.id]} refreshRequest={historyRefreshRequest} onOpen={(item) => tabs.openHistorySurfaceTab(workspace, item.checkpointId, item.label || "Restore point")} onError={onError} /> : null}
-      {activeMode === "capabilities" ? <CapabilitiesPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} restrictedApps={restrictedApps} restrictedAppsLoading={restrictedAppsState.loadingWorkspaceIds.has(workspace.id)} onOpenSettings={() => onOpenSettings("assistant")} onError={onError} onCatalogChanged={(catalog) => updateSurfaceCatalog(workspace.id, catalog)} onRestrictedAppChanged={restrictedAppsState.upsertApp} onRestrictedAppRemoved={(appId) => restrictedAppsState.removeApp(workspace.id, appId)} onBuildApp={() => openChat(workspace, null)} /> : null}
+      {activeMode === "capabilities" ? <CapabilitiesPane workspace={workspace} status={agent} fixtureMode={Boolean(fixture)} restrictedApps={restrictedApps} restrictedAppsLoading={restrictedAppsState.loadingWorkspaceIds.has(workspace.id)} onOpenSettings={() => onOpenSettings("assistant")} onError={onError} onCatalogChanged={(catalog) => updateSurfaceCatalog(workspace.id, catalog)} onRestrictedAppChanged={restrictedAppsState.upsertApp} onRestrictedAppRemoved={(appId) => restrictedAppsState.removeApp(workspace.id, appId)} onBuildApp={() => openChat(workspace, null)} onOpenAppStudio={(sourceWorkspaceId) => tabs.openAppStudioSurfaceTab(workspaces.find((item) => item.id === sourceWorkspaceId) ?? workspace)} /> : null}
       {activeSurface ? <ExtensionSurfacePane surface={activeSurface} activeViewId={activeTab?.kind === "extension" && surfaceMatchesTab(activeSurface, activeTab) ? activeTab.viewId : null} onOpenView={(view) => tabs.openExtensionSurfaceTab(workspace, activeSurface, view)} /> : null}
       {activeRestrictedApp ? <RestrictedAppViewport app={activeRestrictedApp} placement="navigator" route="/" active /> : null}
     </section>
@@ -807,6 +840,23 @@ function WorkspaceView({ workspace, workspaces, agent, fixture, desktopAction, u
           <div className="workspace-surface-body" role="tabpanel" id={surfacePanelDomId(tab.id)} aria-labelledby={surfaceTabDomId(tab.id)} hidden={!active} key={tab.id} style={workspaceIdentityStyle(targetIdentity)}>
             {tab.kind === "file" && tab.path ? (
               <FileDetailsPane workspace={targetWorkspace} path={tab.path} entry={targetWorkspace.id === workspace.id ? findTreeEntry(tree.tree, tab.path) : null} fixtureMode={Boolean(fixture)} onOpenLocal={(path, action) => openLocalPath(path, action, targetWorkspace)} onAddToChatContext={attachToChat} onShowVersionHistory={(path) => openVersionHistory(targetWorkspace, path)} onRename={targetWorkspace.id === workspace.id ? renameEntry : undefined} />
+            ) : tab.kind === "app-studio" ? (
+              <AppStudioPane
+                workspace={targetWorkspace}
+                workspaces={workspaces}
+                active={active}
+                previewRevision={(restrictedAppsState.appsByWorkspace[targetWorkspace.id] ?? [])
+                  .filter((app) => app.runtimeInstanceKind === "development")
+                  .map((app) => `${app.featureInstallationId}:${app.digest}:${app.updatedAt}`)
+                  .sort()
+                  .join("|")}
+                fixtureMode={Boolean(fixture)}
+                onAppsChanged={(workspaceId, runtimeInstanceId, apps) => {
+                  restrictedAppsState.replaceRuntimeInstanceApps(workspaceId, runtimeInstanceId, apps);
+                  void restrictedAppsState.refresh(workspaceId);
+                }}
+                onError={onError}
+              />
             ) : tab.kind === "appearance" ? (
               <div className="workspace-appearance-surface professional-appearance-surface">
                 <div className="workspace-appearance-surface-heading">

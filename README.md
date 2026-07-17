@@ -25,6 +25,10 @@ The core idea is simple: the folder stays ordinary; Workspace makes it feel like
 | **Capabilities** | The place to discover and manage what the Assistant can do. |
 | **Skill** | A reusable way of working that guides the Assistant. |
 | **Extension** | A capability or connection the Assistant can use. |
+| **App Project** | An optional, machine-local build and publication identity declared for one Space. |
+| **Feature** | One reviewed restricted-app contribution built in an App Project. |
+| **Release** | An immutable, content-addressed snapshot of an App Project's reviewed Features and presentation. |
+| **App Instance** | One Release installed into a chosen Space with its own data and authority. |
 
 The Space switcher selects the root-folder entity a person is working in. The primary navigation then opens surfaces for that selected Space and the surrounding product:
 
@@ -50,7 +54,8 @@ Workspace reserves two hidden support directories inside a Space: `.workspace/` 
 - Global and registered-Space Pi Extensions. Native Pi Extensions run with the current user's permissions.
 - Validated declarative Extension surfaces that can contribute an app rail destination, navigator pane, and Space-bound data views without injecting Extension code into the renderer.
 - A [full-trust Connected inbox Pi Extension example](examples/packages/connected-inbox/README.md) and a separate, runnable [restricted Connected inbox Space app](examples/packages/restricted-connected-inbox/README.md).
-- A separate restricted-app lane: strict non-evaluating review, content-addressed install receipts, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant-action and automation workers, a shared machine-wide scheduler for named jobs, durable run receipts, bounded local app storage with active-view invalidation hints, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, standards-only OAuth PKCE, and static reviewed system notifications from enabled automations.
+- A separate restricted-app lane: strict non-evaluating review, content-addressed Development previews, arbitrary reviewed web UI in a sandboxed Space rail navigator, app-requested persistent Space-owned tabs, optional Assistant-action and automation workers, a shared machine-wide scheduler for named jobs, durable run receipts, bounded local app storage with active-view invalidation hints, reviewed History-covered Space-file grants, explicit public-HTTPS or loopback access, host-owned encrypted credentials, standards-only OAuth PKCE, and static reviewed system notifications from enabled automations.
+- A local App Studio that declares a machine-local App Project, prepares immutable version-2 Releases from reviewed previews, publishes them as a separate local decision, installs a published Release into a chosen registered Space, and prepares deterministic updates or rollbacks before activation.
 - [Agent Skills](https://agentskills.io) from standard `SKILL.md` directories, `.skill`/ZIP bundles, and skill-only imports from compatible multi-skill packs.
 - Assisted Windows installation and a signed/notarized Apple silicon DMG, with GitHub-hosted application updates on both platforms.
 - A versioned, read-only management layer and installed `workspace` command for inspecting Space context, running work, and Pi capabilities without scraping the UI.
@@ -69,26 +74,40 @@ The normal creation path begins in a Space Chat:
 
 1. The Assistant writes a complete, already-built package inside the Space and calls the host-owned `propose_space_app` tool with only its Space-relative folder.
 2. Workspace inspects the package without evaluating JavaScript and returns a digest-pinned review to that owning Chat.
-3. The person chooses whether to install that exact revision. Installation grants only bounded app storage; network destinations, files, notification categories, saved connections, and every automation remain off.
+3. The person chooses whether to add that exact revision as a **Local preview** in the source Space's Development Instance. Adding it grants only bounded app storage; network destinations, files, notification categories, saved connections, and every automation remain off.
 4. **Capabilities → Apps in this Space** manages each authority separately. The app itself opens from the contributed rail and may create normal Space-owned tabs in the work area.
 
-Revoking a destination stops brokered requests but does not silently delete a saved credential; **Disconnect** removes the machine-local encrypted record. Provider-side token or API-key revocation remains the provider's responsibility. Updating an app preserves its explicit data lineage but resets grants, connections, notification access, and automation settings so a new revision cannot inherit old powers. Predecessor run receipts remain durable audit lineage even though the current-revision run view starts empty.
+Revoking a destination stops brokered requests but does not silently delete a saved credential; **Disconnect** removes the machine-local encrypted record. Provider-side token or API-key revocation remains the provider's responsibility. Updating a Development preview preserves its explicit data lineage but resets grants, connections, notification access, and automation settings so a new revision cannot inherit old powers. Predecessor run receipts remain durable audit lineage even though the current-revision run view starts empty.
+
+When a preview is ready to become an installable App, **App Studio** provides the local release lifecycle:
+
+1. Declare or edit the App Project's title, description, and icon. This presentation and the Project identity are machine-local in 0.4; Workspace does not add another portable file to the Space.
+2. Prepare a Release from every currently reviewed Development preview. The immutable v2 envelope includes the exact Feature bytes, declarations, presentation, dependency inventory, provenance, and inspection evidence in a content-addressed local store.
+3. Review and separately publish that prepared Release. Publishing is a local state transition, not an upload, hosted deployment, signature, or App Store submission, and fails if a source preview changed after preparation.
+4. Prepare and activate installation into a chosen registered Space. The App Instance is distinct from its Development Instance, starts every destination, file, notification, connection, and automation off, and keeps its executable bytes, data, grants, operation journal, and receipts in Workspace application data.
+5. Prepare an update or rollback to another published Release, inspect its continuity/reset plan, then activate it. Exact unchanged Feature content may keep eligible authority; changed content resets grants, connections, and jobs while preserving the Feature installation and data namespace. Schema-bearing Releases and migration execution are rejected by the current local runtime.
+6. Uninstall the whole App Instance with an explicit **retain data** or **purge data** choice. Retained namespaces are no longer runnable and can be purged later from App Studio.
+7. Delete an unused prepared or published Release to reclaim its local immutable object. Workspace blocks deletion while an active Instance, either side of a prepared operation, or retained data still needs that Release. The Release store has a four-GiB aggregate quota.
+
+The 0.4 local lane allows one App Instance per `(App Project, target Space)`. A target Space cannot already contain a preview or installed Feature with the same Feature id. The source Space and every target Space stay ordinary folders; Workspace blocks removing either registration while an active release-backed instance still depends on it and directs the person to uninstall first. Retained App data continues to block the source until explicit purge, but no longer binds the former target. Removing an obligation-free source clears its machine-local App Project and Release lineage; removing a target cancels prepared operations aimed there.
 
 Start with [Restricted app authoring](docs/restricted-app-authoring.md) to build a package, [Restricted app runtime](docs/restricted-app-runtime.md) for the security and lifecycle contract, and the [Connected inbox example](examples/packages/restricted-connected-inbox/README.md) for a runnable rail, tab, loopback service, storage, automation, and notification walkthrough.
 
-The next App-platform foundation is now implemented behind that surface: a Space
-may carry an optional App Project and Development Instance; installations have
-explicit Feature, data, Tenant, Principal, and seven-domain authority identity;
-new receipts capture that identity; cleanup survives interruption; and strict
-offline Release assembly and update planning are available as platform code.
+The App-platform foundation is now a shipped local product layer: a Space may
+carry an optional App Project and Development Instance; App Studio prepares and
+publishes immutable Releases, installs release-backed App Instances in chosen
+Spaces, and persists install/update preparation before activation. Install,
+update, rollback, uninstall, retention, and later purge use explicit, separately
+receipted lifecycle acts. Local App bytes, data, authority, and project
+presentation remain on this computer and outside ordinary Space folders.
 The checked-in private-hosted semantic core proves a narrow matching slice—role
 separation, immutable publication/deployment, instance-owned connection and
 leased job authority, compatible update, role-aware data, export, deletion, and
 restart recovery—with durable adapter interfaces and a non-coding
 community-garden fixture. It does not yet cover the full portable runtime and is
-not a deployed cloud service or App Store. See the
-[App platform foundation](docs/app-platform-foundation.md) for the exact shipped,
-implemented-but-unexposed, and future boundaries.
+not a deployed cloud service, sync path, upload service, or App Store. See the
+[App platform foundation](docs/app-platform-foundation.md) for the exact local
+and future-hosted boundaries.
 
 ## Management layer
 
@@ -186,6 +205,7 @@ See [Assistant capabilities](docs/assistant-capabilities.md) for the product-fac
 - [Workspace 0.2.9 release notes](docs/releases/0.2.9.md) — named Space-app automations, per-job authority, durable cadence, run receipts, and upgrade guidance.
 - [Workspace 0.2.8 release notes](docs/releases/0.2.8.md) — the shipped Space-app foundation, security boundary, example, verification, and known limits.
 - [Workspace 0.3.0 release notes](docs/releases/0.3.0.md) — the local App-platform foundation, authority hardening, upgrade behavior, and hosted semantic-core boundary.
+- [Workspace 0.4.0 release notes](docs/releases/0.4.0.md) — Local App Studio, immutable Releases, release-backed App Instances, deterministic update/rollback, and explicit data removal.
 - [Desktop parity](docs/ui-parity.md) and [visual system](docs/visual-design.md) — required interactions and design rules.
 - [Windows build](docs/windows-build.md), [Windows release runbook](docs/windows-release.md), [macOS build lane](docs/macos-build.md), and [macOS release runbook](docs/macos-release.md) — verification, signing, updater, and publishing boundaries.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Privacy](PRIVACY.md) — repository and user-data policies.

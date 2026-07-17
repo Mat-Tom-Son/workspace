@@ -160,6 +160,12 @@ export function useSurfaceTabs({
     setActiveSurfaceTabId(tab.id);
   }
 
+  function openAppStudioSurfaceTab(targetWorkspace: WorkspaceSummary): void {
+    const tab = appStudioSurfaceTab(targetWorkspace);
+    setSurfaceTabs((current) => upsertSurfaceTab(current, tab));
+    setActiveSurfaceTabId(tab.id);
+  }
+
   function openExtensionSurfaceTab(
     targetWorkspace: WorkspaceSummary,
     surface: CapabilitySurface,
@@ -261,6 +267,7 @@ export function useSurfaceTabs({
     openHistorySurfaceTab,
     openFileSurfaceTab,
     openAppearanceSurfaceTab,
+    openAppStudioSurfaceTab,
     openExtensionSurfaceTab,
     openRestrictedAppSurfaceTab,
     updateRestrictedAppSurfaceTab,
@@ -369,6 +376,14 @@ function normalizeStoredSurfaceTab(value: unknown): WorkspaceSurfaceTab | null {
     return {
       id: record.id,
       kind: "appearance",
+      workspaceId: record.workspaceId,
+      title: record.title,
+    };
+  }
+  if (record.kind === "app-studio") {
+    return {
+      id: `app-studio:${record.workspaceId}`,
+      kind: "app-studio",
       workspaceId: record.workspaceId,
       title: record.title,
     };
@@ -522,6 +537,15 @@ function appearanceSurfaceTab(workspace: WorkspaceSummary): WorkspaceSurfaceTab 
     kind: "appearance",
     workspaceId: workspace.id,
     title: `Customize ${workspace.name}`,
+  };
+}
+
+export function appStudioSurfaceTab(workspace: WorkspaceSummary): WorkspaceSurfaceTab {
+  return {
+    id: `app-studio:${workspace.id}`,
+    kind: "app-studio",
+    workspaceId: workspace.id,
+    title: "App Studio",
   };
 }
 

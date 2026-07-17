@@ -3,8 +3,11 @@ import { createReadStream, existsSync, lstatSync } from "node:fs";
 import {
   copyFile,
   mkdir,
+  lstat,
+  open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -94,9 +97,44 @@ export interface WorkspaceTreeOptions {
   includeIgnored?: boolean;
 }
 
-interface WorkspaceRegistry {
+export interface WorkspaceRemovalIntent {
+  transactionId: string;
+  workspaceId: string;
+  rootPath: string;
+  storage: WorkspaceLocation["storage"];
+  managedBase: string | null;
+  managedRootIdentity: ManagedWorkspaceRootIdentity | null;
+  managedRootClaimed: boolean;
+  phase: "requested" | "app-state-removed";
+  requestedAt: string;
+}
+
+export interface ManagedWorkspaceRootIdentity {
+  realPath: string;
+  managedBaseRealPath: string;
+  device: string;
+  inode: string;
+}
+
+export interface WorkspaceRemovalResult {
+  removed: true;
+  deleted: boolean;
+  rootPath: string;
+  cleanupPending: boolean;
+}
+
+export interface WorkspaceRegistry {
   version: 1;
   workspaces: WorkspaceSummary[];
+  pendingRemovals: WorkspaceRemovalIntent[];
+}
+
+export interface WorkspaceRemovalIo {
+  persistRegistry(registry: WorkspaceRegistry): Promise<void>;
+  claimManagedRoot(rootPath: string, claimPath: string): Promise<void>;
+  restoreMismatchedManagedClaim(claimPath: string, rootPath: string): Promise<void>;
+  removeClaimedManagedRoot(claimPath: string): Promise<void>;
+  removeWorkspaceState(rootPath: string): Promise<void>;
 }
 
 interface PortableSpaceManifest {
@@ -111,7 +149,9 @@ const maxPreviewBytes = 2 * 1024 * 1024;
 
 export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   const registry = await readRegistry();
+  const removingIds = new Set(registry.pendingRemovals.map((intent) => intent.workspaceId));
   const workspaces = registry.workspaces
+    .filter((workspace) => !removingIds.has(workspace.id))
     .filter((workspace) => existsSync(workspace.rootPath))
     .filter((workspace) => workspace.location.storage !== "linked" || linkedWorkspaceStateSeparated(workspace.rootPath))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -170,35 +210,196 @@ export async function getWorkspace(workspaceId: string): Promise<WorkspaceSummar
 export async function renameWorkspace(workspaceId: string, name: string): Promise<WorkspaceSummary> {
   assertId(workspaceId);
   const normalizedName = normalizeWorkspaceName(name);
-  const registry = await readRegistry();
-  const workspace = registry.workspaces.find((item) => item.id === workspaceId);
-  if (!workspace || !existsSync(workspace.rootPath)) throw notFound("Space not found.");
-  workspace.name = normalizedName;
-  workspace.updatedAt = new Date().toISOString();
-  await commitRegistryAndPortableManifest(registry, workspace);
-  return workspace;
+  return withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const workspace = registry.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || registry.pendingRemovals.some((intent) => intent.workspaceId === workspaceId)
+      || !existsSync(workspace.rootPath)) throw notFound("Space not found.");
+    workspace.name = normalizedName;
+    workspace.updatedAt = new Date().toISOString();
+    await commitRegistryAndPortableManifest(registry, workspace);
+    return workspace;
+  });
 }
 
-export async function removeWorkspace(
+/**
+ * Persists the user-authorized removal before any App or content cleanup. From
+ * this point the Space is intentionally hidden from every registry projection;
+ * startup recovery can safely roll the operation forward after a crash.
+ */
+export async function beginWorkspaceRemoval(
   workspaceId: string,
   managedBase = managedWorkspaceRoot(),
-): Promise<{ removed: true; deleted: boolean; rootPath: string }> {
-  const workspace = await getWorkspace(workspaceId);
-  const registry = await readRegistry();
-  const rootPath = ensureSafeWorkspaceRoot(workspace.rootPath);
-  let deleted = false;
-  if (workspace.location.storage === "managed") {
-    const base = resolve(managedBase);
-    if (samePath(rootPath, base) || !pathContains(base, rootPath)) {
+  io: Partial<WorkspaceRemovalIo> = {},
+): Promise<WorkspaceRemovalIntent> {
+  assertId(workspaceId);
+  return withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const existing = registry.pendingRemovals.find((intent) => intent.workspaceId === workspaceId);
+    if (existing) return structuredClone(existing);
+    const workspace = registry.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || !existsSync(workspace.rootPath)) throw notFound("Space not found.");
+    const rootPath = ensureSafeWorkspaceRoot(workspace.rootPath);
+    const base = workspace.location.storage === "managed" ? resolve(managedBase) : null;
+    if (base && (samePath(rootPath, base) || !pathContains(base, rootPath))) {
       throw new Error("Workspace will only delete a managed Space inside its registered managed-content folder.");
     }
-    await rm(rootPath, { recursive: true, force: false });
-    deleted = true;
-  }
-  registry.workspaces = registry.workspaces.filter((item) => item.id !== workspaceId);
-  await writeRegistry(registry);
-  await rm(workspaceStateDir(rootPath), { recursive: true, force: true });
-  return { removed: true, deleted, rootPath };
+    const managedRootIdentity = workspace.location.storage === "managed"
+      ? await captureManagedRootIdentity(rootPath, base!)
+      : null;
+    const intent: WorkspaceRemovalIntent = {
+      transactionId: `workspace-removal_${randomUUID()}`,
+      workspaceId: workspace.id,
+      rootPath,
+      storage: workspace.location.storage,
+      managedBase: base,
+      managedRootIdentity,
+      managedRootClaimed: false,
+      phase: "requested",
+      requestedAt: new Date().toISOString(),
+    };
+    registry.pendingRemovals.push(intent);
+    await removalIo(io).persistRegistry(registry);
+    return structuredClone(intent);
+  });
+}
+
+export async function markWorkspaceRemovalAppStateRemoved(
+  workspaceId: string,
+  io: Partial<WorkspaceRemovalIo> = {},
+): Promise<WorkspaceRemovalIntent> {
+  assertId(workspaceId);
+  return withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const intent = registry.pendingRemovals.find((item) => item.workspaceId === workspaceId);
+    if (!intent) throw new Error("Space removal intent not found.");
+    if (intent.phase === "app-state-removed") return structuredClone(intent);
+    intent.phase = "app-state-removed";
+    await removalIo(io).persistRegistry(registry);
+    return structuredClone(intent);
+  });
+}
+
+export async function listPendingWorkspaceRemovals(): Promise<WorkspaceRemovalIntent[]> {
+  return (await readRegistry({ strict: true })).pendingRemovals.map((intent) => structuredClone(intent));
+}
+
+export async function finalizeWorkspaceRemoval(
+  workspaceId: string,
+  io: Partial<WorkspaceRemovalIo> = {},
+): Promise<WorkspaceRemovalResult> {
+  assertId(workspaceId);
+  return withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const intent = registry.pendingRemovals.find((item) => item.workspaceId === workspaceId);
+    if (!intent) throw new Error("Space removal intent not found.");
+    if (intent.phase !== "app-state-removed") {
+      throw new Error("Space cleanup cannot start before App state has been removed.");
+    }
+    const workspace = registry.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || !samePath(workspace.rootPath, intent.rootPath)
+      || workspace.location.storage !== intent.storage) {
+      throw new Error("Space removal intent no longer matches the registered Space.");
+    }
+    validateWorkspaceRemovalIntent(intent);
+    const operations = removalIo(io);
+    let deleted = false;
+    if (intent.storage === "managed") {
+      const claimPath = managedRemovalClaimPath(intent);
+      let claimStatus = await managedClaimStatus(intent);
+      if (claimStatus === "mismatch") {
+        if (await managedRootStatus(intent) === "absent") {
+          await operations.restoreMismatchedManagedClaim(claimPath, intent.rootPath).catch(() => undefined);
+        }
+        return workspaceRemovalPendingResult(intent);
+      }
+      if (claimStatus === "unavailable") {
+        return workspaceRemovalPendingResult(intent);
+      }
+
+      if (claimStatus === "absent") {
+        const rootStatus = await managedRootStatus(intent);
+        if (rootStatus === "absent") {
+          deleted = true;
+        } else if (rootStatus === "mismatch" && intent.managedRootClaimed) {
+          // The approved identity was durably claimed and is now absent. A new
+          // occupant at the old path is unrelated and must be left untouched.
+          deleted = true;
+        } else if (rootStatus !== "matching") {
+          return workspaceRemovalPendingResult(intent);
+        } else {
+          try {
+            await operations.claimManagedRoot(intent.rootPath, claimPath);
+          } catch {
+            return workspaceRemovalPendingResult(intent);
+          }
+          claimStatus = await managedClaimStatus(intent);
+          if (claimStatus !== "matching") {
+            if (claimStatus === "mismatch" && await managedRootStatus(intent) === "absent") {
+              await operations.restoreMismatchedManagedClaim(claimPath, intent.rootPath).catch(() => undefined);
+            }
+            return workspaceRemovalPendingResult(intent);
+          }
+        }
+      }
+
+      if (!deleted && !intent.managedRootClaimed) {
+        intent.managedRootClaimed = true;
+        try {
+          await operations.persistRegistry(registry);
+        } catch {
+          return workspaceRemovalPendingResult(intent);
+        }
+      }
+
+      if (!deleted) {
+        claimStatus = await managedClaimStatus(intent);
+        if (claimStatus === "matching") {
+          try {
+            await operations.removeClaimedManagedRoot(claimPath);
+          } catch {
+            return workspaceRemovalPendingResult(intent);
+          }
+          claimStatus = await managedClaimStatus(intent);
+        }
+        if (claimStatus !== "absent") return workspaceRemovalPendingResult(intent);
+        deleted = true;
+      }
+    }
+    try {
+      await operations.removeWorkspaceState(intent.rootPath);
+    } catch {
+      return workspaceRemovalPendingResult(intent);
+    }
+
+    const next: WorkspaceRegistry = {
+      ...registry,
+      workspaces: registry.workspaces.filter((item) => item.id !== workspaceId),
+      pendingRemovals: registry.pendingRemovals.filter((item) => item.workspaceId !== workspaceId),
+    };
+    try {
+      await operations.persistRegistry(next);
+    } catch {
+      return workspaceRemovalPendingResult(intent);
+    }
+    return { removed: true, deleted, rootPath: intent.rootPath, cleanupPending: false };
+  });
+}
+
+export async function workspaceRemovalPendingResult(
+  intent: Pick<WorkspaceRemovalIntent,
+    "transactionId" | "rootPath" | "storage" | "managedBase" | "managedRootIdentity" | "managedRootClaimed">,
+): Promise<WorkspaceRemovalResult> {
+  const rootStatus = intent.storage === "managed" ? await managedRootStatus(intent) : "mismatch";
+  const deleted = intent.storage === "managed"
+    && await managedClaimStatus(intent) === "absent"
+    && (rootStatus === "absent" || (intent.managedRootClaimed && rootStatus === "mismatch"));
+  return {
+    removed: true,
+    deleted,
+    rootPath: intent.rootPath,
+    cleanupPending: true,
+  };
 }
 
 export async function scanWorkspaceTree(
@@ -469,71 +670,101 @@ export async function sha256File(path: string): Promise<string> {
 }
 
 async function registerWorkspace(input: Omit<WorkspaceSummary, "id" | "createdAt" | "updatedAt">): Promise<WorkspaceSummary> {
-  const registry = await readRegistry();
-  const rootPath = resolve(input.rootPath);
-  const existing = registry.workspaces.find((workspace) => samePath(workspace.rootPath, rootPath));
-  if (existing) {
-    await writePortableManifest(existing);
-    return existing;
-  }
-  const portableIdentity = await readExistingSpaceManifest(rootPath);
-  const now = new Date().toISOString();
-  if (portableIdentity) {
-    const identityOwner = registry.workspaces.find((workspace) => workspace.id === portableIdentity.id);
-    if (identityOwner) {
-      if (existsSync(identityOwner.rootPath)) {
-        throw new Error("This Space identity is already linked to another folder.");
+  return withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const rootPath = resolve(input.rootPath);
+    const existing = registry.workspaces.find((workspace) => samePath(workspace.rootPath, rootPath));
+    if (existing) {
+      if (registry.pendingRemovals.some((intent) => intent.workspaceId === existing.id)) {
+        throw new Error("This Space is still being removed. Restart Workspace to retry its cleanup.");
       }
-      identityOwner.name = portableIdentity.name;
-      identityOwner.rootPath = rootPath;
-      identityOwner.location = input.location;
-      identityOwner.createdAt = portableIdentity.createdAt;
-      identityOwner.updatedAt = now;
-      await commitRegistryAndPortableManifest(registry, identityOwner);
-      return identityOwner;
+      await writePortableManifest(existing);
+      return existing;
     }
-  }
-  const id = portableIdentity?.id ?? stableWorkspaceId(rootPath);
-  const identityCollision = registry.workspaces.find((workspace) => workspace.id === id);
-  if (identityCollision) throw new Error("This Space identity is already registered to another folder.");
-  const workspace: WorkspaceSummary = {
-    ...input,
-    id,
-    name: portableIdentity?.name ?? input.name,
-    rootPath,
-    createdAt: portableIdentity?.createdAt ?? now,
-    updatedAt: now,
-  };
-  registry.workspaces.push(workspace);
-  await commitRegistryAndPortableManifest(registry, workspace);
-  return workspace;
+    const portableIdentity = await readExistingSpaceManifest(rootPath);
+    const now = new Date().toISOString();
+    if (portableIdentity) {
+      const identityOwner = registry.workspaces.find((workspace) => workspace.id === portableIdentity.id);
+      if (identityOwner) {
+        if (registry.pendingRemovals.some((intent) => intent.workspaceId === identityOwner.id)) {
+          throw new Error("This Space is still being removed. Restart Workspace to retry its cleanup.");
+        }
+        if (existsSync(identityOwner.rootPath)) {
+          throw new Error("This Space identity is already linked to another folder.");
+        }
+        identityOwner.name = portableIdentity.name;
+        identityOwner.rootPath = rootPath;
+        identityOwner.location = input.location;
+        identityOwner.createdAt = portableIdentity.createdAt;
+        identityOwner.updatedAt = now;
+        await commitRegistryAndPortableManifest(registry, identityOwner);
+        return identityOwner;
+      }
+    }
+    const id = portableIdentity?.id ?? stableWorkspaceId(rootPath);
+    const identityCollision = registry.workspaces.find((workspace) => workspace.id === id);
+    if (identityCollision) throw new Error("This Space identity is already registered to another folder.");
+    const workspace: WorkspaceSummary = {
+      ...input,
+      id,
+      name: portableIdentity?.name ?? input.name,
+      rootPath,
+      createdAt: portableIdentity?.createdAt ?? now,
+      updatedAt: now,
+    };
+    registry.workspaces.push(workspace);
+    await commitRegistryAndPortableManifest(registry, workspace);
+    return workspace;
+  });
 }
 
 async function touchWorkspace(rootPath: string): Promise<void> {
-  const registry = await readRegistry();
-  const workspace = registry.workspaces.find((item) => samePath(item.rootPath, rootPath));
-  if (!workspace) return;
-  workspace.updatedAt = new Date().toISOString();
-  try {
-    await commitRegistryAndPortableManifest(registry, workspace);
-  } catch {
-    // The content mutation already succeeded. Leave both metadata records at their
-    // previous values and retry maintenance on a later mutation or Space listing.
-  }
+  await withRegistryMutation(async () => {
+    const registry = await readRegistry({ strict: true });
+    const workspace = registry.workspaces.find((item) => samePath(item.rootPath, rootPath));
+    if (!workspace || registry.pendingRemovals.some((intent) => intent.workspaceId === workspace.id)) return;
+    workspace.updatedAt = new Date().toISOString();
+    try {
+      await commitRegistryAndPortableManifest(registry, workspace);
+    } catch {
+      // The content mutation already succeeded. Leave both metadata records at their
+      // previous values and retry maintenance on a later mutation or Space listing.
+    }
+  });
 }
 
-async function readRegistry(): Promise<WorkspaceRegistry> {
+async function readRegistry(options: { strict?: boolean } = {}): Promise<WorkspaceRegistry> {
   const file = workspaceRegistryFile();
-  if (!existsSync(file)) return { version: 1, workspaces: [] };
+  if (!existsSync(file)) return emptyWorkspaceRegistry();
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as Partial<WorkspaceRegistry>;
-    if (!Array.isArray(parsed.workspaces)) return { version: 1, workspaces: [] };
+    if (!Array.isArray(parsed.workspaces)) throw new Error("Workspace registry Spaces are invalid.");
+    const workspaces = parsed.workspaces.map((workspace) => {
+      if (!isWorkspaceSummary(workspace)) throw new Error("Workspace registry contains an invalid Space.");
+      return { ...workspace, rootPath: resolve(workspace.rootPath) };
+    });
+    const pendingRemovals = parsed.pendingRemovals === undefined
+      ? []
+      : parsed.pendingRemovals.map((intent) => workspaceRemovalIntent(intent));
+    const workspaceById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+    if (new Set(pendingRemovals.map((intent) => intent.workspaceId)).size !== pendingRemovals.length
+      || new Set(pendingRemovals.map((intent) => intent.transactionId)).size !== pendingRemovals.length
+      || pendingRemovals.some((intent) => {
+        const workspace = workspaceById.get(intent.workspaceId);
+        return !workspace
+          || !samePath(workspace.rootPath, intent.rootPath)
+          || workspace.location.storage !== intent.storage;
+      })) {
+      throw new Error("Workspace registry removal intents are inconsistent.");
+    }
     return {
       version: 1,
-      workspaces: parsed.workspaces.filter(isWorkspaceSummary).map((workspace) => ({ ...workspace, rootPath: resolve(workspace.rootPath) })),
+      workspaces,
+      pendingRemovals,
     };
-  } catch {
-    return { version: 1, workspaces: [] };
+  } catch (error) {
+    if (options.strict) throw new Error("Workspace registry could not be read safely.", { cause: error });
+    return emptyWorkspaceRegistry();
   }
 }
 
@@ -541,6 +772,147 @@ async function writeRegistry(registry: WorkspaceRegistry): Promise<void> {
   const file = workspaceRegistryFile();
   await mkdir(dirname(file), { recursive: true });
   await atomicJsonWrite(file, registry);
+}
+
+function emptyWorkspaceRegistry(): WorkspaceRegistry {
+  return { version: 1, workspaces: [], pendingRemovals: [] };
+}
+
+function removalIo(overrides: Partial<WorkspaceRemovalIo>): WorkspaceRemovalIo {
+  return {
+    persistRegistry: writeRegistry,
+    claimManagedRoot: async (rootPath, claimPath) => {
+      await rename(rootPath, claimPath);
+      await syncDirectoriesBestEffort([dirname(rootPath), dirname(claimPath)]);
+    },
+    restoreMismatchedManagedClaim: async (claimPath, rootPath) => {
+      await rename(claimPath, rootPath);
+      await syncDirectoriesBestEffort([dirname(claimPath), dirname(rootPath)]);
+    },
+    removeClaimedManagedRoot: async (claimPath) => {
+      await rm(claimPath, { recursive: true, force: true });
+      await syncDirectoriesBestEffort([dirname(claimPath)]);
+    },
+    removeWorkspaceState: async (rootPath) => rm(workspaceStateDir(rootPath), { recursive: true, force: true }),
+    ...overrides,
+  };
+}
+
+type ManagedRootStatus = "matching" | "absent" | "mismatch" | "unavailable";
+
+async function captureManagedRootIdentity(rootPath: string, managedBase: string): Promise<ManagedWorkspaceRootIdentity> {
+  const initialInfo = await lstat(rootPath, { bigint: true });
+  if (!initialInfo.isDirectory() || initialInfo.isSymbolicLink()) {
+    throw new Error("A managed Space root must be an ordinary directory.");
+  }
+  if (initialInfo.ino === 0n) throw new Error("This filesystem does not expose a stable managed Space directory identity.");
+  const [realPath, managedBaseRealPath] = await Promise.all([realpath(rootPath), realpath(managedBase)]);
+  const confirmedInfo = await lstat(rootPath, { bigint: true });
+  if (!confirmedInfo.isDirectory() || confirmedInfo.isSymbolicLink()
+    || confirmedInfo.dev !== initialInfo.dev || confirmedInfo.ino !== initialInfo.ino) {
+    throw new Error("The managed Space root changed while its removal identity was being recorded.");
+  }
+  if (samePath(realPath, managedBaseRealPath) || !pathContains(managedBaseRealPath, realPath)) {
+    throw new Error("A managed Space root must resolve inside its managed-content folder.");
+  }
+  return {
+    realPath: resolve(realPath),
+    managedBaseRealPath: resolve(managedBaseRealPath),
+    device: confirmedInfo.dev.toString(10),
+    inode: confirmedInfo.ino.toString(10),
+  };
+}
+
+async function managedRootStatus(
+  intent: Pick<WorkspaceRemovalIntent, "rootPath" | "storage" | "managedBase" | "managedRootIdentity">,
+): Promise<ManagedRootStatus> {
+  return managedDirectoryStatus(intent, intent.rootPath, intent.managedRootIdentity?.realPath ?? intent.rootPath);
+}
+
+async function managedClaimStatus(
+  intent: Pick<WorkspaceRemovalIntent,
+    "transactionId" | "rootPath" | "storage" | "managedBase" | "managedRootIdentity">,
+): Promise<ManagedRootStatus> {
+  const claimPath = managedRemovalClaimPath(intent);
+  return managedDirectoryStatus(intent, claimPath, claimPath);
+}
+
+async function managedDirectoryStatus(
+  intent: Pick<WorkspaceRemovalIntent, "storage" | "managedBase" | "managedRootIdentity">,
+  path: string,
+  expectedRealPath: string,
+): Promise<ManagedRootStatus> {
+  if (intent.storage !== "managed" || !intent.managedRootIdentity) return "mismatch";
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(path, { bigint: true });
+  } catch (error) {
+    return isFileNotFound(error) ? "absent" : "unavailable";
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) return "mismatch";
+  let currentRealPath: string;
+  let currentManagedBaseRealPath: string;
+  try {
+    [currentRealPath, currentManagedBaseRealPath] = await Promise.all([
+      realpath(path),
+      realpath(intent.managedBase!),
+    ]);
+  } catch {
+    // Only the lstat above may establish absence. A failure or race after that
+    // point is uncertain and must preserve the cleanup intent.
+    return "unavailable";
+  }
+  return info.dev.toString(10) === intent.managedRootIdentity.device
+    && info.ino.toString(10) === intent.managedRootIdentity.inode
+    && samePath(currentRealPath, expectedRealPath)
+    && samePath(currentManagedBaseRealPath, intent.managedRootIdentity.managedBaseRealPath)
+    ? "matching"
+    : "mismatch";
+}
+
+function managedRemovalClaimPath(
+  intent: Pick<WorkspaceRemovalIntent, "transactionId" | "storage" | "managedRootIdentity">,
+): string {
+  if (intent.storage !== "managed" || !intent.managedRootIdentity
+    || !/^workspace-removal_[0-9a-f-]{36}$/.test(intent.transactionId)) {
+    throw new Error("Managed Space removal intent cannot derive a safe claim path.");
+  }
+  const claimPath = resolve(
+    intent.managedRootIdentity.managedBaseRealPath,
+    `.workspace-removal-${intent.transactionId.slice("workspace-removal_".length)}`,
+  );
+  if (dirname(claimPath) !== resolve(intent.managedRootIdentity.managedBaseRealPath)) {
+    throw new Error("Managed Space removal claim escapes its content boundary.");
+  }
+  return claimPath;
+}
+
+function isFileNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+async function syncDirectoriesBestEffort(paths: readonly string[]): Promise<void> {
+  for (const path of new Set(paths.map((item) => resolve(item)))) {
+    try {
+      const directory = await open(path, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch {
+      // Windows does not consistently allow directory handles. The same-volume
+      // rename remains the claim point and exact identity is rechecked afterward.
+    }
+  }
+}
+
+let registryMutationQueue: Promise<void> = Promise.resolve();
+
+async function withRegistryMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = registryMutationQueue.then(operation, operation);
+  registryMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 async function writePortableManifest(workspace: WorkspaceSummary): Promise<void> {
@@ -632,8 +1004,30 @@ async function atomicJsonWrite(file: string, value: unknown): Promise<void> {
     }
   }
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temp, serialized, "utf8");
-  await rename(temp, file);
+  const handle = await open(temp, "wx");
+  try {
+    await handle.writeFile(serialized, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  try {
+    const directory = await open(dirname(file), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } catch {
+    // Windows does not consistently allow directory handles. The fsynced temp
+    // plus atomic rename remains the commit; directory sync is best-effort.
+  }
 }
 
 async function scanDirectory(
@@ -863,6 +1257,94 @@ function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
   return typeof item.id === "string" && typeof item.name === "string" && typeof item.rootPath === "string"
     && item.location?.kind === "local" && (item.location.storage === "managed" || item.location.storage === "linked")
     && typeof item.createdAt === "string" && typeof item.updatedAt === "string";
+}
+
+function workspaceRemovalIntent(value: unknown): WorkspaceRemovalIntent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Workspace registry contains an invalid removal intent.");
+  }
+  const item = value as Partial<WorkspaceRemovalIntent>;
+  const keys = Object.keys(value).sort();
+  if (keys.join("\0") !== [
+    "transactionId", "workspaceId", "rootPath", "storage", "managedBase", "managedRootIdentity", "managedRootClaimed", "phase", "requestedAt",
+  ].sort().join("\0")
+    || typeof item.transactionId !== "string"
+    || !/^workspace-removal_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(item.transactionId)
+    || !isWorkspaceId(item.workspaceId)
+    || typeof item.rootPath !== "string"
+    || (item.storage !== "managed" && item.storage !== "linked")
+    || typeof item.managedRootClaimed !== "boolean"
+    || (item.phase !== "requested" && item.phase !== "app-state-removed")
+    || typeof item.requestedAt !== "string" || !isValidTimestamp(item.requestedAt)) {
+    throw new Error("Workspace registry contains an invalid removal intent.");
+  }
+  if (item.storage === "managed" && (typeof item.managedBase !== "string" || !isAbsolute(item.managedBase))) {
+    throw new Error("Managed Space removal intent has no content boundary.");
+  }
+  if (item.storage === "managed" && !item.managedRootIdentity) {
+    throw new Error("Managed Space removal intent has no root identity.");
+  }
+  if (item.storage === "linked" && (item.managedBase !== null || item.managedRootIdentity !== null || item.managedRootClaimed)) {
+    throw new Error("Linked Space removal intent has unexpected managed-content authority.");
+  }
+  const intent: WorkspaceRemovalIntent = {
+    transactionId: item.transactionId,
+    workspaceId: item.workspaceId,
+    rootPath: lexicalWorkspaceRoot(item.rootPath),
+    storage: item.storage,
+    managedBase: item.managedBase === null ? null : resolve(item.managedBase!),
+    managedRootIdentity: item.managedRootIdentity === null ? null : managedRootIdentity(item.managedRootIdentity),
+    managedRootClaimed: item.managedRootClaimed,
+    phase: item.phase,
+    requestedAt: item.requestedAt,
+  };
+  validateWorkspaceRemovalIntent(intent);
+  return intent;
+}
+
+function validateWorkspaceRemovalIntent(intent: WorkspaceRemovalIntent): void {
+  const rootPath = lexicalWorkspaceRoot(intent.rootPath);
+  if (intent.storage === "managed") {
+    const base = resolve(intent.managedBase!);
+    if (samePath(rootPath, base) || !pathContains(base, rootPath)) {
+      throw new Error("Managed Space removal intent escapes its registered content boundary.");
+    }
+    const identity = intent.managedRootIdentity;
+    if (!identity || samePath(identity.realPath, identity.managedBaseRealPath)
+      || !pathContains(identity.managedBaseRealPath, identity.realPath)) {
+      throw new Error("Managed Space removal intent has an invalid canonical content boundary.");
+    }
+  } else if (intent.managedBase !== null || intent.managedRootIdentity !== null || intent.managedRootClaimed) {
+    throw new Error("Linked Space removal intent cannot delete managed content.");
+  }
+}
+
+function lexicalWorkspaceRoot(rootPath: string): string {
+  if (!isAbsolute(rootPath)) throw new Error("Space removal intent root must be absolute.");
+  const resolved = resolve(rootPath);
+  if (resolved === parse(resolved).root) throw new Error("A filesystem root cannot be used as a Space removal intent.");
+  return resolved;
+}
+
+function managedRootIdentity(value: unknown): ManagedWorkspaceRootIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Managed Space removal intent has an invalid root identity.");
+  }
+  const item = value as Partial<ManagedWorkspaceRootIdentity>;
+  const keys = Object.keys(value).sort();
+  if (keys.join("\0") !== ["device", "inode", "managedBaseRealPath", "realPath"].sort().join("\0")
+    || typeof item.realPath !== "string" || !isAbsolute(item.realPath)
+    || typeof item.managedBaseRealPath !== "string" || !isAbsolute(item.managedBaseRealPath)
+    || typeof item.device !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(item.device)
+    || typeof item.inode !== "string" || !/^[1-9][0-9]*$/.test(item.inode)) {
+    throw new Error("Managed Space removal intent has an invalid root identity.");
+  }
+  return {
+    realPath: resolve(item.realPath),
+    managedBaseRealPath: resolve(item.managedBaseRealPath),
+    device: item.device,
+    inode: item.inode,
+  };
 }
 
 function assertId(value: string): void {

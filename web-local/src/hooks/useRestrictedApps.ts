@@ -82,12 +82,31 @@ export function useRestrictedApps({
     setKnownWorkspaceIds((current) => new Set(current).add(workspaceId));
   }, []);
 
+  const replaceRuntimeInstanceApps = useCallback((
+    workspaceId: string,
+    runtimeInstanceId: string,
+    apps: RestrictedAppInstalled[],
+  ) => {
+    setAppsByWorkspace((current) => {
+      const preserved = (current[workspaceId] ?? []).filter((item) => item.runtimeInstanceId !== runtimeInstanceId);
+      const replacements = apps.filter((item) => (
+        item.workspaceId === workspaceId && item.runtimeInstanceId === runtimeInstanceId
+      ));
+      const next = [...preserved, ...replacements].sort((left, right) => (
+        left.manifest.title.localeCompare(right.manifest.title) || left.manifest.id.localeCompare(right.manifest.id)
+      ));
+      return { ...current, [workspaceId]: next };
+    });
+    setKnownWorkspaceIds((current) => new Set(current).add(workspaceId));
+  }, []);
+
   return {
     appsByWorkspace,
     knownWorkspaceIds,
     loadingWorkspaceIds,
     refresh,
     replaceApps,
+    replaceRuntimeInstanceApps,
     upsertApp,
     removeApp,
   };

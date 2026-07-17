@@ -274,7 +274,7 @@ test("Space lifecycle renames external metadata and removes linked versus manage
   assert.equal(await readFile(join(linkedRoot, "keep.txt"), "utf8"), "keep");
   assert.equal(existsSync(workspaceManifestFile(linkedRoot)), true);
   const removedLinked = await json(`${api.origin}/api/workspaces/${linked.workspace.id}`, { method: "DELETE" }) as { removed: true; deleted: boolean };
-  assert.deepEqual(removedLinked, { removed: true, deleted: false, rootPath: linkedRoot });
+  assert.deepEqual(removedLinked, { removed: true, deleted: false, rootPath: linkedRoot, cleanupPending: false });
   assert.equal(existsSync(linkedRoot), true);
   assert.equal(existsSync(workspaceManifestFile(linkedRoot)), true);
   assert.equal(existsSync(workspaceStateDir(linkedRoot)), false);

@@ -1866,6 +1866,11 @@ function deployPoweredInstance(fixture: Fixture) {
 function createRelease(projectId: ProjectId, displayVersion: string, revision: string): AppReleaseEnvelope {
   return assembleAppRelease({
     projectId,
+    presentation: {
+      title: "Connected Inbox",
+      description: "A private hosted inbox fixture.",
+      icon: "inbox",
+    },
     displayVersion,
     runtimeApi: { name: "workspace-feature-broker", compatibleRange: "1.x" },
     features: [{
@@ -1922,6 +1927,11 @@ function createRelease(projectId: ProjectId, displayVersion: string, revision: s
 function createCommunityGardenRelease(projectId: ProjectId): AppReleaseEnvelope {
   return assembleAppRelease({
     projectId,
+    presentation: {
+      title: "Community Garden",
+      description: "A shared garden fixture.",
+      icon: "sprout",
+    },
     displayVersion: "1.0.0",
     runtimeApi: { name: "workspace-feature-broker", compatibleRange: "1.x" },
     features: [{

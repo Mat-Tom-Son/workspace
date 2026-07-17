@@ -59,7 +59,7 @@ Technical types, routes, and storage paths may continue to use `workspace`, `pro
 
 Every Space is backed by an ordinary content folder. Its small portable data layer lives under `.workspace/`: `space.json` carries a stable, versioned identity and `conversations/` carries append-only Chat logs. Workspace reuses a valid manifest id when a moved folder is relinked. Both `.workspace/` and `.pi/` are hidden from the Files surface and excluded from History capture.
 
-Operational state remains outside the folder. Electron user data holds the Space registry, content-addressed History objects, ignore rules, provider credentials, and application preferences. The configured Pi agent directory holds Pi sessions, Pi's own trust store for other native consumers, personal capabilities, and Pi settings. Native Pi project skills, extensions, prompts, settings, and context stay separately under the Space's `.pi/` directory. Workspace's runtime provider authorizes the exact registered root and explicitly denies unregistered roots; it does not rewrite Pi's independent trust store. Removing a linked Space deletes its external Workspace operational state but preserves `.workspace/`; deleting a managed Space removes the whole managed folder.
+Operational state remains outside the folder. Electron user data holds the Space registry, content-addressed History objects, ignore rules, provider credentials, application preferences, and the local App Studio registry/store. App Project presentation, canonical Release envelopes, release-backed App bytes, grants, connections, schedules, operation journals, receipts, retained-data records, and mutable App data are machine-local application state; Workspace 0.4 does not add a portable App Project file. The configured Pi agent directory holds Pi sessions, Pi's own trust store for other native consumers, personal capabilities, and Pi settings. Native Pi project skills, extensions, prompts, settings, and context stay separately under the Space's `.pi/` directory. Workspace's runtime provider authorizes the exact registered root and explicitly denies unregistered roots; it does not rewrite Pi's independent trust store. Removing a linked Space preserves its ordinary files and `.workspace/`; deleting a managed Space removes the managed folder. Removal first persists a machine-local intent and installs a whole-Space runtime fence, then revokes trust and clears App state before final cleanup. Interrupted intents stay hidden and untrusted for startup recovery. Managed deletion atomically claims the exact canonical directory identity under a random transaction-bound same-filesystem path, revalidates and records that claim, and recursively deletes only the claim rather than any later replacement at the registered path. Either removal is blocked while the Space is the source or target of an active release-backed App Instance, so uninstall can make the data disposition explicit first. A source Space is also blocked while its Project owns retained App data. After those obligations are gone, source removal clears that machine-local Project, Development Instance, prepared operations, Releases, and administrative receipts, and marks unreferenced Release objects for safe reconciliation; transient cleanup failure is retried before later App mutations and at startup. Target removal cancels prepared operations aimed at that target.
 
 The Library is application-scoped, reusable across Spaces, and separate from chat context. Copying a Library item into a Space is an explicit action and produces an ordinary file in that Space; Library contents are not automatically attached to conversations or synchronized into every Space.
 
@@ -77,8 +77,12 @@ Restricted apps run beside, not inside, the Pi capability catalog and management
 flowchart LR
   chat["Space Chat and propose_space_app"] --> review["Host inspection and digest-pinned review"]
   capabilities["Capabilities grants, connections, lifecycle"] --> service["RestrictedAppService"]
+  studio["Space-bound App Studio"] --> service
   review --> service
-  service --> staged["Content-addressed reviewed assets"]
+  service --> staged["Content-addressed reviewed Feature assets"]
+  service --> releases["Immutable v2 Release store"]
+  releases --> instance["Release-backed local App Instance"]
+  instance --> service
   service --> visible["Visible sandboxed WebContentsView"]
   service --> worker["Hidden sandboxed worker"]
   visible --> tabs["Host-owned Space tabs"]
@@ -90,7 +94,7 @@ flowchart LR
 
 The trusted renderer supplies app identity, placement rectangles, review and permission UI, and shell tab state. It does not execute package JavaScript. Electron main owns installed-revision verification, sandbox creation, sender-to-owner binding, generation-aware lifecycle, brokers, credential injection, and teardown. Package JavaScript sees only the frozen `workspaceRestrictedApp` bridge appropriate to its visible or worker lifecycle.
 
-Agent-created restricted apps use a separate package contract. Workspace parses version-2 `agent-app.json`, validates a reviewed HTML entry, an optional worker, bounded tool schemas, exact public-HTTPS or numeric-loopback targets, reviewed Space-file needs, static notification categories, and named interval automations with exact permission subsets; it rejects native-Pi execution fields and linked or oversized files and installs a reviewed content digest without importing JavaScript. A host-owned Pi tool can turn a completed Space-relative package into a persisted, owning-Chat-bound review receipt; the tool cannot install, grant access, enable jobs, or collect credentials. Visible UI runs in an ephemeral sandboxed `WebContentsView` with sender-bound context, tab, network, bounded storage, storage-invalidation, and file bridges, while Assistant actions and automations use a separate hidden sandbox. A machine-wide in-process scheduler outside management protocol v1 coordinates all Space-app jobs with two active slots, FIFO admission, same-job non-overlap, durable cadence/catch-up state, and run receipts. System notifications are host-owned, separately granted, static-copy, enabled-automation-only, and rate-limited. File writes are grant-relative, atomic, and History-covered. Public OAuth PKCE is host-owned and encrypted. Apps own a Space rail navigator and may request normal persistent, Space-owned right tabs; the host derives identity and shell tab ids. Proposal, installation, destination/file/notification grants, connections, and every automation enablement remain separate. These packages never enter Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md) for shipped behavior and [App platform foundation](app-platform-foundation.md) for the accepted Project/Release/Instance evolution.
+Agent-created restricted apps use a separate package contract. Workspace parses version-2 `agent-app.json`, validates a reviewed HTML entry, an optional worker, bounded tool schemas, exact public-HTTPS or numeric-loopback targets, reviewed Space-file needs, static notification categories, and named interval automations with exact permission subsets; it rejects native-Pi execution fields and linked or oversized files and stages a reviewed content digest without importing JavaScript. A host-owned Pi tool can turn a completed Space-relative package into a persisted, owning-Chat-bound review receipt; the tool cannot add a preview, grant access, enable jobs, or collect credentials. Its direct preview path creates a Local preview in a Development Instance. Visible UI runs in an ephemeral sandboxed `WebContentsView` with sender-bound context, tab, network, bounded storage, storage-invalidation, and file bridges, while Assistant actions and automations use a separate hidden sandbox. A machine-wide in-process scheduler outside management protocol v1 coordinates all Space-app jobs with two active slots, FIFO admission, same-job non-overlap, durable cadence/catch-up state, and run receipts. System notifications are host-owned, separately granted, static-copy, enabled-automation-only, and rate-limited. File writes are grant-relative, atomic, and History-covered. Public OAuth PKCE is host-owned and encrypted. Apps own a Space rail navigator and may request normal persistent, Space-owned right tabs; the host derives identity and shell tab ids. Proposal, preview addition, Release preparation, local publication, App Instance installation, destination/file/notification grants, connections, every automation enablement, update activation, and uninstall data disposition remain separate. These packages never enter Pi's loaded Extension catalog. See [Restricted app runtime](restricted-app-runtime.md) for shipped behavior and [App platform foundation](app-platform-foundation.md) for the Project/Release/Instance model.
 
 The local App-platform foundation resolves that compatibility surface into
 explicit Project, Development Instance, Feature Installation, Data Namespace,
@@ -101,13 +105,32 @@ the current Runtime Instance owner; the portable contract models future
 Principal-owned consent separately. Authority is fenced again immediately before
 external fetches and atomic storage or Space-file effects.
 
-The platform also has a strict offline multi-Feature Release
-assembler/verifier and a side-effect-free atomic local App Instance update
-planner. A Release digest closes canonical records plus every referenced
-artifact byte; review, signature, and registry-policy sidecars bind to that
-digest without entering it. The planner verifies the target closure offline,
-computes per-Feature continuity and data migration decisions, names every
-authority fence, and permits exposure only through one release-pointer commit.
+The platform now drives App Studio through a strict offline multi-Feature
+Release assembler/verifier, a durable content-addressed Release store, and a
+side-effect-free local App Instance update planner. Release format version 2
+includes a bounded App presentation snapshot; its digest closes canonical
+records plus every referenced artifact byte. Review, signature, and
+registry-policy sidecars remain outside that digest. Preparing a Release stores
+the verified canonical envelope and a local prepared record; publishing is a
+separate state transition that rechecks the source preview stamps and does not
+contact a server. The store applies a four-GiB aggregate byte quota before each
+new content-addressed put. Startup performs one bounded full verification pass,
+uses compact verified projections for registry/install integrity, and only then
+prunes unreferenced objects. Explicit Release deletion is denied while an active
+Instance, a prepared operation's source or target, or retained data requires the
+digest; registry removal commits before restart-retried physical pruning.
+
+Install and update preparation persist operation ids, target Space, exact
+Release digest, Runtime Instance identity, new Feature/Data allocations, and the
+deterministic update plan before activation. Source and target capability
+mutation locks prevent concurrent Assistant/capability work in either affected
+Space. Activation re-reads the published envelope, rechecks target Feature-id
+collisions or the active Release pointer, recomputes the plan, stages verified
+Feature packages, stops predecessor hosts, and exposes the transition only
+through one registry commit. One `(projectId, target Space)` instance is allowed.
+The current local runtime rejects schema-bearing Features and migrations, so its
+data decision is retain rather than an unimplemented migration.
+
 Registry commits also persist idempotent cleanup obligations before old
 credentials, data, or package bytes become unreachable, and startup retries
 unfinished cleanup. New automation receipts capture the accepting local
@@ -118,6 +141,15 @@ installation-independent ledger and terminalized by run id after update or
 removal. Startup reconciles an accepted run whose worker result was lost to an
 explicit `interrupted`/`expired` receipt that says its external-effect outcome
 is unknown; migrated receipts stay explicitly legacy-unverified.
+
+Whole-instance uninstall removes live runtime and connection authority and
+requires a retain-or-purge choice for every Feature Data Namespace. Retained
+namespaces are recorded without an installation and can be purged later;
+retained-data adoption and export are not implemented. Source and target Space
+removal are blocked while an App Instance remains active so neither path can
+silently choose this lifecycle outcome. The source remains blocked until any
+retained namespaces are explicitly purged; a target may be removed after
+uninstall because the retained namespace stays owned by its source Project.
 
 A separate private-hosted semantic core exercises the same object and authority
 model through injected durable CAS-state, job/lease, vault, and effect-broker
