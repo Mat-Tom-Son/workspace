@@ -270,6 +270,18 @@ test("restricted app package preflight rejects native Pi and package-manager exe
   }
 });
 
+test("legacy restricted app packaging refuses work-fold metadata at any depth", async () => {
+  const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-work-fold-metadata-"));
+  try {
+    await writePackage(sandbox, "export {};\n");
+    await mkdir(join(sandbox, "assets", ".WORK-FOLD"), { recursive: true });
+    await writeFile(join(sandbox, "assets", ".WORK-FOLD", "space.json"), "protected", "utf8");
+    await assert.rejects(inspectRestrictedAppPackage(sandbox), /portable relative package path/);
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("restricted app package preflight rejects missing entries and linked files", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "workspace-restricted-links-"));
   try {

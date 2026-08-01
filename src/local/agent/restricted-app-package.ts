@@ -3,6 +3,8 @@ import { constants, type BigIntStats } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
+import { isReservedWorkspacePathSegment } from "../workspace-path-policy.js";
+
 import {
   parseRestrictedAppManifest,
   type RestrictedAppManifest,
@@ -523,7 +525,8 @@ function packagePathValue(value: unknown, label: string): string {
 function assertPortablePackagePath(value: string, label: string): void {
   const segments = value.split("/");
   if (!value || value.length > 240 || value.includes("\\") || value.includes(":") || value.includes("\0")
-    || value.startsWith("/") || segments.some((segment) => !segment || segment === "." || segment === ".." || isReservedWindowsName(segment))) {
+    || value.startsWith("/") || segments.some((segment) => !segment || segment === "." || segment === ".."
+      || isReservedWorkspacePathSegment(segment) || isReservedWindowsName(segment))) {
     throw new Error(`${label} must be a portable relative package path.`);
   }
 }

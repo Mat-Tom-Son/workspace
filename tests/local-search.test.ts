@@ -61,10 +61,12 @@ test("search honours ignore rules and skips binary and oversized files", async (
   const { root, dispose } = await space("bounds");
   t.after(dispose);
   await mkdir(join(root, "vendor"), { recursive: true });
+  await mkdir(join(root, ".WORK-FOLD"), { recursive: true });
   await writeFile(join(root, "vendor", "bundled.js"), "needle in ignored dependency", "utf8");
   await writeFile(join(root, "kept.txt"), "needle in ordinary content", "utf8");
   await writeFile(join(root, "image.bin"), Buffer.concat([Buffer.from("needle"), Buffer.alloc(64)]));
   await writeFile(join(root, "huge.txt"), `${"padding\n".repeat(200)}needle\n`, "utf8");
+  await writeFile(join(root, ".WORK-FOLD", "space.json"), "needle in work-fold metadata", "utf8");
 
   await setWorkspaceIgnoreState(root, ["vendor"], true);
   const result = await searchWorkspace(root, "needle", { maxFileBytes: 64 });

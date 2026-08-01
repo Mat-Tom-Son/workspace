@@ -647,7 +647,9 @@ function WorkspaceView({ workspace, workspaces, agent, appearance, fixture, desk
             : `${target.name} was removed. Workspace will finish machine-local cleanup when it next starts.`
           : target.location.storage === "linked"
             ? `${target.name} removed. The folder and its files remain on your computer.`
-            : `${target.name} and its managed folder were deleted.`,
+            : removal.deleted
+              ? `${target.name} and its managed folder were deleted.`
+              : `${target.name} was removed. Its managed folder was kept because it contains protected work-fold metadata.`,
         tone: removal.cleanupPending ? "info" : "success",
       });
     } catch (caught) { onError(errorText(caught)); }

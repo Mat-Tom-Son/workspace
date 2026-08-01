@@ -4,6 +4,7 @@ import { basename, extname } from "node:path";
 import JSZip from "jszip";
 
 import { OFFICE_OPEN_DOCUMENT_READ_NOTE, officeDocumentLockPresent } from "./office-lock-files.js";
+import { containsReservedWorkspacePathSegment } from "./workspace-path-policy.js";
 import { resolveWorkspacePath } from "./workspace.js";
 
 export type ConversationContextMode = "full_original_text" | "full_extracted_text" | "path_only_reference";
@@ -61,6 +62,9 @@ async function loadAttachment(
   let sourceSizeBytes = 0;
   try {
     if (!sourcePath) throw new Error("Choose a file to attach to chat context.");
+    if (containsReservedWorkspacePathSegment(sourcePath)) {
+      throw new Error("Product metadata and Pi configuration cannot be attached to chat context.");
+    }
     const path = resolveWorkspacePath(rootPath, sourcePath);
     const info = await stat(path);
     if (!info.isFile()) throw new Error("Only files can be attached to chat context.");

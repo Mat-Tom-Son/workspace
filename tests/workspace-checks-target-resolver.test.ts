@@ -98,6 +98,7 @@ test("the resolver refuses the Space root, path escapes, and reserved Check mate
     file("C:/outside.txt"),
     file("folder\\outside.txt"),
     file(".workspace/space.json"),
+    file(".WORK-FOLD/space.json"),
     file("Notes/.PI/AGENTS.md"),
     file("docs/report.txt:alternate"),
     file("docs/CON.txt"),
@@ -117,9 +118,11 @@ test("the resolver refuses the Space root, path escapes, and reserved Check mate
 test("reserved metadata nested below an explicit tree is never resolved", async (t) => {
   const root = await temporarySpace(t);
   await mkdir(join(root, "Docs", ".workspace"), { recursive: true });
+  await mkdir(join(root, "Docs", ".work-fold"), { recursive: true });
   await mkdir(join(root, "Docs", ".pi"), { recursive: true });
   await writeFile(join(root, "Docs", "visible.md"), "visible", "utf8");
   await writeFile(join(root, "Docs", ".workspace", "hidden.md"), "hidden", "utf8");
+  await writeFile(join(root, "Docs", ".work-fold", "hidden-too.md"), "hidden", "utf8");
   await writeFile(join(root, "Docs", ".pi", "executable.md"), "executable", "utf8");
 
   const result = await resolveWorkspaceCheckTargets(root, [tree("Docs", [".md"], { recursive: true })]);

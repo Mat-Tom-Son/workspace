@@ -32,6 +32,7 @@ import {
   RestrictedAppStorageError,
   type RestrictedAppStorageMutationResult,
 } from "../../src/local/agent/restricted-app-storage.js";
+import { isReservedWorkspacePathSegment } from "../../src/local/workspace-path-policy.js";
 import {
   RestrictedAppNotificationBroker,
   RestrictedAppNotificationError,
@@ -1413,7 +1414,7 @@ function safeCheckpointPath(value: unknown): string {
   }
   if (value === ".") return value;
   const segments = value.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment === ".workspace" || segment === ".pi")) {
+  if (segments.some((segment) => !segment || segment === "." || segment === ".." || isReservedWorkspacePathSegment(segment))) {
     throw new RestrictedAppFileError("FILE_DENIED", "App file path is invalid.");
   }
   return segments.join("/");

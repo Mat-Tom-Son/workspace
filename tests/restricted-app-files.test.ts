@@ -105,6 +105,8 @@ test("Space file broker rejects hidden ownership, unsafe paths, and metadata roo
   await writeFile(join(root, "notes.txt"), "hello", "utf8");
   await mkdir(join(root, ".workspace"));
   await writeFile(join(root, ".workspace", "space.json"), "hidden", "utf8");
+  await mkdir(join(root, ".work-fold"));
+  await writeFile(join(root, ".work-fold", "space.json"), "other product", "utf8");
   const broker = new RestrictedAppFileBroker();
   const authority = context(root);
 
@@ -114,6 +116,7 @@ test("Space file broker rejects hidden ownership, unsafe paths, and metadata roo
     { grantId: "selected-project-files", path: "C:/notes.txt" },
     { grantId: "selected-project-files", path: "folder\\notes.txt" },
     { grantId: "selected-project-files", path: ".workspace/space.json" },
+    { grantId: "selected-project-files", path: ".WORK-FOLD/space.json" },
     { grantId: "selected-project-files", path: ".PI/extension.ts" },
     { grantId: "selected-project-files", path: "notes.txt", workspaceRoot: root },
     { grantId: "selected-project-files", path: "notes.txt", appId: "spoofed-app" },
@@ -121,6 +124,10 @@ test("Space file broker rejects hidden ownership, unsafe paths, and metadata roo
   for (const request of requests) await assert.rejects(broker.read(authority, request), fileError("FILE_DENIED"));
   await assert.rejects(
     broker.read({ ...authority, grants: [{ ...authority.grants[0]!, root: ".workspace" }] }, { grantId: "selected-project-files", path: "." }),
+    fileError("FILE_DENIED"),
+  );
+  await assert.rejects(
+    broker.read({ ...authority, grants: [{ ...authority.grants[0]!, root: ".work-fold" }] }, { grantId: "selected-project-files", path: "." }),
     fileError("FILE_DENIED"),
   );
 });
