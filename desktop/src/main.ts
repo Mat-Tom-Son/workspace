@@ -43,6 +43,7 @@ import {
 } from "../../src/local/cli/act-token.js";
 import { configureWorkspaceStateRoot } from "../../src/local/state-paths.js";
 import { getWorkspace, listWorkspaces } from "../../src/local/workspace.js";
+import { assertOrdinaryWorkspacePath } from "../../src/local/workspace-path-policy.js";
 import { WorkspaceCliKernelAdapter } from "../../src/local/workspace-cli-adapter.js";
 import { WorkspaceKernel } from "../../src/local/workspace-kernel.js";
 import { WorkspaceCheckService } from "../../src/local/checks/check-service.js";
@@ -1289,6 +1290,7 @@ function workspacePathRequest(value: unknown, requireAction = true): { workspace
 }
 
 async function resolveWorkspaceItem(workspaceId: string, itemPath: string): Promise<string> {
+  assertOrdinaryWorkspacePath(itemPath);
   const workspace = await getWorkspace(workspaceId);
   const rootPath = await realpath(workspace.rootPath);
   const candidate = resolve(rootPath, itemPath);

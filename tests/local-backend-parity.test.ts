@@ -27,6 +27,8 @@ test("linked Spaces keep portable identity in .workspace while operational state
   });
 
   const space = await registerLinkedWorkspace(root);
+  await mkdir(join(root, ".work-fold"));
+  await writeFile(join(root, ".work-fold", "space.json"), "work-fold identity", "utf8");
   await setWorkspaceIgnoreState(root, ["Drafts/notes.txt"], true);
   assert.deepEqual((await readWorkspaceIgnoreState(root)).patterns, ["Drafts/notes.txt"]);
   assert.equal((await scanWorkspaceTree(root)).entries[0]?.children?.[0]?.ignored, true);
@@ -62,6 +64,9 @@ test("linked Spaces keep portable identity in .workspace while operational state
   assert.equal(preview.includedInPrompt, true);
   const [attachment] = await loadConversationContextAttachmentsForTurn(root, ["Plan.docx"]);
   assert.match(attachment?.text ?? "", /Quarterly planning notes/);
+  const protectedAttachment = await previewConversationContextAttachment(root, { path: ".WORK-FOLD/space.json" });
+  assert.equal(protectedAttachment.includedInPrompt, false);
+  assert.match(protectedAttachment.reason ?? "", /cannot be attached/);
 
   const info = await getWorkspaceEntryInfo(root, "Plan.docx");
   assert.equal(info.officeDocument, true);
@@ -70,7 +75,7 @@ test("linked Spaces keep portable identity in .workspace while operational state
   assert.equal(existsSync(join(root, ".kai")), false);
   assert.equal(existsSync(join(root, ".kaiignore")), false);
   assert.equal(existsSync(workspaceStateDir(root)), true);
-  assert.deepEqual((await readdir(root)).sort(), [".workspace", "Drafts", "Plan.docx"]);
+  assert.deepEqual((await readdir(root)).sort(), [".work-fold", ".workspace", "Drafts", "Plan.docx"]);
   assert.deepEqual((await scanWorkspaceTree(root)).entries.map((entry) => entry.name), ["Drafts", "Plan.docx"]);
   assert.equal(space.location.storage, "linked");
 });

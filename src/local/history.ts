@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { isOfficeLockFileName } from "./office-lock-files.js";
 import { workspaceHistoryRoot } from "./state-paths.js";
+import { assertOrdinaryWorkspacePath, isReservedWorkspacePathSegment } from "./workspace-path-policy.js";
 import { assertWorkspaceDoesNotContainState, ensureSafeWorkspaceRoot, resolveWorkspacePath } from "./workspace.js";
 
 export interface CheckpointFileEntry {
@@ -72,7 +73,7 @@ export interface StoredBlobRef {
 }
 
 const checkpointIdPattern = /^cp-[A-Za-z0-9-]{10,80}$/;
-const versionScopeSkippedSegments = new Set([".git", ".pi", ".workspace", "node_modules"]);
+const versionScopeSkippedSegments = new Set([".git", "node_modules"]);
 const legacyMetadataName = "checkpoint.json";
 const legacySnapshotDirName = "files";
 
@@ -325,7 +326,7 @@ async function capturePaths(root: string, requestedPaths: string[], full: boolea
     const info = await lstat(absolutePath).catch(() => null);
     if (!info) return;
     const path = toPosix(relative(root, absolutePath));
-    if (path && path.split("/").some((segment) => versionScopeSkippedSegments.has(segment))) {
+    if (path && path.split("/").some((segment) => versionScopeSkippedSegments.has(segment) || isReservedWorkspacePathSegment(segment))) {
       skipped.set(path, { path, sizeBytes: info.isFile() ? info.size : 0, reason: "excluded" });
       return;
     }
@@ -623,6 +624,7 @@ async function hasWorkspaceBlob(root: string, hashSha256: string): Promise<boole
 }
 
 function canonicalPath(root: string, value: string, allowMissing: boolean): { path: string; absolutePath: string } {
+  assertOrdinaryWorkspacePath(value);
   const absolutePath = resolveWorkspacePath(root, toPosix(value).replace(/^\/+/, "") || ".");
   const path = toPosix(relative(root, absolutePath));
   if (!path || path === ".") throw new Error("The Space root cannot be used as a history item.");

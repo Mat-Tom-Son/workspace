@@ -215,6 +215,33 @@ test("managed Space removal refuses a mismatched managed-content boundary", asyn
   assert.equal(existsSync(workspace.rootPath), true);
 });
 
+test("legacy managed Space removal preserves a folder that contains work-fold metadata", async () => {
+  const workspace = await createManagedWorkspace("work-fold coexistence guard", contentRoot);
+  const protectedRoot = join(workspace.rootPath, ".WORK-FOLD");
+  await mkdir(protectedRoot);
+  await writeFile(join(protectedRoot, "space.json"), "new-product-bytes", "utf8");
+  await writeFile(join(workspace.rootPath, "ordinary.txt"), "ordinary-bytes", "utf8");
+
+  assert.equal((await scanWorkspaceTree(workspace.rootPath)).entries.some((entry) => entry.name === ".WORK-FOLD"), false);
+  await assert.rejects(readWorkspaceTextFile(workspace.rootPath, ".WORK-FOLD/space.json"), /not ordinary Space content/);
+  await assert.rejects(writeWorkspaceTextFile(workspace.rootPath, ".WORK-FOLD/space.json", "changed"), /not ordinary Space content/);
+
+  await beginWorkspaceRemoval(workspace.id, contentRoot);
+  await markWorkspaceRemovalAppStateRemoved(workspace.id);
+  const result = await finalizeWorkspaceRemoval(workspace.id);
+
+  assert.deepEqual(result, {
+    removed: true,
+    deleted: false,
+    rootPath: workspace.rootPath,
+    cleanupPending: false,
+  });
+  assert.equal(await readFile(join(protectedRoot, "space.json"), "utf8"), "new-product-bytes");
+  assert.equal(await readFile(join(workspace.rootPath, "ordinary.txt"), "utf8"), "ordinary-bytes");
+  assert.equal((await listWorkspaces()).some((item) => item.id === workspace.id), false);
+  assert.deepEqual(await listPendingWorkspaceRemovals(), []);
+});
+
 test("a removal-intent persistence failure leaves the Space and managed folder untouched", async () => {
   const workspace = await createManagedWorkspace("Removal intent failure", contentRoot);
   await writeFile(join(workspace.rootPath, "keep.txt"), "keep", "utf8");
@@ -471,10 +498,14 @@ test("Library items copy into a visible From Library folder", async () => {
 test("restore points live externally and can restore workspace files", async () => {
   const workspace = await createManagedWorkspace("History Target", contentRoot);
   const file = join(workspace.rootPath, "draft.txt");
+  await mkdir(join(workspace.rootPath, ".work-fold"));
+  await writeFile(join(workspace.rootPath, ".work-fold", "space.json"), "protected", "utf8");
   await writeFile(file, "version one", "utf8");
   const checkpoint = await createWorkspaceCheckpoint(workspace.rootPath, { label: "Version one" });
   assert.equal(checkpoint.files.some((entry) => entry.path.startsWith(".workspace/")), false);
   assert.equal(checkpoint.directories.some((entry) => entry === ".workspace" || entry.startsWith(".workspace/")), false);
+  assert.equal(checkpoint.files.some((entry) => entry.path.toLocaleLowerCase().startsWith(".work-fold/")), false);
+  assert.equal(checkpoint.directories.some((entry) => entry.toLocaleLowerCase() === ".work-fold" || entry.toLocaleLowerCase().startsWith(".work-fold/")), false);
   await writeFile(file, "version two", "utf8");
 
   const result = await restoreWorkspaceCheckpoint(workspace.rootPath, checkpoint.checkpointId);

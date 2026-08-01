@@ -3,6 +3,7 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { WorkspaceCheckTarget, WorkspaceCheckTargetRole } from "../../shared/checks.js";
+import { isReservedWorkspacePathSegment } from "../workspace-path-policy.js";
 
 export const workspaceCheckTargetHardLimits = Object.freeze({
   maxSelectors: 64,
@@ -365,7 +366,7 @@ function safeTargetPath(value: unknown): string {
     throw new WorkspaceCheckTargetResolutionError("UNSAFE_PATH", "Check targets must be normalized paths beneath the Space root.", { targetPath: value });
   }
   if (segments.some(isReservedSegment)) {
-    throw new WorkspaceCheckTargetResolutionError("RESERVED_PATH", "Check targets cannot select .workspace or .pi material.", { targetPath: value });
+    throw new WorkspaceCheckTargetResolutionError("RESERVED_PATH", "Check targets cannot select product metadata or .pi material.", { targetPath: value });
   }
   if (segments.some(isUnsafeWindowsPathSegment)) {
     throw new WorkspaceCheckTargetResolutionError("UNSAFE_PATH", "Check targets cannot contain Windows-reserved or ambiguous path segments.", { targetPath: value });
@@ -431,8 +432,7 @@ function roleOrder(role: WorkspaceCheckTargetRole): number {
 }
 
 function isReservedSegment(segment: string): boolean {
-  const normalized = segment.toLocaleLowerCase("en-US");
-  return normalized === ".workspace" || normalized === ".pi";
+  return isReservedWorkspacePathSegment(segment);
 }
 
 function assertLexicallyInside(root: string, candidate: string, targetPath: string): void {

@@ -35,7 +35,7 @@ export function removeWorkspaceConfirmText(
 ): string {
   const folderOutcome = workspace.location.storage === "linked"
     ? `Remove ${workspace.name} from Workspace? The original folder and everything inside it will stay on your computer.`
-    : `Delete ${workspace.name} from this computer? This permanently deletes the managed Space folder and its local chat history. This cannot be undone.`;
+    : `Delete ${workspace.name} from this computer? This permanently deletes the managed Space folder and its local chat history. This cannot be undone. If the folder contains protected .work-fold metadata, Workspace removes only its registration and keeps the entire folder.`;
   if (!appStudio) return folderOutcome;
   const consequences: string[] = [];
   if (appStudio.project) {

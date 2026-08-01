@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { isReservedWorkspacePathSegment } from "../workspace-path-policy.js";
+
 import {
   normalizeRestrictedAppCredential,
   RestrictedAppError,
@@ -3741,7 +3743,7 @@ function assertUnique(values: readonly string[], message: string): void {
 async function restrictedSourceRoot(workspaceRoot: string, sourcePath: string): Promise<string> {
   if (!sourcePath || sourcePath.includes("\0") || isAbsolute(sourcePath)) throw new RestrictedAppError("INPUT_INVALID", "Choose a relative package folder inside the Space.");
   const segments = sourcePath.replace(/\\/g, "/").split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..") || segments[0] === ".pi" || segments[0] === ".workspace") {
+  if (segments.some((segment) => !segment || segment === "." || segment === ".." || isReservedWorkspacePathSegment(segment))) {
     throw new RestrictedAppError("INPUT_INVALID", "Restricted app source must be a normal visible folder in the Space.");
   }
   const root = await realpath(workspaceRoot);
@@ -4117,8 +4119,8 @@ function restrictedAppGrantRoot(value: unknown): string {
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
     throw new RestrictedAppError("INPUT_INVALID", "Choose a safe path inside the Space for this app.");
   }
-  if (segments.some((segment) => segment.toLocaleLowerCase() === ".workspace" || segment.toLocaleLowerCase() === ".pi")) {
-    throw new RestrictedAppError("FILE_DENIED", "Workspace metadata and executable Pi configuration cannot be granted to an app.");
+  if (segments.some(isReservedWorkspacePathSegment)) {
+    throw new RestrictedAppError("FILE_DENIED", "Product metadata and executable Pi configuration cannot be granted to an app.");
   }
   return segments.join("/");
 }

@@ -109,6 +109,7 @@ import {
   loadLocalEnvironmentFile,
 } from "./server-dev-options.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState, setWorkspaceIgnoreState } from "./workspace-ignore.js";
+import { assertOrdinaryWorkspacePath } from "./workspace-path-policy.js";
 import { canonicalWorkspaceWatchRoot } from "./workspace-watch.js";
 import {
   beginWorkspaceRemoval,
@@ -2834,6 +2835,7 @@ async function openWorkspaceFileStream(
 }
 
 async function sendWorkspaceRawFile(res: ServerResponse, workspaceRoot: string, relativePath: string): Promise<void> {
+  assertOrdinaryWorkspacePath(relativePath);
   const path = resolveWorkspacePath(workspaceRoot, relativePath);
   const info = await stat(path).catch(() => null);
   if (!info?.isFile()) throw notFound("File not found.");

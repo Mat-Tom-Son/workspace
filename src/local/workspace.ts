@@ -35,6 +35,7 @@ import {
   workspaceRegistryFile,
 } from "./state-paths.js";
 import { isAlwaysHiddenWorkspaceEntry, isWorkspaceIgnored, readWorkspaceIgnoreState } from "./workspace-ignore.js";
+import { assertOrdinaryWorkspacePath, isReservedWorkspacePathSegment } from "./workspace-path-policy.js";
 
 export interface WorkspaceLocation {
   kind: "local";
@@ -308,6 +309,18 @@ export async function finalizeWorkspaceRemoval(
     if (intent.storage === "managed") {
       const claimPath = managedRemovalClaimPath(intent);
       let claimStatus = await managedClaimStatus(intent);
+      let preserveManagedRoot = false;
+      if (claimStatus === "matching" && await containsWorkFoldMetadataEntry(claimPath)) {
+        if (await managedRootStatus(intent) !== "absent") return workspaceRemovalPendingResult(intent);
+        try {
+          await operations.restoreMismatchedManagedClaim(claimPath, intent.rootPath);
+        } catch {
+          return workspaceRemovalPendingResult(intent);
+        }
+        if (await managedRootStatus(intent) !== "matching") return workspaceRemovalPendingResult(intent);
+        claimStatus = "absent";
+        preserveManagedRoot = true;
+      }
       if (claimStatus === "mismatch") {
         if (await managedRootStatus(intent) === "absent") {
           await operations.restoreMismatchedManagedClaim(claimPath, intent.rootPath).catch(() => undefined);
@@ -328,6 +341,8 @@ export async function finalizeWorkspaceRemoval(
           deleted = true;
         } else if (rootStatus !== "matching") {
           return workspaceRemovalPendingResult(intent);
+        } else if (await containsWorkFoldMetadataEntry(intent.rootPath)) {
+          preserveManagedRoot = true;
         } else {
           try {
             await operations.claimManagedRoot(intent.rootPath, claimPath);
@@ -341,10 +356,20 @@ export async function finalizeWorkspaceRemoval(
             }
             return workspaceRemovalPendingResult(intent);
           }
+          if (await containsWorkFoldMetadataEntry(claimPath)) {
+            try {
+              await operations.restoreMismatchedManagedClaim(claimPath, intent.rootPath);
+            } catch {
+              return workspaceRemovalPendingResult(intent);
+            }
+            if (await managedRootStatus(intent) !== "matching") return workspaceRemovalPendingResult(intent);
+            claimStatus = "absent";
+            preserveManagedRoot = true;
+          }
         }
       }
 
-      if (!deleted && !intent.managedRootClaimed) {
+      if (!deleted && !preserveManagedRoot && !intent.managedRootClaimed) {
         intent.managedRootClaimed = true;
         try {
           await operations.persistRegistry(registry);
@@ -353,7 +378,7 @@ export async function finalizeWorkspaceRemoval(
         }
       }
 
-      if (!deleted) {
+      if (!deleted && !preserveManagedRoot) {
         claimStatus = await managedClaimStatus(intent);
         if (claimStatus === "matching") {
           try {
@@ -421,6 +446,7 @@ export async function scanWorkspaceTree(
   options: WorkspaceTreeOptions = {},
 ): Promise<WorkspaceTreeScan> {
   const safeRoot = ensureSafeWorkspaceRoot(rootPath);
+  assertOrdinaryWorkspacePath(relativePath);
   const scanRoot = resolveWorkspacePath(safeRoot, relativePath || ".");
   const info = await stat(scanRoot).catch(() => null);
   if (!info?.isDirectory()) throw new Error("Requested Space tree path is not a folder.");
@@ -448,6 +474,7 @@ function maxTreeEntries(): number {
 }
 
 export async function readWorkspaceTextFile(rootPath: string, relativePath: string): Promise<{ text: string }> {
+  assertOrdinaryWorkspacePath(relativePath);
   const path = resolveWorkspacePath(rootPath, relativePath);
   const info = await stat(path).catch(() => null);
   if (!info?.isFile()) throw notFound("File not found.");
@@ -458,6 +485,7 @@ export async function readWorkspaceTextFile(rootPath: string, relativePath: stri
 }
 
 export async function writeWorkspaceTextFile(rootPath: string, relativePath: string, text: string): Promise<{ path: string; text: string }> {
+  assertOrdinaryWorkspacePath(relativePath);
   const path = resolveWorkspacePath(rootPath, relativePath);
   const info = await stat(path).catch(() => null);
   if (!info?.isFile()) throw notFound("File not found.");
@@ -469,6 +497,7 @@ export async function writeWorkspaceTextFile(rootPath: string, relativePath: str
 
 export async function getWorkspaceEntryInfo(rootPath: string, relativePath: string): Promise<WorkspaceEntryInfo> {
   const root = ensureSafeWorkspaceRoot(rootPath);
+  assertOrdinaryWorkspacePath(relativePath);
   const path = resolveWorkspacePath(root, relativePath);
   const info = await stat(path).catch(() => null);
   if (!info || (!info.isFile() && !info.isDirectory())) throw notFound("Space item not found.");
@@ -491,7 +520,11 @@ export async function getWorkspaceEntryInfo(rootPath: string, relativePath: stri
 
 export async function findExistingWorkspaceFilePaths(rootPath: string, requestedPaths: string[]): Promise<string[]> {
   const root = ensureSafeWorkspaceRoot(rootPath);
-  const requests = [...new Set(requestedPaths.map(normalizeRelative).filter(Boolean))].slice(0, 32);
+  const requests = [...new Set(requestedPaths.map(normalizeRelative).filter(Boolean))]
+    .filter((path) => {
+      try { assertOrdinaryWorkspacePath(path); return true; } catch { return false; }
+    })
+    .slice(0, 32);
   const existing = new Set<string>();
   const unresolvedNames = new Set<string>();
   for (const request of requests) {
@@ -522,6 +555,8 @@ export async function moveWorkspaceEntry(
   const root = ensureSafeWorkspaceRoot(rootPath);
   const sourcePath = normalizeRelative(input.sourcePath);
   const targetFolderPath = normalizeRelative(input.targetFolderPath ?? "");
+  assertOrdinaryWorkspacePath(sourcePath);
+  assertOrdinaryWorkspacePath(targetFolderPath);
   if (!sourcePath || sourcePath === ".") throw new Error("Select a file or folder to move.");
   if (targetFolderPath === sourcePath || targetFolderPath.startsWith(`${sourcePath}/`)) throw new Error("Folders cannot be moved into themselves.");
   const source = resolveWorkspacePath(root, sourcePath);
@@ -551,6 +586,7 @@ export async function renameWorkspaceEntry(
 ): Promise<WorkspaceMovedEntry> {
   const root = ensureSafeWorkspaceRoot(rootPath);
   const sourcePath = normalizeRelative(input.path);
+  assertOrdinaryWorkspacePath(sourcePath);
   if (!sourcePath || sourcePath === ".") throw new Error("Select a file or folder to rename.");
   const newName = safeFileName(input.newName);
   const source = resolveWorkspacePath(root, sourcePath);
@@ -579,6 +615,7 @@ export async function createWorkspaceFolder(
   name: string,
 ): Promise<WorkspaceCreatedEntry> {
   const root = ensureSafeWorkspaceRoot(rootPath);
+  assertOrdinaryWorkspacePath(parentPath);
   const parent = resolveWorkspacePath(root, parentPath || ".");
   if (!(await stat(parent)).isDirectory()) throw new Error("Create folders inside a Space folder.");
   const safeName = safeFileName(name);
@@ -602,6 +639,7 @@ export async function createWorkspaceTextFile(
   text = "",
 ): Promise<WorkspaceCreatedEntry> {
   const root = ensureSafeWorkspaceRoot(rootPath);
+  assertOrdinaryWorkspacePath(parentPath);
   const parent = resolveWorkspacePath(root, parentPath || ".");
   if (!(await stat(parent)).isDirectory()) throw new Error("Create files inside a Space folder.");
   const safeName = safeFileName(name);
@@ -622,6 +660,7 @@ export async function createWorkspaceTextFile(
 export async function deleteWorkspaceEntry(rootPath: string, relativePath: string): Promise<{ deleted: true; path: string; kind: "file" | "folder" }> {
   const root = ensureSafeWorkspaceRoot(rootPath);
   const normalized = normalizeRelative(relativePath);
+  assertOrdinaryWorkspacePath(normalized);
   if (!normalized || normalized === ".") throw new Error("Select a file or folder to delete.");
   const path = resolveWorkspacePath(root, normalized);
   if (samePath(path, root)) throw new Error("The Space root cannot be deleted.");
@@ -637,6 +676,7 @@ export async function writeUploadedFiles(
   targetFolderPath: string,
   files: Array<{ fileName: string; relativePath?: string; data: Buffer }>,
 ): Promise<Array<{ path: string; sizeBytes: number }>> {
+  assertOrdinaryWorkspacePath(targetFolderPath);
   const targetFolder = resolveWorkspacePath(rootPath, targetFolderPath || ".");
   await mkdir(targetFolder, { recursive: true });
   const written: Array<{ path: string; sizeBytes: number }> = [];
@@ -670,6 +710,7 @@ export async function copyPathIntoWorkspace(
   workspaceRoot: string,
   targetFolderPath: string,
 ): Promise<string> {
+  assertOrdinaryWorkspacePath(targetFolderPath);
   const targetFolder = resolveWorkspacePath(workspaceRoot, targetFolderPath || ".");
   await mkdir(targetFolder, { recursive: true });
   const destination = await nextAvailablePath(join(targetFolder, safeFileName(basename(sourcePath))));
@@ -939,6 +980,16 @@ function managedRemovalClaimPath(
 
 function isFileNotFound(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+async function containsWorkFoldMetadataEntry(rootPath: string): Promise<boolean> {
+  try {
+    return (await readdir(rootPath)).some((name) => name.toLocaleLowerCase("en-US") === ".work-fold");
+  } catch (error) {
+    // Absence is established only by ENOENT. Any other inspection failure must
+    // preserve the managed folder rather than authorizing recursive deletion.
+    return !isFileNotFound(error);
+  }
 }
 
 async function syncDirectoriesBestEffort(paths: readonly string[]): Promise<void> {
@@ -1251,7 +1302,7 @@ async function copyVisiblePath(source: string, destination: string): Promise<voi
   if (!info.isDirectory()) throw new Error("Only ordinary files and folders can be copied.");
   await mkdir(destination, { recursive: false });
   for (const entry of await readdir(source, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) continue;
+    if (entry.isSymbolicLink() || isReservedWorkspacePathSegment(entry.name)) continue;
     await copyVisiblePath(join(source, entry.name), join(destination, entry.name));
   }
 }
@@ -1298,6 +1349,7 @@ function safeUploadPath(value: string): string {
 function safeFileName(value: string): string {
   const name = value.trim();
   if (!name || name === "." || name === ".." || /[\\/:*?"<>|\u0000-\u001f]/.test(name)) throw new Error("File name is not allowed.");
+  if (isReservedWorkspacePathSegment(name)) throw new Error("Product metadata and Pi configuration names are reserved.");
   const windowsStem = name.split(".")[0]?.toLocaleUpperCase() ?? "";
   if (/[. ]$/.test(name) || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(windowsStem)) {
     throw new Error("File name is reserved by Windows.");

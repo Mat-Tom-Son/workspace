@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { workspaceStateDir } from "./state-paths.js";
+import { containsReservedWorkspacePathSegment, isReservedWorkspacePathSegment } from "./workspace-path-policy.js";
 import { ensureSafeWorkspaceRoot, resolveWorkspacePath } from "./workspace.js";
 
 export interface WorkspaceIgnoreState {
@@ -16,7 +17,7 @@ export interface WorkspaceIgnoreUpdate {
   patterns: string[];
 }
 
-const builtInPatterns = [".workspace", ".pi", ".DS_Store", "Thumbs.db", "~$*", ".~lock.*#"];
+const builtInPatterns = [".workspace", ".work-fold", ".pi", ".DS_Store", "Thumbs.db", "~$*", ".~lock.*#"];
 
 export async function readWorkspaceIgnoreState(workspaceRoot: string): Promise<WorkspaceIgnoreState> {
   const root = ensureSafeWorkspaceRoot(workspaceRoot);
@@ -43,6 +44,9 @@ export async function setWorkspaceIgnoreState(
   const root = ensureSafeWorkspaceRoot(workspaceRoot);
   const normalizedPaths = [...new Set(paths.map(normalizeWorkspacePath).filter(Boolean))].slice(0, 100);
   if (!normalizedPaths.length || normalizedPaths.includes(".")) throw new Error("Choose at least one Space item.");
+  if (normalizedPaths.some(containsReservedWorkspacePathSegment)) {
+    throw new Error("Product metadata and Pi configuration always stay hidden.");
+  }
   const requestedPatterns: string[] = [];
   for (const path of normalizedPaths) {
     const absolute = resolveWorkspacePath(root, path);
@@ -70,6 +74,7 @@ export async function setWorkspaceIgnoreState(
 export function isWorkspaceIgnored(relativePath: string, configuredPatterns: string[]): boolean {
   const path = normalizeWorkspacePath(relativePath);
   if (!path) return false;
+  if (containsReservedWorkspacePathSegment(path)) return true;
   let ignored = false;
   for (const rawPattern of [...builtInPatterns, ...configuredPatterns]) {
     const negated = rawPattern.startsWith("!");
@@ -80,7 +85,8 @@ export function isWorkspaceIgnored(relativePath: string, configuredPatterns: str
 }
 
 export function isAlwaysHiddenWorkspaceEntry(name: string): boolean {
-  return builtInPatterns.some((pattern) => ignoreRuleMatches(name, pattern));
+  return isReservedWorkspacePathSegment(name)
+    || builtInPatterns.some((pattern) => ignoreRuleMatches(name, pattern));
 }
 
 function ignoreStateFile(workspaceRoot: string): string {

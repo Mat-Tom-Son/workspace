@@ -20,6 +20,8 @@ import {
   sep,
 } from "node:path";
 
+import { isReservedWorkspacePathSegment } from "../workspace-path-policy.js";
+
 export type RestrictedAppFileAccess = "read" | "read-write";
 export type RestrictedAppFileTarget = "file" | "directory";
 
@@ -579,8 +581,7 @@ function pathContains(root: string, candidate: string): boolean {
 }
 
 function isReservedMetadataSegment(segment: string): boolean {
-  const value = segment.toLocaleLowerCase();
-  return value === ".workspace" || value === ".pi";
+  return isReservedWorkspacePathSegment(segment);
 }
 
 function isUnsafePortableSegment(segment: string): boolean {
