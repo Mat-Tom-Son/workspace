@@ -1,5 +1,12 @@
 # Workspace
 
+> **Archived legacy repository.** Workspace has been replaced by
+> [work-fold](https://github.com/Mat-Tom-Son/work-fold). New development,
+> documentation, issues, and releases live there; the public product home is
+> [work-fold.com](https://work-fold.com). This repository and its signed
+> `v0.8.1` containment release remain available only as immutable history for
+> existing Workspace installations and data.
+
 [![CI](https://github.com/Mat-Tom-Son/workspace/actions/workflows/ci.yml/badge.svg)](https://github.com/Mat-Tom-Son/workspace/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Mat-Tom-Son/workspace)](https://github.com/Mat-Tom-Son/workspace/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
